@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck install.sh
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck -x install.sh
+      - name: python syntax
+        run: |
+          python3 -m py_compile agent/browser_keeper.py agent/telegram_bot.py
+      - name: ruff
+        run: |
+          pip install --quiet ruff
+          ruff check agent/
+
+  install-smoke:
+    # Runs the installer end-to-end on a fresh ubuntu-24.04 runner with a
+    # placeholder API key. It can't actually log claude in or talk to BU, but
+    # it verifies the script gets all the way through: installs node/ttyd,
+    # drops systemd units, writes /etc/bux/env, prints the success banner.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: run install.sh
+        run: |
+          sudo BROWSER_USE_API_KEY=bu_ci_placeholder bash install.sh
+      - name: verify services exist
+        run: |
+          set -x
+          systemctl cat bux-browser-keeper.service > /dev/null
+          systemctl cat bux-ttyd.service > /dev/null
+          sudo test -f /etc/bux/env
+          sudo test -f /home/bux/CLAUDE.md
+          test -x /usr/local/bin/ttyd
+          # `claude` is installed as an npm global — could land at /usr/bin or
+          # /usr/local/bin depending on npm prefix. Just check it's on PATH.
+          command -v claude
+          sudo -u bux -H claude --version
+      - name: verify idempotence
+        run: |
+          # Second run reads BROWSER_USE_API_KEY from the existing /etc/bux/env.
+          sudo bash install.sh
