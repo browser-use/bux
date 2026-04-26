@@ -1,6 +1,6 @@
 # Browser Use Box ♞
 
-<img width="1680" height="556" alt="fsahklfashfa" src="https://github.com/user-attachments/assets/c02b15ab-06e8-4732-925d-72bc15fd1b82" />
+<img width="1680" height="556" alt="Browser Use Box hero" src="https://github.com/user-attachments/assets/c02b15ab-06e8-4732-925d-72bc15fd1b82" />
 
 
 ## A 24/7 Claude Code agent with a real browser, on any box you own.
@@ -28,7 +28,7 @@ SSH into it (I'll paste the host below), run install.sh with my BROWSER_USE_API_
 
 - **Claude Code** logged in and always on
 - A real **Chromium** session via [browser-harness](https://github.com/browser-use/browser-harness) — cookies persist, logins stick
-- A **Telegram bot** so you can text your agent (optional)
+- A **Telegram bot** so you can text your agent — pass `TG_BOT_TOKEN=xxx` to the installer to enable
 - A **web terminal** bound to localhost for when SSH is too much
 - When claude hits a login wall / 2FA / CAPTCHA, it hands you a **live view URL** and waits — no credential-stuffing, no brittle workarounds
 
