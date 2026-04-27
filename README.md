@@ -1,6 +1,6 @@
 # Browser Use Box ♞
 
-<img width="1680" height="556" alt="Browser Use Box hero" src="https://github.com/user-attachments/assets/c02b15ab-06e8-4732-925d-72bc15fd1b82" />
+![Browser Use Box hero](https://github.com/user-attachments/assets/c02b15ab-06e8-4732-925d-72bc15fd1b82)
 
 
 ## A 24/7 Claude Code agent with a real browser, on any box you own.
