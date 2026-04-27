@@ -171,18 +171,20 @@ def _chunk_for_telegram(text: str, max_len: int) -> list[str]:
 def _parse_command(text: str) -> tuple[str | None, str]:
     """Split a TG message into (command, argument) if it looks like a command.
 
-    Telegram sends `/cmd@botname rest of arg` in group chats — strip the
-    `@botname` suffix so the cmd matches whether the bot was invoked by
-    bare /cancel or /cancel@bux_abcd1234_bot. Today the bot is bound to a
-    1:1 chat by construction (see binding flow), but cheap to be uniform.
+    Strips the optional `@botname` suffix so /cmd@botname behaves like
+    /cmd (TG sends the suffix in group chats). Splits on any whitespace
+    via `split(None, 1)` so /cancel<tab>arg or /cancel<nbsp>arg parses
+    correctly — `partition(' ')` would only catch a regular space.
 
     Returns (None, '') for non-command messages.
     """
     if not text or not text.startswith("/"):
         return None, ""
-    head, _, rest = text.partition(" ")
+    parts = text.split(None, 1)
+    head = parts[0]
+    rest = parts[1].strip() if len(parts) > 1 else ""
     cmd, _, _bot = head.partition("@")
-    return cmd, rest.strip()
+    return cmd, rest
 
 
 def _read_kv(path: Path) -> dict[str, str]:
@@ -204,19 +206,28 @@ def load_allow() -> set[int]:
     return {int(x) for x in ALLOWED_FILE.read_text().split() if x.strip()}
 
 
+def _chmod_root_bux_640(path: Path) -> None:
+    """Set `path` to 0o640 root:bux. Raises on failure.
+
+    Used for /etc/bux/tg.env and /etc/bux/tg-allowed.txt — both need to
+    be readable by the bux user so the `tg-send` helper can post to TG
+    from at/cron jobs. Fail loud rather than swallow: a silent chmod
+    miss here leaves scheduled work broken with no breadcrumb back to
+    the install / first-bind step.
+    """
+    import grp
+
+    bux_gid = grp.getgrnam("bux").gr_gid
+    os.chown(path, 0, bux_gid)
+    path.chmod(0o640)
+
+
 def add_allow(chat_id: int) -> None:
     ids = load_allow() | {chat_id}
     ALLOWED_FILE.write_text("\n".join(str(i) for i in sorted(ids)))
-    # 0o640 root:bux — tg-send (running as bux from at/cron) needs to read
-    # the bound chat_id. The chat id isn't a secret; the bot token is.
-    ALLOWED_FILE.chmod(0o640)
-    try:
-        import grp
-
-        bux_gid = grp.getgrnam("bux").gr_gid
-        os.chown(ALLOWED_FILE, 0, bux_gid)
-    except Exception:
-        LOG.exception("chown %s failed", ALLOWED_FILE)
+    # 0o640 root:bux — tg-send (running as bux) needs to read the bound
+    # chat_id. The chat id isn't a secret; the bot token is.
+    _chmod_root_bux_640(ALLOWED_FILE)
 
 
 def burn_setup_token() -> None:
@@ -235,16 +246,11 @@ def burn_setup_token() -> None:
         kept.append(line)
     TG_ENV.write_text("\n".join(kept) + ("\n" if kept else ""))
     # 0o640 root:bux so tg-send (running as bux from at/cron) can read
-    # the bot token. Worst-case exposure is bounded: messages can only
-    # be delivered to the bound chat, not arbitrary users.
-    try:
-        TG_ENV.chmod(0o640)
-        import grp
-
-        bux_gid = grp.getgrnam("bux").gr_gid
-        os.chown(TG_ENV, 0, bux_gid)
-    except Exception:
-        LOG.exception("chmod/chown %s failed", TG_ENV)
+    # the bot token. Fail loud rather than swallow — a silent chmod miss
+    # here means scheduled work breaks at fire time. Worst-case exposure
+    # is bounded: messages can only be delivered to the bound chat, not
+    # arbitrary users.
+    _chmod_root_bux_640(TG_ENV)
 
 
 def load_state() -> dict:

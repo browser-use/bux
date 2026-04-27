@@ -73,8 +73,11 @@ apt-get install -y -qq \
 	htop tmux vim less wget zip tree \
 	at
 
-# Enable atd so `at now + 5min` actually runs queued jobs.
-systemctl enable --now atd.service 2>/dev/null || true
+# Enable atd so `at now + 5min` actually runs queued jobs. We deliberately
+# don't `|| true` here — if atd fails to start we end up with broken
+# scheduling and no signal until the first user reminder silently misses.
+# Better to fail the install loudly.
+systemctl enable --now atd.service
 
 # Allow the bux user to use `at` (Ubuntu's default at.deny excludes
 # regular users; at.allow is presence-implies-deny-for-everyone-else).
