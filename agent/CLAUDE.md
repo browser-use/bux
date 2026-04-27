@@ -106,11 +106,18 @@ When the user asks you to "remind me in 5 minutes", "schedule X for 9am tomorrow
 
 ### `tg-send` — push a Telegram message from any shell
 
-`/usr/local/bin/tg-send "your message here"` posts a message to the user's bound TG chat. It's the standard delivery mechanism for scheduled work.
+`tg-send` posts a message to the user's bound TG chat. It accepts the message either as an argument **or** on stdin, so it pipes naturally:
+
+```bash
+tg-send "Reminder: check your Slack"            # arg form
+echo "all done" | tg-send                       # stdin form
+claude -p "summarize my email" | tg-send        # the recurring use case
+```
 
 - Reads the bot token from `/etc/bux/tg.env` (mode 640 root:bux, readable by you).
 - Reads the bound chat id from `/etc/bux/tg-allowed.txt`.
 - Plain text only — the bot's own handler does MarkdownV2 rendering, so don't try to send markup via this path.
+- Output > 4 KB is truncated with `…(truncated)` so a long claude reply doesn't 400.
 
 ### One-shot reminders (`at`)
 
@@ -118,13 +125,15 @@ When the user asks you to "remind me in 5 minutes", "schedule X for 9am tomorrow
 echo 'tg-send "Reminder: check your Slack"' | at now + 5 minutes
 ```
 
-To list pending: `atq`. To cancel: `atrm <jobid>`.
+`at` runs the body as a shell script when the timer fires, so the body needs to *call* tg-send (not be piped *to* it). To list pending: `atq`. To cancel: `atrm <jobid>`.
 
-For things that need claude itself to do work, wrap a `claude -p` call:
+For things that need claude itself to do work at fire time, wrap a `claude -p` call and pipe its output:
 
 ```bash
-echo 'claude -p "do the task" 2>&1 | tg-send' | at 9am
+echo 'claude -p "summarize my unread email" | tg-send' | at 9am
 ```
+
+(The outer `echo … | at …` is what schedules the job. Inside the job, `claude -p` produces output that gets piped to `tg-send`.)
 
 ### Recurring schedules (`cron`)
 
@@ -132,7 +141,7 @@ Add to bux's crontab via `crontab -e`. Standard 5-field format. Always pipe to `
 
 ```cron
 # Every weekday at 8 UTC, summarize unread email and ping the user
-0 8 * * 1-5  claude -p "summarize my unread email in 5 bullets" 2>&1 | tg-send
+0 8 * * 1-5  claude -p "summarize my unread email in 5 bullets" | tg-send
 ```
 
 Avoid spamming — daily reminders are usually fine, sub-hourly probably isn't unless the user explicitly asked.

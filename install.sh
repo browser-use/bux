@@ -305,12 +305,17 @@ install -o bux -g bux -m 0644 "$REPO_DIR/agent/CLAUDE.md"         /home/bux/CLAU
 # the helper runs as bux, no setuid magic needed).
 cat > /usr/local/bin/tg-send <<'TGSEND'
 #!/usr/bin/env bash
-# tg-send "your message here"
-# Posts a Telegram message to the bound chat. Used by scheduled jobs:
-#   echo 'tg-send "reminder"' | at now + 5min
+# tg-send "your message here"        # arg form
+# echo "msg" | tg-send                # stdin form (for piping output)
+# claude -p "..." | tg-send           # the recurring use case
 set -euo pipefail
-[ "$#" -ge 1 ] || { echo "usage: tg-send <message>" >&2; exit 2; }
-text="$*"
+if [ "$#" -ge 1 ]; then
+  text="$*"
+else
+  text="$(cat)"
+fi
+text="${text%$'\n'}"
+[ -n "$text" ] || { echo "tg-send: empty payload (no args, no stdin)" >&2; exit 2; }
 env_file=/etc/bux/tg.env
 allow_file=/etc/bux/tg-allowed.txt
 [ -r "$env_file" ] || { echo "tg-send: cannot read $env_file" >&2; exit 1; }
@@ -320,6 +325,11 @@ allow_file=/etc/bux/tg-allowed.txt
 [ -n "${TG_BOT_TOKEN:-}" ] || { echo "tg-send: TG_BOT_TOKEN missing" >&2; exit 1; }
 chat_id=$(awk 'NF{print; exit}' "$allow_file")
 [ -n "$chat_id" ] || { echo "tg-send: empty $allow_file" >&2; exit 1; }
+# TG caps sendMessage at 4096 chars; truncate with marker so a long
+# claude -p output doesn't 400 silently.
+if [ "${#text}" -gt 4000 ]; then
+  text="${text:0:3950}…(truncated)"
+fi
 curl -fsS -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
   --max-time 15 \
   -H 'Content-Type: application/json' \
