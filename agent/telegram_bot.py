@@ -168,6 +168,23 @@ def _chunk_for_telegram(text: str, max_len: int) -> list[str]:
     return final
 
 
+def _parse_command(text: str) -> tuple[str | None, str]:
+    """Split a TG message into (command, argument) if it looks like a command.
+
+    Telegram sends `/cmd@botname rest of arg` in group chats — strip the
+    `@botname` suffix so the cmd matches whether the bot was invoked by
+    bare /cancel or /cancel@bux_abcd1234_bot. Today the bot is bound to a
+    1:1 chat by construction (see binding flow), but cheap to be uniform.
+
+    Returns (None, '') for non-command messages.
+    """
+    if not text or not text.startswith("/"):
+        return None, ""
+    head, _, rest = text.partition(" ")
+    cmd, _, _bot = head.partition("@")
+    return cmd, rest.strip()
+
+
 def _read_kv(path: Path) -> dict[str, str]:
     if not path.exists():
         return {}
@@ -190,7 +207,16 @@ def load_allow() -> set[int]:
 def add_allow(chat_id: int) -> None:
     ids = load_allow() | {chat_id}
     ALLOWED_FILE.write_text("\n".join(str(i) for i in sorted(ids)))
-    ALLOWED_FILE.chmod(0o600)
+    # 0o640 root:bux — tg-send (running as bux from at/cron) needs to read
+    # the bound chat_id. The chat id isn't a secret; the bot token is.
+    ALLOWED_FILE.chmod(0o640)
+    try:
+        import grp
+
+        bux_gid = grp.getgrnam("bux").gr_gid
+        os.chown(ALLOWED_FILE, 0, bux_gid)
+    except Exception:
+        LOG.exception("chown %s failed", ALLOWED_FILE)
 
 
 def burn_setup_token() -> None:
@@ -208,10 +234,17 @@ def burn_setup_token() -> None:
             continue
         kept.append(line)
     TG_ENV.write_text("\n".join(kept) + ("\n" if kept else ""))
+    # 0o640 root:bux so tg-send (running as bux from at/cron) can read
+    # the bot token. Worst-case exposure is bounded: messages can only
+    # be delivered to the bound chat, not arbitrary users.
     try:
-        TG_ENV.chmod(0o600)
+        TG_ENV.chmod(0o640)
+        import grp
+
+        bux_gid = grp.getgrnam("bux").gr_gid
+        os.chown(TG_ENV, 0, bux_gid)
     except Exception:
-        pass
+        LOG.exception("chmod/chown %s failed", TG_ENV)
 
 
 def load_state() -> dict:
@@ -687,8 +720,13 @@ class Bot:
             self._bind_chat(chat_id)
             return
 
-        # Commands.
-        if text in ("/start", "/help"):
+        # Commands. TG sends `/cmd@botname` in group chats so users can
+        # disambiguate when multiple bots are present — strip the suffix
+        # before matching so the bot still works if someone ever drops it
+        # into a group. Today the binding flow guarantees a 1:1 chat, so
+        # in practice this is just defense in depth.
+        cmd, arg = _parse_command(text)
+        if cmd in ("/start", "/help"):
             self.send(
                 chat_id,
                 "Text me anything — I'll run it on your bux.\n"
@@ -698,21 +736,17 @@ class Bot:
                 "/cancel <id> — drop one pending task",
             )
             return
-        if text == "/whoami":
+        if cmd == "/whoami":
             self.send(chat_id, f"chat_id: {chat_id}")
             return
-        if text == "/live":
+        if cmd == "/live":
             self.send(chat_id, self._live_url(), reply_to=mid)
             return
-        if text == "/queue":
+        if cmd == "/queue":
             self._cmd_queue(chat_id, mid)
             return
-        # Match /cancel as a real command, not as a prefix — `startswith`
-        # would eat /cancelled, /cancelthis, etc.
-        cancel_parts = text.split(maxsplit=1)
-        if cancel_parts and cancel_parts[0] == "/cancel":
-            job_id = cancel_parts[1].strip() if len(cancel_parts) > 1 else ""
-            self._cmd_cancel(chat_id, mid, job_id)
+        if cmd == "/cancel":
+            self._cmd_cancel(chat_id, mid, arg)
             return
 
         # Enqueue and acknowledge. The dedicated worker thread does the

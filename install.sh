@@ -70,7 +70,16 @@ apt-get install -y -qq \
 	curl git build-essential python3 python3-pip python3-venv \
 	unzip ca-certificates jq gnupg \
 	ripgrep fd-find python3-dev make gcc g++ pkg-config libssl-dev zlib1g-dev \
-	htop tmux vim less wget zip tree
+	htop tmux vim less wget zip tree \
+	at
+
+# Enable atd so `at now + 5min` actually runs queued jobs.
+systemctl enable --now atd.service 2>/dev/null || true
+
+# Allow the bux user to use `at` (Ubuntu's default at.deny excludes
+# regular users; at.allow is presence-implies-deny-for-everyone-else).
+echo bux > /etc/at.allow
+chmod 644 /etc/at.allow
 
 arch="$(uname -m)"
 
@@ -286,6 +295,36 @@ install -o bux -g bux -m 0644 "$REPO_DIR/agent/browser_keeper.py" /opt/bux/brows
 install -o bux -g bux -m 0644 "$REPO_DIR/agent/telegram_bot.py"   /opt/bux/telegram_bot.py
 install -o bux -g bux -m 0644 "$REPO_DIR/agent/CLAUDE.md"         /home/bux/CLAUDE.md
 
+# --- tg-send: shell helper to push a message to the bound TG chat ---------
+# Used by `at` / cron jobs (and claude from a shell) so scheduled work can
+# notify the user without going through the bot's poll loop. The bot token
+# lives at /etc/bux/tg.env (mode 640 root:bux — the bux user can read it,
+# the helper runs as bux, no setuid magic needed).
+cat > /usr/local/bin/tg-send <<'TGSEND'
+#!/usr/bin/env bash
+# tg-send "your message here"
+# Posts a Telegram message to the bound chat. Used by scheduled jobs:
+#   echo 'tg-send "reminder"' | at now + 5min
+set -euo pipefail
+[ "$#" -ge 1 ] || { echo "usage: tg-send <message>" >&2; exit 2; }
+text="$*"
+env_file=/etc/bux/tg.env
+allow_file=/etc/bux/tg-allowed.txt
+[ -r "$env_file" ] || { echo "tg-send: cannot read $env_file" >&2; exit 1; }
+[ -r "$allow_file" ] || { echo "tg-send: no bound chat (run /start in TG first)" >&2; exit 1; }
+# shellcheck disable=SC1090
+. "$env_file"
+[ -n "${TG_BOT_TOKEN:-}" ] || { echo "tg-send: TG_BOT_TOKEN missing" >&2; exit 1; }
+chat_id=$(awk 'NF{print; exit}' "$allow_file")
+[ -n "$chat_id" ] || { echo "tg-send: empty $allow_file" >&2; exit 1; }
+curl -fsS -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+  --max-time 15 \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -nc --arg c "$chat_id" --arg t "$text" '{chat_id: ($c|tonumber), text: $t}')" \
+  > /dev/null
+TGSEND
+chmod 755 /usr/local/bin/tg-send
+
 # --- pre-seed ~/.claude.json so first `claude` run skips dialogs -----------
 if [ ! -f /home/bux/.claude.json ]; then
 	sudo -u bux -H bash -c 'cat > /home/bux/.claude.json' <<'JSON'
@@ -455,7 +494,12 @@ if [ -n "$TG_BOT_TOKEN" ]; then
 TG_BOT_TOKEN=$TG_BOT_TOKEN
 TG_SETUP_TOKEN=$setup_token
 EOF
-	chmod 600 /etc/bux/tg.env
+	# 0o640 root:bux so the tg-send helper can read the bot token from
+	# `at` jobs running as bux. Worst-case leak: someone with bux access
+	# can call sendMessage, but only the bound chat receives it — they
+	# can't spam arbitrary users.
+	chmod 640 /etc/bux/tg.env
+	chown root:bux /etc/bux/tg.env
 	systemctl enable bux-tg.service >/dev/null
 	systemctl restart bux-tg.service
 
