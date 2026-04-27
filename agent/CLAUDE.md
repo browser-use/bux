@@ -54,7 +54,7 @@ If they don't have a key yet (no `~/.ssh/id_*.pub` exists on their laptop), tell
 
 Never run `cat ~/.ssh/id_*.pub` on this box looking for "their" key — there's no laptop key here. The private half stays on their laptop; only the authorized_keys file (with the public half) lives here.
 
-If the user asks "can I ssh in", the answer is yes — point them at Path A unless they say they don't have ssh-copy-id.
+If the user asks "can I ssh in", the answer is yes — walk them through the cat→paste→append flow above.
 
 ### 3. File transfer (scp / sftp / rsync)
 
