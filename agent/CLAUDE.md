@@ -100,6 +100,58 @@ The box is bound to one Browser Use Cloud profile at a time. If the user asks to
 
 Only do this when the user explicitly asks. Don't silently rebind across tasks.
 
+## Scheduling and reminders
+
+When the user asks you to "remind me in 5 minutes", "schedule X for 9am tomorrow", "every weekday at 8am do Y" etc., **use local `at` + cron + the `tg-send` helper**. Do NOT use Claude Code's `/routines` or in-session schedulers — those die the moment your `claude -p` session exits (which happens within seconds on this box) and the user never gets pinged.
+
+### `tg-send` — push a Telegram message from any shell
+
+`tg-send` posts a message to the user's bound TG chat. It accepts the message either as an argument **or** on stdin, so it pipes naturally:
+
+```bash
+tg-send "Reminder: check your Slack"            # arg form
+echo "all done" | tg-send                       # stdin form
+claude -p "summarize my email" | tg-send        # the recurring use case
+```
+
+- Reads the bot token from `/etc/bux/tg.env` (mode 640 root:bux, readable by you).
+- Reads the bound chat id from `/etc/bux/tg-allowed.txt`.
+- Plain text only — the bot's own handler does MarkdownV2 rendering, so don't try to send markup via this path.
+- Output > 4 KB is truncated with `…(truncated)` so a long claude reply doesn't 400.
+
+### One-shot reminders (`at`)
+
+```bash
+echo 'tg-send "Reminder: check your Slack"' | at now + 5 minutes
+```
+
+`at` runs the body as a shell script when the timer fires, so the body needs to *call* tg-send (not be piped *to* it). To list pending: `atq`. To cancel: `atrm <jobid>`.
+
+For things that need claude itself to do work at fire time, wrap a `claude -p` call and pipe its output:
+
+```bash
+echo 'claude -p "summarize my unread email" | tg-send' | at 9am
+```
+
+(The outer `echo … | at …` is what schedules the job. Inside the job, `claude -p` produces output that gets piped to `tg-send`.)
+
+### Recurring schedules (`cron`)
+
+Add to bux's crontab via `crontab -e`. Standard 5-field format. Always pipe to `tg-send` so the user actually sees the result.
+
+```cron
+# Every weekday at 8 UTC, summarize unread email and ping the user
+0 8 * * 1-5  claude -p "summarize my unread email in 5 bullets" | tg-send
+```
+
+Avoid spamming — daily reminders are usually fine, sub-hourly probably isn't unless the user explicitly asked.
+
+### When the user "schedules" a task in TG
+
+1. Pick the right tool: `at` for one-shot, `cron` for recurring.
+2. Wrap the work so it ends with `tg-send "<result>"`. The user must hear back.
+3. Confirm **what** and **when** (in UTC) so they can tell if you misparsed "5pm Pacific".
+
 ## Conventions on this box
 
 - **Working directory**: default is `/home/bux`. Keep task artifacts here.
@@ -112,3 +164,4 @@ Only do this when the user explicitly asks. Don't silently rebind across tasks.
 - Don't run `playwright install`, `apt install chromium`, `brew install chrome`, etc. The box has no Chrome and never will.
 - Don't assume `BROWSER_USE_API_KEY` or any BU env is in your shell — always `source ~/.claude/browser.env` first.
 - Don't try to log in to sites on behalf of the user unless they explicitly give you credentials. Say so clearly and ask.
+- Don't use Claude Code routines / `/routines` URLs for time-deferred work. They fire in claude.ai's runtime, which has no path back to this box. Use `at` + `tg-send` instead.
