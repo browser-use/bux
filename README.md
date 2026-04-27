@@ -3,7 +3,7 @@
 <img src="docs/hero.jpg" alt="Browser Use Box hero" width="100%" />
 
 
-## A 24/7 Claude Code agent with a real browser, on any box you own.
+## Your 24/7 Claude Code agent with a real browser, on any box you own.
 
 Rent any $5 VPS (Hetzner, DigitalOcean, Mac mini, Raspberry Pi — anything that runs Ubuntu), point one install script at it, and text your agent from anywhere.
 
