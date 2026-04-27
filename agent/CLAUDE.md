@@ -22,24 +22,21 @@ The default channel — the user texts the bot, you reply. You don't manage the 
 
 ### 2. SSH
 
-The user can ssh in as `bux@<this-box's-public-ip>` once their public key is in **this box's** `/home/bux/.ssh/authorized_keys`. Pubkey-only auth is enabled — passwords are off.
+The user can ssh in as `bux@<this-box's-public-ip>` once their public key is in **this box's** `/home/bux/.ssh/authorized_keys`. Pubkey-only auth is enabled — passwords are off, and we don't seed any keys.
 
-Pay attention to *which machine each command runs on* — getting this wrong is the #1 way SSH setup fails. Two paths:
+That last part is important: **`ssh-copy-id` doesn't work to bootstrap.** It needs to ssh in once to drop the key, but our box has no auth method enabled until *after* the key is installed — chicken-and-egg. So we install the key from this terminal instead, where you (claude) already have shell access. Don't suggest `ssh-copy-id` to the user.
 
-**Path A — they have ssh-copy-id (recommended).** Tell them to run this **on their laptop** (NOT on this box):
+The flow:
 
-```bash
-# user's laptop:
-ssh-copy-id bux@<this-box-ip>
-```
+1. Ask the user to run this **on their laptop** and paste the output to you:
 
-That's it. They can then `ssh bux@<this-box-ip>`.
+   ```bash
+   cat ~/.ssh/id_ed25519.pub   # or ~/.ssh/id_rsa.pub if they have RSA
+   ```
 
-**Path B — they paste the key text.** If they don't have ssh-copy-id, ask them to (a) print their public key on their laptop and (b) paste the result into this terminal so YOU append it to authorized_keys here:
+   They'll paste a single line starting with `ssh-ed25519 …` or `ssh-rsa …`.
 
-1. They run on **their laptop**: `cat ~/.ssh/id_ed25519.pub` (or `~/.ssh/id_rsa.pub` if they have RSA).
-2. They paste the output to you (a line starting with `ssh-ed25519 ...` or `ssh-rsa ...`).
-3. YOU run on **this box**:
+2. **YOU** run on this box:
 
    ```bash
    mkdir -p ~/.ssh && chmod 700 ~/.ssh
@@ -47,9 +44,15 @@ That's it. They can then `ssh bux@<this-box-ip>`.
    chmod 600 ~/.ssh/authorized_keys
    ```
 
-4. Confirm with `cat ~/.ssh/authorized_keys` and tell them to try `ssh bux@<this-box-ip>`.
+3. Confirm with `cat ~/.ssh/authorized_keys`, then tell them to try:
 
-Never run `cat ~/.ssh/id_*.pub` on this box looking for "their" key — there's no laptop key here. The pubkey lives on their laptop; only the authorized_keys (with the public half of their key in it) lives here.
+   ```bash
+   ssh bux@<this-box-ip>
+   ```
+
+If they don't have a key yet (no `~/.ssh/id_*.pub` exists on their laptop), tell them to make one first: `ssh-keygen -t ed25519 -C "bux"` (laptop, hit enter through the prompts), then `cat ~/.ssh/id_ed25519.pub` and paste.
+
+Never run `cat ~/.ssh/id_*.pub` on this box looking for "their" key — there's no laptop key here. The private half stays on their laptop; only the authorized_keys file (with the public half) lives here.
 
 If the user asks "can I ssh in", the answer is yes — point them at Path A unless they say they don't have ssh-copy-id.
 
