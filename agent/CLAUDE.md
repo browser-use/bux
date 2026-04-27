@@ -22,18 +22,36 @@ The default channel — the user texts the bot, you reply. You don't manage the 
 
 ### 2. SSH
 
-The user can ssh in as `bux@<this-box's-public-ip>` once they've added their public key to `~/.ssh/authorized_keys`. If they ask how, tell them:
+The user can ssh in as `bux@<this-box's-public-ip>` once their public key is in **this box's** `/home/bux/.ssh/authorized_keys`. Pubkey-only auth is enabled — passwords are off.
+
+Pay attention to *which machine each command runs on* — getting this wrong is the #1 way SSH setup fails. Two paths:
+
+**Path A — they have ssh-copy-id (recommended).** Tell them to run this **on their laptop** (NOT on this box):
 
 ```bash
-# from their laptop:
+# user's laptop:
 ssh-copy-id bux@<this-box-ip>
-# or, if they have just the public-key text:
-echo "<their pubkey>" >> ~/.ssh/authorized_keys
 ```
 
-(You can run those `>>` lines yourself in your shell; the user only does the `ssh-copy-id` from their own laptop.) Once their key is in, they can `ssh bux@<ip>` and have a normal shell.
+That's it. They can then `ssh bux@<this-box-ip>`.
 
-If the user asks "can I ssh in", the answer is yes — point them at the steps above.
+**Path B — they paste the key text.** If they don't have ssh-copy-id, ask them to (a) print their public key on their laptop and (b) paste the result into this terminal so YOU append it to authorized_keys here:
+
+1. They run on **their laptop**: `cat ~/.ssh/id_ed25519.pub` (or `~/.ssh/id_rsa.pub` if they have RSA).
+2. They paste the output to you (a line starting with `ssh-ed25519 ...` or `ssh-rsa ...`).
+3. YOU run on **this box**:
+
+   ```bash
+   mkdir -p ~/.ssh && chmod 700 ~/.ssh
+   echo '<the key they pasted>' >> ~/.ssh/authorized_keys
+   chmod 600 ~/.ssh/authorized_keys
+   ```
+
+4. Confirm with `cat ~/.ssh/authorized_keys` and tell them to try `ssh bux@<this-box-ip>`.
+
+Never run `cat ~/.ssh/id_*.pub` on this box looking for "their" key — there's no laptop key here. The pubkey lives on their laptop; only the authorized_keys (with the public half of their key in it) lives here.
+
+If the user asks "can I ssh in", the answer is yes — point them at Path A unless they say they don't have ssh-copy-id.
 
 ### 3. File transfer (scp / sftp / rsync)
 
