@@ -739,7 +739,8 @@ class Bot:
                 "/live — live view URL of the active browser\n"
                 "/queue — see pending tasks\n"
                 "/cancel — drop everything pending\n"
-                "/cancel <id> — drop one pending task",
+                "/cancel <id> — drop one pending task\n"
+                "/schedules — list reminders / cron jobs (ask claude to cancel)",
             )
             return
         if cmd == "/whoami":
@@ -753,6 +754,9 @@ class Bot:
             return
         if cmd == "/cancel":
             self._cmd_cancel(chat_id, mid, arg)
+            return
+        if cmd in ("/schedules", "/schedule"):
+            self._cmd_schedules(chat_id, mid)
             return
 
         # Enqueue and acknowledge. The dedicated worker thread does the
@@ -835,6 +839,91 @@ class Bot:
             self.send(
                 chat_id, f"Cancelled task `{job_id}`.", reply_to=reply_to, markdown=True
             )
+
+    def _cmd_schedules(self, chat_id: int, reply_to: int | None) -> None:
+        """List the bux user's pending `at` jobs and crontab.
+
+        Read-only. Cancellation is intentionally NOT a bot command — users
+        ask claude (\"cancel that 9am reminder\") which has the context to
+        map a fuzzy description to a job id.
+        """
+        lines: list[str] = []
+
+        try:
+            atq_out = subprocess.run(
+                ["sudo", "-u", "bux", "atq"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            ).stdout.strip()
+        except Exception:
+            LOG.exception("atq failed")
+            atq_out = ""
+
+        at_rows: list[tuple[str, str, str]] = []
+        for row in atq_out.splitlines():
+            parts = row.split("\t") if "\t" in row else row.split()
+            if not parts:
+                continue
+            job_id = parts[0]
+            fire_time = (
+                " ".join(parts[1:-2]) if len(parts) >= 4 else " ".join(parts[1:])
+            )
+            body = ""
+            try:
+                dump = subprocess.run(
+                    ["sudo", "-u", "bux", "at", "-c", job_id],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                ).stdout
+                for ln in reversed([x for x in dump.splitlines() if x.strip()]):
+                    if ln.strip().startswith("}"):
+                        continue
+                    body = ln.strip()
+                    break
+            except Exception:
+                LOG.exception("at -c %s failed", job_id)
+            at_rows.append((job_id, fire_time, body))
+
+        if at_rows:
+            lines.append("🕒 *Pending reminders*")
+            for job_id, fire_time, body in at_rows:
+                preview = body if len(body) <= 70 else body[:67] + "…"
+                lines.append(f"· `{job_id}` — {fire_time}\n  {preview}")
+
+        try:
+            cron_out = subprocess.run(
+                ["sudo", "-u", "bux", "crontab", "-l"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            ).stdout
+        except Exception:
+            LOG.exception("crontab -l failed")
+            cron_out = ""
+
+        cron_rows = [
+            ln
+            for ln in cron_out.splitlines()
+            if ln.strip() and not ln.strip().startswith("#")
+        ]
+        if cron_rows:
+            if lines:
+                lines.append("")
+            lines.append("🔁 *Recurring*")
+            for ln in cron_rows:
+                preview = ln.strip()
+                if len(preview) > 100:
+                    preview = preview[:97] + "…"
+                lines.append(f"· {preview}")
+
+        if not lines:
+            self.send(chat_id, "Nothing scheduled.", reply_to=reply_to)
+            return
+        lines.append("")
+        lines.append('_To cancel: ask claude ("cancel the 9am reminder")._')
+        self.send(chat_id, "\n".join(lines), reply_to=reply_to, markdown=True)
 
     def queue_worker(self) -> None:
         """Single drain loop. Pops one job, runs claude, replies."""
