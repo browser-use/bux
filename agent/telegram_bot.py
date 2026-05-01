@@ -595,6 +595,12 @@ class Bot:
 		self.api = f'https://api.telegram.org/bot{token}'
 		self.client = httpx.Client(timeout=POLL_TIMEOUT + 10)
 		self.state = load_state()
+		# Handle to the in-flight claude subprocess (None when idle).
+		# `/cancel` reads this to send SIGKILL and unblock the queue when
+		# claude is hung — most often because it shelled into something
+		# interactive (gh auth login, vim, psql) and is waiting on stdin.
+		self._current_proc: subprocess.Popen | None = None
+		self._current_proc_lock = threading.Lock()
 
 	def call(self, method: str, **params) -> dict:
 		try:
@@ -694,9 +700,15 @@ class Bot:
 		# blocks, so concurrent messages / `bux run` invocations queue here.
 		lock_fd = _acquire_claude_lock()
 		try:
+			# Popen (not subprocess.run) so /cancel can SIGKILL a hung
+			# task — needed when claude shells into something interactive
+			# (gh auth login, vim) and waits forever on stdin.
+			# stdin=DEVNULL: claude itself never reads stdin in -p mode,
+			# but its child processes (gh, ssh) might. /dev/null gives
+			# them an EOF immediately so they fail loudly instead of
+			# blocking the whole queue.
 			try:
-				# Run as bux. We are root (service runs as root so we can sudo).
-				proc = subprocess.run(
+				proc = subprocess.Popen(
 					[
 						'sudo',
 						'-u',
@@ -712,18 +724,34 @@ class Bot:
 						'bypassPermissions',
 						prompt,
 					],
-					capture_output=True,
+					stdin=subprocess.DEVNULL,
+					stdout=subprocess.PIPE,
+					stderr=subprocess.PIPE,
 					text=True,
-					timeout=1800,
 					env=child_env,
 					cwd='/home/bux',
 				)
-				out = ((proc.stdout or '') + (proc.stderr or '')).strip()
-				return out or '(no output)'
-			except subprocess.TimeoutExpired:
-				return '⏱ Timed out after 30 min.'
 			except Exception as e:
 				return f'❌ task failed: {e}'
+
+			with self._current_proc_lock:
+				self._current_proc = proc
+			try:
+				try:
+					stdout, stderr = proc.communicate(timeout=1800)
+					out = ((stdout or '') + (stderr or '')).strip()
+					if proc.returncode == -9 or proc.returncode == -15:
+						return '🛑 Cancelled.'
+					return out or '(no output)'
+				except subprocess.TimeoutExpired:
+					proc.kill()
+					proc.communicate()
+					return '⏱ Timed out after 30 min.'
+				except Exception as e:
+					return f'❌ task failed: {e}'
+			finally:
+				with self._current_proc_lock:
+					self._current_proc = None
 		finally:
 			_release_claude_lock(lock_fd)
 
@@ -951,8 +979,15 @@ class Bot:
 
 	def _cmd_cancel(self, chat_id: int, reply_to: int | None, job_id: str) -> None:
 		if not job_id:
-			# Bare `/cancel` → drop everything queued (but not in_flight, we
-			# can't safely kill claude mid-task without losing partial work).
+			# Bare `/cancel` → drop pending AND kill in-flight. The original
+			# design preserved in-flight under the theory that killing claude
+			# mid-task loses partial work, but in practice the only time
+			# users hit /cancel is when claude is hung (interactive child
+			# process waiting on stdin) — preserving the wedge instead of
+			# clearing it makes the bot unusable until bux-tg is restarted
+			# from the web terminal. Now: kill the claude subprocess via
+			# SIGKILL (run_task returns "🛑 Cancelled.") AND drop all
+			# pending. Result: queue is fully empty, next message runs.
 			with _queue_cv:
 				before = len(_queue)
 				_queue[:] = [
@@ -960,14 +995,24 @@ class Bot:
 				]
 				dropped = before - len(_queue)
 				_save_queue(_queue)
-			if dropped == 0:
-				self.send(chat_id, 'Nothing queued to cancel.', reply_to=reply_to)
-			else:
-				self.send(
-					chat_id,
-					f'Cancelled {dropped} pending task(s). In-flight task continues.',
-					reply_to=reply_to,
-				)
+			killed_in_flight = False
+			with self._current_proc_lock:
+				proc = self._current_proc
+				if proc is not None and proc.poll() is None:
+					try:
+						proc.kill()
+						killed_in_flight = True
+					except Exception:
+						LOG.exception('failed to kill in-flight claude')
+			if dropped == 0 and not killed_in_flight:
+				self.send(chat_id, 'Nothing to cancel.', reply_to=reply_to)
+				return
+			parts = []
+			if killed_in_flight:
+				parts.append('killed running task')
+			if dropped > 0:
+				parts.append(f'cancelled {dropped} pending task(s)')
+			self.send(chat_id, '✓ ' + ' + '.join(parts) + '.', reply_to=reply_to)
 			return
 		removed = _queue_remove(job_id)
 		if removed is None:
@@ -981,12 +1026,28 @@ class Bot:
 				chat_id, f'No pending task with id `{job_id}`.', reply_to=reply_to, markdown=True
 			)
 		elif removed.get('status') == 'in_flight':
-			self.send(
-				chat_id,
-				f"Task `{job_id}` is already running and can't be cancelled. It'll finish on its own.",
-				reply_to=reply_to,
-				markdown=True,
-			)
+			# `/cancel <id>` for an in-flight task: same kill path as bare
+			# `/cancel`. Targeted form is mostly used to cancel a queued
+			# task by id, but if the user explicitly asks to cancel the
+			# running one we honor it.
+			killed = False
+			with self._current_proc_lock:
+				proc = self._current_proc
+				if proc is not None and proc.poll() is None:
+					try:
+						proc.kill()
+						killed = True
+					except Exception:
+						LOG.exception('failed to kill in-flight claude')
+			if killed:
+				self.send(chat_id, f'✓ killed running task `{job_id}`.', reply_to=reply_to, markdown=True)
+			else:
+				self.send(
+					chat_id,
+					f"Task `{job_id}` finished before we could kill it.",
+					reply_to=reply_to,
+					markdown=True,
+				)
 		else:
 			self.send(chat_id, f'Cancelled task `{job_id}`.', reply_to=reply_to, markdown=True)
 
