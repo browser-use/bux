@@ -43,6 +43,35 @@ if [ -f "$AGENT_DIR/requirements.txt" ]; then
   fi
 fi
 
+# --- browser-harness refresh ---------------------------------------------
+# browser-harness changes often (separate repo, separate cadence). Treat it
+# the same way we treat agent code: pull the upstream, reinstall via uv
+# only when the SHA actually moved. Keeps `/update` cheap when nothing's
+# changed and lets harness fixes ship without an AMI rebake.
+#
+# AMI-baked first boot: the clone already exists at /home/bux/src/browser-
+# harness from packer/install.sh, so this just confirms it's current.
+HARNESS_DIR=/home/bux/src/browser-harness
+if [ -d "$HARNESS_DIR/.git" ]; then
+  HARNESS_HASH_FILE=/var/lib/bux/harness.sha
+  install -d -o root -g root -m 0755 /var/lib/bux
+  # ff-only so a force-pushed harness doesn't silently rewrite local
+  # history on the box; user can always manually reset if intentional.
+  sudo -u bux git -C "$HARNESS_DIR" fetch --quiet --depth=1 origin || true
+  sudo -u bux git -C "$HARNESS_DIR" reset --quiet --hard origin/HEAD || true
+  NEW_HARNESS_SHA=$(sudo -u bux git -C "$HARNESS_DIR" rev-parse HEAD)
+  OLD_HARNESS_SHA=$(cat "$HARNESS_HASH_FILE" 2>/dev/null || echo "")
+  if [ "$NEW_HARNESS_SHA" != "$OLD_HARNESS_SHA" ]; then
+    echo "bootstrap: browser-harness sha changed ($OLD_HARNESS_SHA → $NEW_HARNESS_SHA); reinstalling"
+    # uv tool install --force re-pins the entrypoint at /home/bux/.local/
+    # bin/browser-harness against the new tree. Run as bux (-H so HOME
+    # resolves) since the install lands under /home/bux/.local.
+    sudo -u bux -H "$(command -v uv)" tool install --force \
+      --from "$HARNESS_DIR" browser-harness
+    echo "$NEW_HARNESS_SHA" > "$HARNESS_HASH_FILE"
+  fi
+fi
+
 # --- login banner: live browser URL on each ssh login ---------------------
 if ! grep -q 'BU_BROWSER_LIVE_URL' /home/bux/.profile 2>/dev/null; then
   cat >> /home/bux/.profile <<'PROFILE'
