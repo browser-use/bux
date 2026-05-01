@@ -993,7 +993,7 @@ class Bot:
 		ask claude (\"cancel that 9am reminder\") which has the context to
 		map a description to a job id and shell out to atrm / crontab -e.
 		Building parallel UX in the bot would just diverge from claude's
-		ability to handle ambiguous references like \"the slack one\".
+		ability to handle ambiguous references like \"the morning email one\".
 		"""
 		lines: list[str] = []
 

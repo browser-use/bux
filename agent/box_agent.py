@@ -1,4 +1,4 @@
-"""box-agent — runs on every bux EC2 as a systemd service.
+"""box-agent — runs on every bux host as a systemd service.
 
 Responsibilities:
   - Maintain outbound WebSocket to the cloud control plane.
@@ -349,8 +349,8 @@ class ShellSession:
 		if exists:
 			return
 
-		# Build the launch command. Identical to the old direct-exec
-		# path, just routed through tmux's first-window command.
+		# Build the launch command — routed through tmux's first-window
+		# command so the shell survives WS reconnects.
 		if launch == 'claude':
 			claude_cmd = (
 				'claude --dangerously-skip-permissions' if dsp_enabled else 'claude'
@@ -534,8 +534,8 @@ class Agent:
 		# the moment we send `hello`, and that's the signal for the frontend
 		# to open the terminal iframe — at which point the user expects
 		# claude to launch instantly. Without this prewarm, the first
-		# `claude` invocation on a freshly-booted EC2 has to fault all the
-		# bake-time-cached pages back in from EBS, which feels like 20-30s
+		# `claude` invocation on a freshly-booted box has to fault all the
+		# bake-time-cached pages back in from disk, which feels like 20-30s
 		# of dead air.
 		#
 		# Idempotent across reconnects: only the first connect actually

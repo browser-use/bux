@@ -188,7 +188,7 @@ When the user asks you to "remind me in 5 minutes", "schedule X for 9am tomorrow
 `tg-send` posts a message to the user's bound TG chat. It accepts the message either as an argument **or** on stdin, so it pipes naturally:
 
 ```bash
-tg-send "Reminder: check your Slack"            # arg form
+tg-send "Reminder: take your meds"              # arg form
 echo "all done" | tg-send                       # stdin form
 claude -p "summarize my email" | tg-send        # the recurring use case
 ```
@@ -201,7 +201,7 @@ claude -p "summarize my email" | tg-send        # the recurring use case
 ### One-shot reminders (`at`)
 
 ```bash
-echo 'tg-send "Reminder: check your Slack"' | at now + 5 minutes
+echo 'tg-send "Reminder: take your meds"' | at now + 5 minutes
 ```
 
 `at` runs the body as a shell script when the timer fires, so the body needs to *call* tg-send (not be piped *to* it). To list pending: `atq`. To cancel: `atrm <jobid>`.
