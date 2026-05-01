@@ -72,8 +72,8 @@ def create_browser(profile_id):
 	cdp_url = r.get('cdpUrl') or r.get('cdp_url')
 	ws = cdp_ws_from_url(cdp_url) if cdp_url else ''
 	# liveUrl points at the public live-view UI (https://live.browser-use.com/...).
-	# Same value GET /browsers/{id} returns; cached here so consumers don't need
-	# an extra API call.
+	# The CDP create response sets it server-side — same value GET /browsers/{id}
+	# returns. Empty string when the backend hasn't computed it yet (rare).
 	live_url = r.get('liveUrl') or r.get('live_url') or ''
 	expires_at = int(time.time() + SESSION_MIN * 60)
 	return bid, ws, live_url, expires_at

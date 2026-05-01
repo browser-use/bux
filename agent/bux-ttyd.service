@@ -1,0 +1,14 @@
+[Unit]
+Description=bux ttyd web terminal (localhost only)
+After=network-online.target
+
+[Service]
+Type=simple
+User=bux
+Group=bux
+ExecStart=/usr/local/bin/ttyd -i lo -p 7681 -W /usr/bin/claude
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

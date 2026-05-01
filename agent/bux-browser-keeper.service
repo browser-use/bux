@@ -1,0 +1,20 @@
+[Unit]
+Description=bux browser-keeper (long-lived Browser Use Cloud browser)
+After=network-online.target box-agent.service
+Wants=network-online.target
+ConditionPathExists=/etc/bux/env
+
+[Service]
+Type=simple
+User=bux
+Group=bux
+EnvironmentFile=/etc/bux/env
+WorkingDirectory=/opt/bux/agent
+ExecStart=/opt/bux/venv/bin/python /opt/bux/agent/browser_keeper.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/bux/keeper.log
+StandardError=append:/var/log/bux/keeper.log
+
+[Install]
+WantedBy=multi-user.target

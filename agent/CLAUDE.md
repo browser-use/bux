@@ -48,7 +48,7 @@ The user can interact with this box three ways. Mention the right one when it'd 
 
 ### 1. Telegram (primary)
 
-The default channel — the user texts the bot, you reply. You don't manage the bot yourself; just write your reply to stdout and the bot sends it. Slash-commands (`/queue`, `/cancel`, `/schedules`, `/live`, `/agent`) are handled by the bot directly, not by you.
+The default channel — the user texts the bot, you reply. You don't manage the bot yourself; just write your reply to stdout and the bot sends it. Slash-commands (`/queue`, `/cancel`, `/schedules`, `/live`, `/agent`, `/version`, `/update`) are handled by the bot directly, not by you.
 
 **Forum topics = parallel agent sessions.** If the user enables Topics in their chat, each topic is its own lane: independent claude session UUID, independent FIFO. Lanes run in parallel without a concurrency cap (so 10 topics ≈ 10 simultaneous claude turns — only the box's RAM is the limit). Within a topic messages still serialize, so for anything that'll take more than ~60s use the worker-self-notify pattern above.
 
@@ -176,14 +176,6 @@ Cookies + localStorage persist via the bound profile. A **fresh/empty profile** 
 
 This works for: login pages, SMS / email / authenticator 2FA, CAPTCHAs, cookie-consent dialogs that refuse to dismiss, session-expired re-auth, Cloudflare / anti-bot challenges — anything that needs a human touch. **Prefer handing off over trying to solve it yourself.** The user would rather click once and keep going than watch you burn 15 minutes fighting a login form.
 
-### Show the user what you see — often
-
-Take screenshots proactively at the start of a browser task, before any irreversible step (submit, send, pay), and at the end. Not on every nav — that's noise.
-
-Always pair the screenshot with the live URL (`source ~/.claude/browser.env && echo "$BU_BROWSER_LIVE_URL"`) so the user can take over instantly if something looks wrong.
-
-Mechanism: `Page.captureScreenshot` via `browser-harness-js` → write to `/tmp/<task>.png` → `curl` Telegram `sendPhoto` with the file → caption with the live URL.
-
 ### Live view (debugging / watch-along)
 
 Share the live URL any time the user asks "what is the browser doing?" or when you want them to watch along for a tricky flow:
@@ -230,7 +222,7 @@ When the user asks you to "remind me in 5 minutes", "schedule X for 9am tomorrow
 `tg-send` posts a message to the user's bound TG chat. It accepts the message either as an argument **or** on stdin, so it pipes naturally:
 
 ```bash
-tg-send "Reminder: check your Slack"            # arg form
+tg-send "Reminder: take your meds"              # arg form
 echo "all done" | tg-send                       # stdin form
 claude -p "summarize my email" | tg-send        # the recurring use case
 ```
@@ -244,7 +236,7 @@ claude -p "summarize my email" | tg-send        # the recurring use case
 ### One-shot reminders (`at`)
 
 ```bash
-echo 'tg-send "Reminder: check your Slack"' | at now + 5 minutes
+echo 'tg-send "Reminder: take your meds"' | at now + 5 minutes
 ```
 
 `at` runs the body as a shell script when the timer fires, so the body needs to *call* tg-send (not be piped *to* it). To list pending: `atq`. To cancel: `atrm <jobid>`.
@@ -273,6 +265,53 @@ Avoid spamming — daily reminders are usually fine, sub-hourly probably isn't u
 1. Pick the right tool: `at` for one-shot, `cron` for recurring.
 2. Wrap the work so it ends with `tg-send "<result>"`. The user must hear back.
 3. Confirm **what** and **when** (in UTC) so they can tell if you misparsed "5pm Pacific".
+
+## You can update yourself
+
+The bux agent code (this CLAUDE.md, the box-agent daemon, the TG bot, etc.) lives at `/opt/bux/repo` — a checkout of [github.com/browser-use/bux](https://github.com/browser-use/bux). You have full sudo, so you can edit your own code, push to the OSS repo, and pull updates onto this box.
+
+### Check version
+
+```bash
+git -C /opt/bux/repo rev-parse --short HEAD       # current commit
+git -C /opt/bux/repo rev-parse --abbrev-ref HEAD  # current branch (main / stable / etc.)
+git -C /opt/bux/repo log -5 --oneline             # recent history
+```
+
+The user can also send `/version` to the TG bot for the same info.
+
+### Check for updates
+
+```bash
+git -C /opt/bux/repo fetch origin
+git -C /opt/bux/repo rev-list --left-right --count HEAD...origin/main
+# format: "<ahead> <behind>" — "0 5" means 5 commits behind upstream
+```
+
+### Apply updates
+
+The user can `/update` in TG. From your shell:
+
+```bash
+sudo /bin/bash /opt/bux/repo/agent/bootstrap.sh
+```
+
+That re-runs the setup script which: `git pull`s, re-applies systemd units / cron, pip-installs any new requirements, and restarts box-agent + bux-tg. You will be killed at the tail of this — by the time the user sends another message you'll be running new code.
+
+### Propose changes back to the project
+
+If you find a bug or want to add a feature, you can PR upstream. The `gh` CLI is preinstalled. Suggested flow:
+
+```bash
+cd /opt/bux/repo
+git checkout -b fix-<short-description>
+# edit agent/<file>.py
+git add -A
+git commit -m "fix: <short message>"
+gh pr create --title "..." --body "..."
+```
+
+Then tell the user the PR number so they can review and merge. Once merged, `/update` (or sudo bootstrap.sh) pulls the merged change onto this box.
 
 ## Conventions on this box
 

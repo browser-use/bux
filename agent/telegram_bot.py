@@ -63,6 +63,11 @@ ALLOWED_FILE = Path("/etc/bux/tg-allowed.txt")
 STATE_FILE = Path("/etc/bux/tg-state.json")
 QUEUE_FILE = Path("/etc/bux/tg-queue.json")
 
+# Marker for "I've already told the user about this SHA". Lets transient
+# bux-tg restarts (systemd flaps, polling backoff) stay silent while
+# update-driven restarts (different SHA) announce themselves once.
+LAST_ANNOUNCED_SHA = Path("/var/lib/bux/last-announced.sha")
+
 # Per-lane session-uuid root. Bot creates lazily as bux-owned.
 SESSIONS_DIR = Path("/home/bux/.bux/sessions")
 # Pre-lane "global" session, written by the legacy bot. We migrate this into
@@ -1524,7 +1529,9 @@ class Bot:
                 "/queue — pending tasks in this topic\n"
                 "/cancel — drop everything pending in this topic\n"
                 "/cancel <id> — drop one pending task\n"
-                "/schedules — list reminders / cron jobs",
+                "/schedules — list reminders / cron jobs\n"
+                "/version — show the bux agent version\n"
+                "/update — pull latest code + restart (or /update <branch>)",
                 reply_to=mid,
                 thread_id=thread_id,
             )
@@ -1553,6 +1560,12 @@ class Bot:
             return
         if cmd == "/agent":
             self._cmd_agent(key, chat_id, mid, thread_id, arg)
+            return
+        if cmd == "/version":
+            self._cmd_version(chat_id, mid, thread_id)
+            return
+        if cmd == "/update":
+            self._cmd_update(chat_id, mid, thread_id, arg)
             return
 
         # Attachment + caption combo: download synchronously (small file) and
@@ -1863,6 +1876,203 @@ class Bot:
             with _lanes_lock:
                 _lane_workers.pop(slug, None)
 
+    # ----- Self-update -----
+
+    def _cmd_version(self, chat_id: int, reply_to: int | None, thread_id: int) -> None:
+        """Report the agent's git SHA + branch + last-commit-line.
+
+        Lets the user check "what version is my box on" without having to ssh
+        in or open the cloud admin UI. Reads straight from the cloned OSS
+        repo at /opt/bux/repo.
+        """
+        repo = "/opt/bux/repo"
+        try:
+            sha = (
+                subprocess.run(
+                    ["git", "-C", repo, "rev-parse", "--short", "HEAD"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                ).stdout.strip()
+                or "unknown"
+            )
+            branch = (
+                subprocess.run(
+                    ["git", "-C", repo, "rev-parse", "--abbrev-ref", "HEAD"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                ).stdout.strip()
+                or "unknown"
+            )
+            last = (
+                subprocess.run(
+                    ["git", "-C", repo, "log", "-1", "--pretty=%h %s"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                ).stdout.strip()
+                or "(no log)"
+            )
+            ahead_behind = ""
+            rc = subprocess.run(
+                ["git", "-C", repo, "fetch", "--quiet", "origin", branch],
+                capture_output=True,
+                timeout=10,
+            ).returncode
+            if rc == 0:
+                ab = (
+                    subprocess.run(
+                        [
+                            "git",
+                            "-C",
+                            repo,
+                            "rev-list",
+                            "--left-right",
+                            "--count",
+                            f"HEAD...origin/{branch}",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    .stdout.strip()
+                    .split()
+                )
+                if len(ab) == 2:
+                    ahead, behind = ab
+                    if behind != "0":
+                        ahead_behind = f" · *{behind} commits behind* (run /update to catch up)"
+                    elif ahead != "0":
+                        ahead_behind = f" · {ahead} commits ahead of origin"
+        except Exception:
+            LOG.exception("/version failed")
+            self.send(chat_id, "Could not read version.", reply_to=reply_to, thread_id=thread_id)
+            return
+        body = (
+            f"*bux* on `{branch}`\n"
+            f"`{sha}` — {last}{ahead_behind}\n\n"
+            "_Source: github.com/browser-use/bux_"
+        )
+        self.send(chat_id, body, reply_to=reply_to, thread_id=thread_id, markdown=True)
+
+    def _cmd_update(self, chat_id: int, reply_to: int | None, thread_id: int, branch: str) -> None:
+        """Pull latest agent code from OSS and restart services.
+
+        Branch defaults to whatever the box is tracking (`main` for now). Pass
+        `/update <branch>` to switch tracks (e.g. /update stable).
+
+        The restart kills this very process, so we send the ack BEFORE invoking
+        bootstrap.sh. The new agent comes up within ~10s and the user's next
+        message lands fine.
+        """
+        repo = "/opt/bux/repo"
+        target = (
+            (branch or "").strip()
+            or subprocess.run(
+                ["git", "-C", repo, "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            ).stdout.strip()
+            or "main"
+        )
+
+        self.send(
+            chat_id,
+            f"⏳ Updating to latest `{target}`…",
+            reply_to=reply_to,
+            thread_id=thread_id,
+            markdown=True,
+        )
+
+        try:
+            # Widen the fetch refspec to all branches if it isn't already.
+            # install.sh clones with --branch main, leaving a single-branch
+            # remote that can't reach feature branches by name. Idempotent.
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    repo,
+                    "config",
+                    "--replace-all",
+                    "remote.origin.fetch",
+                    "+refs/heads/*:refs/remotes/origin/*",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            r = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    repo,
+                    "fetch",
+                    "--prune",
+                    "origin",
+                    f"+refs/heads/{target}:refs/remotes/origin/{target}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if r.returncode != 0:
+                self.send(
+                    chat_id,
+                    f"❌ git fetch failed: {r.stderr[:300]}",
+                    reply_to=reply_to,
+                    thread_id=thread_id,
+                )
+                return
+            # checkout -B (not reset --hard) so HEAD's symbolic-ref points at
+            # the requested branch. reset --hard moves whatever-branch-we're-
+            # on to the target commit without switching branches — so /version
+            # still reports the old branch name after update.
+            r = subprocess.run(
+                ["git", "-C", repo, "checkout", "-B", target, "--track", f"origin/{target}"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if r.returncode != 0:
+                self.send(
+                    chat_id,
+                    f"❌ git checkout failed: {r.stderr[:300]}",
+                    reply_to=reply_to,
+                    thread_id=thread_id,
+                )
+                return
+            new_sha = subprocess.run(
+                ["git", "-C", repo, "rev-parse", "--short", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            ).stdout.strip()
+            self.send(
+                chat_id,
+                f"✓ Pulled `{new_sha}`. Restarting bux…",
+                reply_to=reply_to,
+                thread_id=thread_id,
+                markdown=True,
+            )
+            # bux-tg.service runs as root so this is direct — no sudo needed.
+            # Fire-and-forget; the restart kills us before we'd wait.
+            subprocess.Popen(
+                ["/bin/bash", f"{repo}/agent/bootstrap.sh"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:
+            LOG.exception("/update failed")
+            self.send(
+                chat_id,
+                f"❌ update failed: {e}",
+                reply_to=reply_to,
+                thread_id=thread_id,
+            )
+
     # ----- Live URL -----
 
     def _live_url(self) -> str:
@@ -1933,6 +2143,61 @@ class Bot:
                 time.sleep(5)
 
 
+def _announce_online_if_new_sha(bot: "Bot") -> None:
+    """Tell every bound chat "✓ bux online (sha=…)" — but only once per SHA.
+
+    Why a marker file instead of always-announce: bux-tg gets restarted by
+    plenty of things that aren't user-initiated updates — systemd flaps,
+    long-poll backoff escapes, the post-update agent restart itself. A naive
+    "always send on startup" would spam the chat every time the service
+    blips. So we cache the last SHA we announced in
+    /var/lib/bux/last-announced.sha; same SHA → silent restart, different
+    SHA (or first ever boot) → one message.
+
+    No-op if no chat is bound yet (fresh install pre-/start). Best-effort
+    throughout — failure to announce must never block bot startup, since the
+    announcement is courtesy and the bot is the recovery surface.
+    """
+    try:
+        repo = "/opt/bux/repo"
+        sha = subprocess.run(
+            ["git", "-C", repo, "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        ).stdout.strip()
+        if not sha:
+            return
+        try:
+            last = LAST_ANNOUNCED_SHA.read_text().strip()
+        except FileNotFoundError:
+            last = ""
+        if sha == last:
+            return
+        branch = (
+            subprocess.run(
+                ["git", "-C", repo, "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            ).stdout.strip()
+            or "?"
+        )
+        chats = load_allow()
+        text = f"✓ bux online (sha={sha}, branch={branch})"
+        for chat_id in chats:
+            try:
+                bot.send(chat_id, text)
+            except Exception:
+                LOG.exception("online-announce send failed for chat %s", chat_id)
+        # Write only after at least one send attempt, so a transient TG
+        # outage doesn't permanently suppress the announcement.
+        LAST_ANNOUNCED_SHA.parent.mkdir(parents=True, exist_ok=True)
+        LAST_ANNOUNCED_SHA.write_text(sha + "\n")
+    except Exception:
+        LOG.exception("announce_online_if_new_sha failed")
+
+
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -1952,6 +2217,9 @@ def main() -> int:
     # poll loop and lazily spawns lane workers as messages arrive.
     _lanes_init()
     bot = Bot(token, setup_token)
+    # Announce *before* poll_loop so the user gets the "back online" ping
+    # immediately on restart, not whenever the first long-poll completes.
+    _announce_online_if_new_sha(bot)
     bot.poll_loop()
     return 0
 
