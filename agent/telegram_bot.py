@@ -863,7 +863,9 @@ class Bot:
 				'/queue — see pending tasks\n'
 				'/cancel — drop everything pending\n'
 				'/cancel <id> — drop one pending task\n'
-				'/schedules — list reminders / cron jobs (ask claude to cancel)',
+				'/schedules — list reminders / cron jobs (ask claude to cancel)\n'
+				'/version — show the bux agent version\n'
+				'/update — pull latest code + restart (or /update <branch>)',
 			)
 			return
 		if cmd == '/whoami':
@@ -880,6 +882,12 @@ class Bot:
 			return
 		if cmd in ('/schedules', '/schedule'):
 			self._cmd_schedules(chat_id, mid)
+			return
+		if cmd == '/version':
+			self._cmd_version(chat_id, mid)
+			return
+		if cmd == '/update':
+			self._cmd_update(chat_id, mid, arg)
 			return
 
 		# Enqueue and acknowledge. Worker thread does the actual claude run
@@ -1070,6 +1078,123 @@ class Bot:
 		lines.append('')
 		lines.append('_To cancel: ask claude ("cancel the 9am reminder")._')
 		self.send(chat_id, '\n'.join(lines), reply_to=reply_to, markdown=True)
+
+	def _cmd_version(self, chat_id: int, reply_to: int | None) -> None:
+		"""Report the agent's git SHA + branch + last-commit-line.
+
+		Lets the user check "what version is my box on" without having
+		to ssh in or open the cloud admin UI. Reads straight from the
+		cloned OSS repo at /opt/bux/repo.
+		"""
+		repo = '/opt/bux/repo'
+		try:
+			sha = subprocess.run(
+				['git', '-C', repo, 'rev-parse', '--short', 'HEAD'],
+				capture_output=True, text=True, timeout=3,
+			).stdout.strip() or 'unknown'
+			branch = subprocess.run(
+				['git', '-C', repo, 'rev-parse', '--abbrev-ref', 'HEAD'],
+				capture_output=True, text=True, timeout=3,
+			).stdout.strip() or 'unknown'
+			# Last commit summary (one line, no fancy formatting).
+			last = subprocess.run(
+				['git', '-C', repo, 'log', '-1', '--pretty=%h %s'],
+				capture_output=True, text=True, timeout=3,
+			).stdout.strip() or '(no log)'
+			# Behind/ahead vs origin/<branch>.
+			ahead_behind = ''
+			rc = subprocess.run(
+				['git', '-C', repo, 'fetch', '--quiet', 'origin', branch],
+				capture_output=True, timeout=10,
+			).returncode
+			if rc == 0:
+				ab = subprocess.run(
+					['git', '-C', repo, 'rev-list', '--left-right', '--count',
+					 f'HEAD...origin/{branch}'],
+					capture_output=True, text=True, timeout=5,
+				).stdout.strip().split()
+				if len(ab) == 2:
+					ahead, behind = ab
+					if behind != '0':
+						ahead_behind = f' · *{behind} commits behind* (run /update to catch up)'
+					elif ahead != '0':
+						ahead_behind = f' · {ahead} commits ahead of origin'
+		except Exception:
+			LOG.exception('/version failed')
+			self.send(chat_id, 'Could not read version.', reply_to=reply_to)
+			return
+		body = (
+			f'*bux* on `{branch}`\n'
+			f'`{sha}` — {last}{ahead_behind}\n\n'
+			'_Source: github.com/browser-use/bux_'
+		)
+		self.send(chat_id, body, reply_to=reply_to, markdown=True)
+
+	def _cmd_update(self, chat_id: int, reply_to: int | None, branch: str) -> None:
+		"""Pull latest agent code from OSS and restart services.
+
+		Branch defaults to whatever the box is tracking (`main` for now).
+		Pass `/update <branch>` to switch tracks (e.g. /update stable).
+
+		The restart kills this very process, so we send the ack BEFORE
+		invoking bootstrap.sh. The new agent comes up within ~10s and
+		the user's next message lands fine.
+		"""
+		repo = '/opt/bux/repo'
+		target = (branch or '').strip() or subprocess.run(
+			['git', '-C', repo, 'rev-parse', '--abbrev-ref', 'HEAD'],
+			capture_output=True, text=True, timeout=3,
+		).stdout.strip() or 'main'
+
+		# Acknowledge first so the user gets a reply even if bootstrap
+		# kills us mid-flight.
+		self.send(
+			chat_id,
+			f'⏳ Updating to latest `{target}`…',
+			reply_to=reply_to,
+			markdown=True,
+		)
+
+		try:
+			# Fetch + reset.
+			r = subprocess.run(
+				['git', '-C', repo, 'fetch', '--prune', 'origin'],
+				capture_output=True, text=True, timeout=60,
+			)
+			if r.returncode != 0:
+				self.send(chat_id, f'❌ git fetch failed: {r.stderr[:300]}', reply_to=reply_to)
+				return
+			r = subprocess.run(
+				['git', '-C', repo, 'reset', '--hard', f'origin/{target}'],
+				capture_output=True, text=True, timeout=15,
+			)
+			if r.returncode != 0:
+				self.send(chat_id, f'❌ git reset failed: {r.stderr[:300]}', reply_to=reply_to)
+				return
+			new_sha = subprocess.run(
+				['git', '-C', repo, 'rev-parse', '--short', 'HEAD'],
+				capture_output=True, text=True, timeout=3,
+			).stdout.strip()
+			# Tell the user the new SHA *now*, before bootstrap kills us.
+			self.send(
+				chat_id,
+				f'✓ Pulled `{new_sha}`. Restarting bux…',
+				reply_to=reply_to,
+				markdown=True,
+			)
+			# Run bootstrap.sh as root. bux-tg.service runs as root so
+			# this is direct — no sudo needed. bootstrap.sh re-applies
+			# systemd units / cron / pip deps, then restarts box-agent
+			# AND bux-tg (since both are active). This Popen call is
+			# fire-and-forget; the restart kills us before we'd wait.
+			subprocess.Popen(
+				['/bin/bash', f'{repo}/agent/bootstrap.sh'],
+				stdout=subprocess.DEVNULL,
+				stderr=subprocess.DEVNULL,
+			)
+		except Exception as e:
+			LOG.exception('/update failed')
+			self.send(chat_id, f'❌ update failed: {e}', reply_to=reply_to)
 
 	def queue_worker(self) -> None:
 		"""Single drain loop. Pops one job at a time, runs claude, replies.

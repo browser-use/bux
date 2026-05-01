@@ -231,6 +231,53 @@ Avoid spamming — daily reminders are usually fine, sub-hourly probably isn't u
 2. Wrap the work so it ends with `tg-send "<result>"`. The user must hear back.
 3. Confirm **what** and **when** (in UTC) so they can tell if you misparsed "5pm Pacific".
 
+## You can update yourself
+
+The bux agent code (this CLAUDE.md, the box-agent daemon, the TG bot, etc.) lives at `/opt/bux/repo` — a checkout of [github.com/browser-use/bux](https://github.com/browser-use/bux). You have full sudo, so you can edit your own code, push to the OSS repo, and pull updates onto this box.
+
+### Check version
+
+```bash
+git -C /opt/bux/repo rev-parse --short HEAD       # current commit
+git -C /opt/bux/repo rev-parse --abbrev-ref HEAD  # current branch (main / stable / etc.)
+git -C /opt/bux/repo log -5 --oneline             # recent history
+```
+
+The user can also send `/version` to the TG bot for the same info.
+
+### Check for updates
+
+```bash
+git -C /opt/bux/repo fetch origin
+git -C /opt/bux/repo rev-list --left-right --count HEAD...origin/main
+# format: "<ahead> <behind>" — "0 5" means 5 commits behind upstream
+```
+
+### Apply updates
+
+The user can `/update` in TG. From your shell:
+
+```bash
+sudo /bin/bash /opt/bux/repo/agent/bootstrap.sh
+```
+
+That re-runs the setup script which: `git pull`s, re-applies systemd units / cron, pip-installs any new requirements, and restarts box-agent + bux-tg. You will be killed at the tail of this — by the time the user sends another message you'll be running new code.
+
+### Propose changes back to the project
+
+If you find a bug or want to add a feature, you can PR upstream. The `gh` CLI is preinstalled. Suggested flow:
+
+```bash
+cd /opt/bux/repo
+git checkout -b fix-<short-description>
+# edit agent/<file>.py
+git add -A
+git commit -m "fix: <short message>"
+gh pr create --title "..." --body "..."
+```
+
+Then tell the user the PR number so they can review and merge. Once merged, `/update` (or sudo bootstrap.sh) pulls the merged change onto this box.
+
 ## Conventions on this box
 
 - **Working directory**: default is `/home/bux`. Keep task artifacts here.

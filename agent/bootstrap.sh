@@ -62,6 +62,12 @@ fi
 # The agent (running as bux) shells out `systemctl restart bux-tg` after
 # writing /etc/bux/tg.env. Without this rule, polkit would require an
 # interactive prompt or sudo.
+# --- git safe.directory so root tools can read the bux-owned repo --------
+# /opt/bux/repo is owned by bux. When telegram_bot.py (User=root) shells
+# out to git for /version or /update, git rejects with "dubious ownership"
+# unless we trust the dir. System-wide config is the cleanest fix.
+git config --system --add safe.directory /opt/bux/repo
+
 # --- sudoers: let bux re-run bootstrap.sh during self-update --------------
 # box-agent runs as bux. The `update` cmd handler does git pull + bash
 # bootstrap.sh; bootstrap.sh writes /etc/systemd/* and /etc/cron.d/*, which
