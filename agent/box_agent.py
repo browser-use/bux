@@ -1182,13 +1182,19 @@ class Agent:
 			})
 			return
 
-		rc, out = _run(['git', 'reset', '--hard', f'origin/{target_branch}'])
+		# checkout -B (not reset --hard) so HEAD's symbolic-ref actually
+		# points at the requested branch. `reset --hard origin/<x>`
+		# moves whatever-branch-we're-on to the target commit but
+		# doesn't switch branches — so /version on the box reports the
+		# stale branch name even after a successful update. -B force-
+		# creates/resets the local branch to track origin's, idempotent.
+		rc, out = _run(['git', 'checkout', '-B', target_branch, '--track', f'origin/{target_branch}'])
 		if rc != 0:
-			LOG.warning('update: git reset failed: %s', out)
+			LOG.warning('update: git checkout failed: %s', out)
 			await self._send({
 				'type': 'update_result', 'request_id': request_id,
 				'ok': False,
-				'error': f'reset: {out[:200]}',
+				'error': f'checkout: {out[:200]}',
 			})
 			return
 

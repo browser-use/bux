@@ -1178,12 +1178,16 @@ class Bot:
 			if r.returncode != 0:
 				self.send(chat_id, f'❌ git fetch failed: {r.stderr[:300]}', reply_to=reply_to)
 				return
+			# checkout -B (not reset --hard) so HEAD's symbolic-ref points
+			# at the requested branch. reset --hard moves whatever-branch-
+			# we're-on to the target commit without switching branches —
+			# so /version still reports the old branch name after update.
 			r = subprocess.run(
-				['git', '-C', repo, 'reset', '--hard', f'origin/{target}'],
+				['git', '-C', repo, 'checkout', '-B', target, '--track', f'origin/{target}'],
 				capture_output=True, text=True, timeout=15,
 			)
 			if r.returncode != 0:
-				self.send(chat_id, f'❌ git reset failed: {r.stderr[:300]}', reply_to=reply_to)
+				self.send(chat_id, f'❌ git checkout failed: {r.stderr[:300]}', reply_to=reply_to)
 				return
 			new_sha = subprocess.run(
 				['git', '-C', repo, 'rev-parse', '--short', 'HEAD'],
