@@ -1126,14 +1126,14 @@ class Bot:
         cmd = ["sudo", "-u", "bux", "-H"] + [f"{k}={v}" for k, v in env.items() if v]
         cmd += [codex_bin, "exec", "--json", "--skip-git-repo-check", prompt]
 
-        try:
-            # stderr → file rather than DEVNULL so the no-output path can
-            # surface the actual error message to the user (codex tends to
-            # print friendly errors to stderr on auth / rate-limit issues).
-            # Using a tempfile (not PIPE) avoids the 64 KB pipe deadlock.
-            import tempfile
+        # stderr → file rather than DEVNULL so the no-output path can
+        # surface the actual error message to the user (codex tends to
+        # print friendly errors to stderr on auth / rate-limit issues).
+        # Using a tempfile (not PIPE) avoids the 64 KB pipe deadlock.
+        import tempfile
 
-            stderr_buf = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
+        stderr_buf = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
+        try:
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -1142,6 +1142,14 @@ class Bot:
                 cwd=str(WORKSPACE),
             )
         except Exception as e:
+            # Popen never produced a child — close the stderr tempfile
+            # ourselves; nothing else will. Without this the FD leaks per
+            # failed spawn (rare, but a misconfigured PATH or OOM at fork
+            # time would silently drain the bot's FD table over time).
+            try:
+                stderr_buf.close()
+            except Exception:
+                pass
             self.react(chat_id, reply_to, EMOJI_ERROR)
             self.send(
                 chat_id,
@@ -1521,6 +1529,17 @@ class Bot:
                     thread_id=thread_id,
                 )
                 return
+            # Sticker / contact / location / poll / dice / etc. — none of which
+            # we can usefully forward to claude. Acknowledge politely instead
+            # of dispatching a "look at the attached file" prompt with no
+            # actual file behind it.
+            self.send(
+                chat_id,
+                "I don't know how to handle that — text, photos, documents, and voice notes only.",
+                reply_to=mid,
+                thread_id=thread_id,
+            )
+            return
         final_prompt = (attach_prefix + text).strip() or (
             "Look at the attached file and tell me what it is."
         )
