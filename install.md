@@ -63,7 +63,8 @@ The script:
 1. Installs Node.js 24 + Claude Code + ttyd + browser-harness
 2. Creates a `bux` system user with its own venv
 3. Drops the browser-keeper + telegram-bot + systemd units
-4. Starts everything
+4. Installs [ztk](https://github.com/codejunkie99/ztk) (pinned) — compresses long Bash tool outputs before they hit Claude's context. Opt out with `WITH_ZTK=0`.
+5. Starts everything
 
 Takes ~2-3 minutes on a fresh box. Idempotent — safe to rerun after edits.
 

@@ -13,11 +13,30 @@
 # from. Set it to a commit sha if you want to pin:
 #   curl … | sudo BUX_REF=<sha> BROWSER_USE_API_KEY=bu_xxx bash
 #
+# Optional env vars:
+#   BROWSER_USE_API_KEY  — Browser Use Cloud key (required; prompts if missing)
+#   TG_BOT_TOKEN         — Telegram bot token (enables the TG bot if set)
+#   WITH_ZTK             — install ztk (default 1; set to 0 to skip). ztk is a
+#                          Zig CLI that compresses long Bash tool outputs
+#                          (git diff, ls, test runners) before they hit
+#                          Claude's context. https://github.com/codejunkie99/ztk
+#
 # Re-running the script is idempotent. It will reuse existing tokens and
 # configuration; delete /etc/bux/ to start clean.
 set -euo pipefail
 
 BUX_REF="${BUX_REF:-main}"
+WITH_ZTK="${WITH_ZTK:-1}"
+
+# --- pinned versions -------------------------------------------------------
+# Keep all third-party version pins together so bumping is a single edit.
+# SHAs are sourced from the upstream release index / git refs at pin time.
+ZTK_VERSION='v0.2.1'
+# codejunkie99/ztk @ tag v0.2.1
+ZTK_COMMIT_SHA='c52634463811f2325a63d691dcb4d06437e93846'
+ZIG_VERSION='0.16.0'
+# from https://ziglang.org/download/index.json -> 0.16.0 -> x86_64-linux.shasum
+ZIG_X86_64_LINUX_SHA256='70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00'
 
 # --- pretty output ---------------------------------------------------------
 c_bold=$'\033[1m'; c_dim=$'\033[2m'; c_green=$'\033[32m'; c_red=$'\033[31m'; c_reset=$'\033[0m'
@@ -249,6 +268,81 @@ if [ -f /home/bux/.claude/skills/cdp/sdk/browser-harness-js ]; then
 	ln -sf /home/bux/.claude/skills/cdp/sdk/browser-harness-js /usr/local/bin/browser-harness-js
 	chmod +x /home/bux/.claude/skills/cdp/sdk/browser-harness-js
 fi
+
+# --- ztk (compresses Bash tool outputs before they hit context) ------------
+# https://github.com/codejunkie99/ztk — Zig CLI that registers a PreToolUse
+# hook in ~/.claude/settings.json and compresses long stdout (git diff, ls,
+# test runners, …) so they don't blow the context window. Source-audited:
+# no network calls, no secret reads. Opt out with WITH_ZTK=0.
+install_ztk() {
+	if [ "$WITH_ZTK" != "1" ]; then
+		say 'skipping ztk (WITH_ZTK=0)'
+		return 0
+	fi
+
+	# Only x86_64 is pinned — Zig 0.16.0 ships aarch64 too, but we haven't
+	# pinned that SHA yet. Skip cleanly on other arches rather than building
+	# from an un-verified tarball.
+	if [ "$arch" != 'x86_64' ]; then
+		warn "ztk: skipping (no pinned Zig SHA for $arch)"
+		return 0
+	fi
+
+	# Already at the pinned version? Nothing to do beyond re-running the
+	# hook setup (cheap; idempotent JSON merge).
+	if command -v ztk >/dev/null 2>&1 \
+		&& ztk --version 2>/dev/null | grep -q "${ZTK_VERSION#v}"; then
+		say "ztk ${ZTK_VERSION} already installed"
+	else
+		say "installing ztk ${ZTK_VERSION} (Zig ${ZIG_VERSION})"
+
+		# 1. Zig toolchain at /opt/zig (single global location, not per-user).
+		zig_bin='/opt/zig/zig'
+		if [ ! -x "$zig_bin" ] \
+			|| ! "$zig_bin" version 2>/dev/null | grep -qx "$ZIG_VERSION"; then
+			say "fetching Zig ${ZIG_VERSION}"
+			tmp_zig="$(mktemp -d)"
+			zig_url="https://ziglang.org/download/${ZIG_VERSION}/zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+			curl -fsSL "$zig_url" -o "$tmp_zig/zig.tar.xz"
+			got_sha=$(sha256sum "$tmp_zig/zig.tar.xz" | awk '{print $1}')
+			if [ "$got_sha" != "$ZIG_X86_64_LINUX_SHA256" ]; then
+				rm -rf "$tmp_zig"
+				die "Zig SHA mismatch: got $got_sha"
+			fi
+			tar -xJf "$tmp_zig/zig.tar.xz" -C "$tmp_zig"
+			rm -rf /opt/zig
+			mv "$tmp_zig/zig-x86_64-linux-${ZIG_VERSION}" /opt/zig
+			rm -rf "$tmp_zig"
+		fi
+
+		# 2. ztk source at /opt/ztk-src, checked out to the pinned commit.
+		if [ ! -d /opt/ztk-src/.git ]; then
+			rm -rf /opt/ztk-src
+			git clone --quiet https://github.com/codejunkie99/ztk /opt/ztk-src
+		fi
+		git -C /opt/ztk-src fetch --quiet --tags origin
+		git -C /opt/ztk-src checkout --quiet "$ZTK_COMMIT_SHA"
+
+		# 3. Build & install system-wide.
+		( cd /opt/ztk-src && "$zig_bin" build -Doptimize=ReleaseSmall )
+		# zig build drops the binary in zig-out/bin/ztk
+		install -m 0755 /opt/ztk-src/zig-out/bin/ztk /usr/local/bin/ztk
+	fi
+
+	# 4. Hook setup for the bux user. ztk init -g merges into existing
+	# ~/.claude/settings.json (JSON merge, doesn't clobber other hooks).
+	# Make sure the file exists first so init -g has something to merge with.
+	install -d -o bux -g bux -m 0755 /home/bux/.claude
+	if [ ! -f /home/bux/.claude/settings.json ]; then
+		install -o bux -g bux -m 0644 /dev/null /home/bux/.claude/settings.json
+		echo '{}' > /home/bux/.claude/settings.json
+		chown bux:bux /home/bux/.claude/settings.json
+	fi
+	sudo -u bux -H ztk init -g >/dev/null
+	ok 'ztk installed and PreToolUse hook registered'
+}
+
+install_ztk
 
 # --- ttyd (web terminal, localhost only) -----------------------------------
 # Per-arch SHA256 from https://github.com/tsl0922/ttyd/releases/tag/1.7.7.
