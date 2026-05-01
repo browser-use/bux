@@ -1146,23 +1146,41 @@ class Agent:
 			except Exception as e:
 				return 1, str(e)
 
-		# Fetch first (cheap; survives transient failures by failing here
-		# before we touch local state). box-agent runs as bux which owns
-		# the repo, so no sudo needed.
-		rc, out = _run(['git', 'fetch', '--prune', 'origin'])
+		# Determine target branch: explicit > current.
+		target_branch = branch or _get_agent_branch()
+		if target_branch == 'unknown':
+			target_branch = 'main'
+
+		# install.sh clones with --branch main, which creates a single-
+		# branch remote (refs/heads/main:refs/remotes/origin/main). A
+		# bare `git fetch origin` then only pulls main, and `reset --hard
+		# origin/<other>` fails with "unknown revision". Widen the remote
+		# refspec to all branches the first time we update — idempotent
+		# (--replace-all overwrites any existing single-branch refspec).
+		rc, out = _run([
+			'git', 'config', '--replace-all',
+			'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*',
+		])
+		if rc != 0:
+			LOG.warning('update: widening fetch refspec failed: %s', out)
+			# Non-fatal — the explicit fetch below still works on
+			# single-branch clones for the requested ref.
+
+		# Fetch the target branch explicitly. The `:refs/remotes/...`
+		# form works whether or not the refspec was successfully widened,
+		# and survives single-branch clones from before this fix shipped.
+		rc, out = _run([
+			'git', 'fetch', '--prune', 'origin',
+			f'+refs/heads/{target_branch}:refs/remotes/origin/{target_branch}',
+		])
 		if rc != 0:
 			LOG.warning('update: git fetch failed: %s', out)
 			await self._send({
 				'type': 'update_result', 'request_id': request_id,
 				'ok': False,
-				'error': f'fetch: {out[:200]}',
+				'error': f'fetch {target_branch}: {out[:200]}',
 			})
 			return
-
-		# Determine target branch: explicit > current.
-		target_branch = branch or _get_agent_branch()
-		if target_branch == 'unknown':
-			target_branch = 'main'
 
 		rc, out = _run(['git', 'reset', '--hard', f'origin/{target_branch}'])
 		if rc != 0:
