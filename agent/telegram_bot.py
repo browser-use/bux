@@ -1160,9 +1160,19 @@ class Bot:
 		)
 
 		try:
-			# Fetch + reset.
+			# Widen the fetch refspec to all branches if it isn't already.
+			# install.sh clones with --branch main, leaving a single-branch
+			# remote that can't reach feature branches by name. Idempotent.
+			subprocess.run(
+				['git', '-C', repo, 'config', '--replace-all',
+				 'remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*'],
+				capture_output=True, text=True, timeout=5,
+			)
+			# Explicit refspec form so this works on boxes that haven't
+			# run the widening step yet (older bux installs).
 			r = subprocess.run(
-				['git', '-C', repo, 'fetch', '--prune', 'origin'],
+				['git', '-C', repo, 'fetch', '--prune', 'origin',
+				 f'+refs/heads/{target}:refs/remotes/origin/{target}'],
 				capture_output=True, text=True, timeout=60,
 			)
 			if r.returncode != 0:
