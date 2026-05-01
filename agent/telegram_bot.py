@@ -82,11 +82,6 @@ REPLY_MAX = 3500  # TG's hard cap is 4096; keep headroom for reply trailers.
 # returns ok but the subsequent download URL 404s past that. Bail early.
 TG_MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
 
-# Wall-clock cap for a single agent invocation. A wedged claude (network
-# stall in a tool, infinite loop, runaway sub-agent) would otherwise pin
-# its lane forever. The watchdog kills the proc and the stream loop exits.
-MAX_TASK_SECONDS = 1800  # 30 min
-
 # Reaction emojis on the user's message. Telegram's free-tier reaction
 # allowlist excludes ⏳/✅/⚠️/❌ — these are verified-allowed picks.
 EMOJI_WORKING = "🤔"
@@ -529,9 +524,10 @@ def _set_agent_for(key: LaneKey, agent: str, state: dict) -> None:
 # Each lane has its own queue (in-memory, mirrored to QUEUE_FILE). A lane
 # worker thread drains its lane and exits when empty; the next enqueue
 # spawns a fresh worker. No cross-lane concurrency cap — every active topic
-# can run in parallel. The user can have 20 simultaneous claude turns if
-# their box has the RAM for it (the watchdog kills wedged procs after
-# MAX_TASK_SECONDS so a stuck lane doesn't park indefinitely).
+# can run in parallel. No wall-clock cap either: an agent can run for
+# hours if it needs to (long browser flows, deep research, big edits).
+# A genuinely-stuck claude pid sits forever until the user kills it from
+# ssh; that cost is local to one topic, the others keep working.
 #
 # Within a lane, jobs serialize — same agent session UUID, no concurrent
 # writes from two procs against the same on-disk transcript.
@@ -972,10 +968,9 @@ class Bot:
             )
             return
 
-        # Wall-clock watchdog: a hung tool call would otherwise park this
-        # lane forever (the stdout iterator blocks on read). Kill after
-        # MAX_TASK_SECONDS; the for-loop then exits via stdout EOF.
-        self._spawn_proc_watchdog(proc, MAX_TASK_SECONDS)
+        # No wall-clock cap: the agent can run as long as the user's task
+        # needs. A genuinely-stuck claude pid sits forever until the user
+        # kills it from ssh; that cost is local to one topic.
 
         any_text = False
         assert proc.stdout is not None
@@ -1159,8 +1154,6 @@ class Bot:
             )
             return
 
-        self._spawn_proc_watchdog(proc, MAX_TASK_SECONDS)
-
         any_text = False
         assert proc.stdout is not None
         try:
@@ -1243,33 +1236,6 @@ class Bot:
             if os.path.isfile(p) and os.access(p, os.X_OK):
                 return p
         return None
-
-    @staticmethod
-    def _spawn_proc_watchdog(proc: subprocess.Popen, max_seconds: float) -> None:
-        """Daemon thread that SIGKILLs `proc` after `max_seconds` if still alive.
-
-        The streaming-loop reads stdout via a blocking iterator; without this,
-        a wedged claude/codex tool call (network stall, infinite loop) would
-        park the lane forever. Killing the proc closes its stdout, which
-        raises StopIteration in the for-loop and unwinds cleanly.
-        """
-
-        def _run() -> None:
-            # Loop in 1s slices so a quick-finishing proc doesn't sleep the
-            # full max_seconds before the thread dies.
-            for _ in range(int(max_seconds)):
-                if proc.poll() is not None:
-                    return
-                time.sleep(1)
-            if proc.poll() is None:
-                LOG.warning("watchdog killing pid=%s after %ds", proc.pid, max_seconds)
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-
-        t = threading.Thread(target=_run, name=f"watchdog-{proc.pid}", daemon=True)
-        t.start()
 
     # ----- Binding flow -----
 
