@@ -45,11 +45,17 @@ LOG = logging.getLogger("bux-tg")
 TG_ENV = Path("/etc/bux/tg.env")
 BOX_ENV = Path("/etc/bux/env")
 BROWSER_ENV = Path("/home/bux/.claude/browser.env")
+OPENAI_ENV = Path("/home/bux/.secrets/openai.env")
 ALLOWED_FILE = Path("/etc/bux/tg-allowed.txt")
 STATE_FILE = Path("/etc/bux/tg-state.json")
 QUEUE_FILE = Path("/etc/bux/tg-queue.json")
 POLL_TIMEOUT = 30
 REPLY_MAX = 3500  # TG's limit is 4096; we chunk anyway
+
+# Telegram Bot API caps file downloads at 20 MB on the free tier — getFile
+# returns ok but the subsequent download URL 404s past that. Bail early with
+# a friendly message instead of trying.
+TG_MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
 
 # Persisted message queue. Each item is a Job dict:
 #   id, chat_id, message_id, prompt, queued_at, status ∈ {queued, in_flight}
@@ -528,6 +534,58 @@ def _try_acquire_claude_lock() -> int | None:
         return None
 
 
+def _load_openai_key() -> str | None:
+    """Read OPENAI_API_KEY from /home/bux/.secrets/openai.env.
+
+    The file is mode 600 owned by bux; we run as root so we can read it.
+    Don't add the key to the systemd EnvironmentFile — keep it on disk so
+    it can be rotated without a service restart. Returns None if missing
+    or unset, so callers can degrade gracefully (reply with a friendly
+    "voice transcription unavailable" instead of crashing the worker).
+    """
+    if not OPENAI_ENV.exists():
+        return None
+    kv = _read_kv(OPENAI_ENV)
+    key = kv.get("OPENAI_API_KEY") or ""
+    return key or None
+
+
+def _extract_media(msg: dict) -> tuple[str | None, str, int]:
+    """If `msg` carries a voice / audio / video_note, return
+    (file_id, suggested_filename, file_size). Otherwise (None, '', 0).
+
+    Whisper sniffs by extension, so we pick a plausible one based on which
+    field carried the file: voice notes are opus-in-ogg, video_notes are
+    mp4, audio uses whatever mime_type Telegram surfaced (with .mp3 as a
+    safe default).
+    """
+    if "voice" in msg and isinstance(msg["voice"], dict):
+        v = msg["voice"]
+        return v.get("file_id"), "voice.ogg", int(v.get("file_size") or 0)
+    if "video_note" in msg and isinstance(msg["video_note"], dict):
+        v = msg["video_note"]
+        return v.get("file_id"), "video_note.mp4", int(v.get("file_size") or 0)
+    if "audio" in msg and isinstance(msg["audio"], dict):
+        a = msg["audio"]
+        # Best-effort extension from mime_type or file_name.
+        fname = a.get("file_name") or ""
+        mime = a.get("mime_type") or ""
+        if fname and "." in fname:
+            ext = fname.rsplit(".", 1)[1].lower()
+        elif "mpeg" in mime or "mp3" in mime:
+            ext = "mp3"
+        elif "mp4" in mime or "m4a" in mime or "aac" in mime:
+            ext = "m4a"
+        elif "ogg" in mime or "opus" in mime:
+            ext = "ogg"
+        elif "wav" in mime:
+            ext = "wav"
+        else:
+            ext = "mp3"
+        return a.get("file_id"), f"audio.{ext}", int(a.get("file_size") or 0)
+    return None, "", 0
+
+
 class Bot:
     def __init__(self, token: str, setup_token: str) -> None:
         self.token = token
@@ -685,6 +743,66 @@ class Bot:
             _release_claude_lock(lock_fd)
 
     # ------------------------------------------------------------------
+    def _transcribe_media(self, file_id: str, filename: str) -> tuple[str | None, str | None]:
+        """Resolve a TG file_id, download the bytes, send to Whisper.
+
+        Returns (transcript, error). Exactly one is non-None.
+            - (text, None)       → transcription succeeded
+            - (None, "msg")      → user-facing error message ready to send
+        """
+        api_key = _load_openai_key()
+        if not api_key:
+            return (
+                None,
+                "❌ voice transcription unavailable — OpenAI key not configured on the box.",
+            )
+
+        # 1) getFile → file_path on TG's CDN.
+        gf = self.call("getFile", file_id=file_id)
+        if not gf.get("ok"):
+            return None, "❌ Telegram getFile failed; try resending the audio."
+        file_path = (gf.get("result") or {}).get("file_path")
+        if not file_path:
+            return None, "❌ Telegram returned no file_path; try resending."
+
+        # 2) Download bytes from TG's file CDN.
+        dl_url = f"https://api.telegram.org/file/bot{self.token}/{file_path}"
+        try:
+            r = self.client.get(dl_url, timeout=60)
+            r.raise_for_status()
+            audio_bytes = r.content
+        except Exception as e:
+            LOG.warning("TG file download failed: %s", e)
+            return None, f"❌ couldn’t download the audio from Telegram: {e}"
+
+        # 3) POST to Whisper. multipart/form-data with `file` and `model`.
+        try:
+            resp = httpx.post(
+                "https://api.openai.com/v1/audio/transcriptions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                files={"file": (filename, audio_bytes)},
+                data={"model": "whisper-1"},
+                timeout=60,
+            )
+            resp.raise_for_status()
+            text = (resp.json() or {}).get("text") or ""
+            text = text.strip()
+            if not text:
+                return None, "❌ Whisper returned empty text — couldn't make out anything."
+            return text, None
+        except httpx.HTTPStatusError as e:
+            body = ""
+            try:
+                body = e.response.text[:300]
+            except Exception:
+                pass
+            LOG.warning("whisper failed: %s body=%s", e, body)
+            return None, f"❌ Whisper transcription failed (HTTP {e.response.status_code})."
+        except Exception as e:
+            LOG.warning("whisper failed: %s", e)
+            return None, f"❌ Whisper transcription failed: {e}"
+
+    # ------------------------------------------------------------------
     def _bind_chat(self, chat_id: int) -> None:
         """Register chat_id, burn the setup_token, welcome the user."""
         add_allow(chat_id)
@@ -703,7 +821,10 @@ class Bot:
 
     def handle(self, msg: dict) -> None:
         chat_id = msg["chat"]["id"]
-        text = (msg.get("text") or "").strip()
+        # Treat a caption attached to a media message as the prompt — that
+        # way the user can dictate "summarize this PDF" alongside the file
+        # and we skip transcription. Plain text messages are unaffected.
+        text = (msg.get("text") or msg.get("caption") or "").strip()
         mid = msg.get("message_id")
         allow = load_allow()
 
@@ -725,6 +846,34 @@ class Bot:
             LOG.info("binding chat_id=%s (first-message wins)", chat_id)
             self._bind_chat(chat_id)
             return
+
+        # Voice / audio / video_note: download from TG, transcribe with
+        # Whisper, then fall through to the normal text-message pipeline
+        # as if the user had typed the transcript. If the message also
+        # carries a caption we already adopted it as `text` above and
+        # skip transcription entirely.
+        file_id, filename, file_size = _extract_media(msg)
+        if file_id and not text:
+            if file_size and file_size > TG_MAX_DOWNLOAD_BYTES:
+                self.send(
+                    chat_id,
+                    f"❌ file is {file_size // (1024 * 1024)} MB — Telegram caps bot "
+                    "downloads at 20 MB. Send a shorter clip.",
+                    reply_to=mid,
+                )
+                return
+            # Quick ack so the user knows we're working — Whisper can take
+            # 5-10s on a 30s clip and silence feels like the bot is broken.
+            self.typing(chat_id)
+            self.send(chat_id, "🎤 transcribing…", reply_to=mid)
+            transcript, err = self._transcribe_media(file_id, filename)
+            if err is not None or not transcript:
+                self.send(chat_id, err or "❌ transcription failed.", reply_to=mid)
+                return
+            # Show the user what we heard, then fall through to the normal
+            # pipeline using the transcript as the "typed" text.
+            self.send(chat_id, f"📝 {transcript}", reply_to=mid)
+            text = transcript
 
         # Commands. TG sends `/cmd@botname` in group chats so users can
         # disambiguate when multiple bots are present — strip the suffix
