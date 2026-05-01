@@ -174,6 +174,19 @@ if ! command -v claude >/dev/null 2>&1; then
 	npm install -g @anthropic-ai/claude-code
 fi
 
+# --- Codex CLI (optional alternative agent) --------------------------------
+# bux's TG bot supports `/agent codex` per forum topic. Pre-install the CLI
+# so users can opt in without re-running this. Auth is the user's choice:
+# either drop `OPENAI_API_KEY=...` into /home/bux/.secrets/openai.env, or
+# run `sudo -iu bux codex login` once and use their ChatGPT subscription.
+# Non-fatal: a npm hiccup shouldn't break a Claude-only install — `/agent
+# codex` will then error friendly with the install instructions.
+if ! command -v codex >/dev/null 2>&1; then
+	say 'installing Codex CLI'
+	npm install -g @openai/codex \
+		|| warn 'codex install failed (non-fatal — /agent codex will hint how to install later)'
+fi
+
 # --- bux user + dirs -------------------------------------------------------
 id -u bux >/dev/null 2>&1 || useradd -m -s /bin/bash bux
 mkdir -p /opt/bux /var/log/bux /etc/bux /home/bux/.claude/skills
@@ -402,6 +415,12 @@ cat > /usr/local/bin/tg-send <<'TGSEND'
 # tg-send "your message here"        # arg form
 # echo "msg" | tg-send                # stdin form (for piping output)
 # claude -p "..." | tg-send           # the recurring use case
+#
+# Forum-topic routing (set in env by the bot before invoking the agent):
+#   TG_CHAT_ID    — chat to post into (default: first line of tg-allowed.txt)
+#   TG_THREAD_ID  — message_thread_id, so a backgrounded `claude -p ... | tg-send &`
+#                   pings back into the same forum topic the user asked from
+#   TG_REPLY_TO   — optional reply_to_message_id
 set -euo pipefail
 if [ "$#" -ge 1 ]; then
   text="$*"
@@ -417,17 +436,36 @@ allow_file=/etc/bux/tg-allowed.txt
 # shellcheck disable=SC1090
 . "$env_file"
 [ -n "${TG_BOT_TOKEN:-}" ] || { echo "tg-send: TG_BOT_TOKEN missing" >&2; exit 1; }
-chat_id=$(awk 'NF{print; exit}' "$allow_file")
+# Prefer TG_CHAT_ID (per-lane routing exported by the bot); fall back to
+# the first allowed chat. The file is one-id-per-line; we currently bind
+# only one chat anyway.
+if [ -n "${TG_CHAT_ID:-}" ]; then
+  chat_id="$TG_CHAT_ID"
+else
+  chat_id=$(awk 'NF{print; exit}' "$allow_file")
+fi
 [ -n "$chat_id" ] || { echo "tg-send: empty $allow_file" >&2; exit 1; }
 # TG caps sendMessage at 4096 chars; truncate with marker so a long
 # claude -p output doesn't 400 silently.
 if [ "${#text}" -gt 4000 ]; then
   text="${text:0:3950}…(truncated)"
 fi
+# Build payload, optionally injecting message_thread_id and reply_to_message_id.
+# Numeric coercion in jq → bad values 400 here instead of confusing TG.
+jq_filter='{chat_id: ($c|tonumber), text: $t}'
+jq_args=(--arg c "$chat_id" --arg t "$text")
+if [ -n "${TG_THREAD_ID:-}" ]; then
+  jq_filter="${jq_filter} + {message_thread_id: (\$tid|tonumber)}"
+  jq_args+=(--arg tid "$TG_THREAD_ID")
+fi
+if [ -n "${TG_REPLY_TO:-}" ]; then
+  jq_filter="${jq_filter} + {reply_to_message_id: (\$rid|tonumber)}"
+  jq_args+=(--arg rid "$TG_REPLY_TO")
+fi
 curl -fsS -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
   --max-time 15 \
   -H 'Content-Type: application/json' \
-  -d "$(jq -nc --arg c "$chat_id" --arg t "$text" '{chat_id: ($c|tonumber), text: $t}')" \
+  -d "$(jq -nc "${jq_args[@]}" "$jq_filter")" \
   > /dev/null
 TGSEND
 chmod 755 /usr/local/bin/tg-send
