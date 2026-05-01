@@ -43,6 +43,10 @@ BROWSER_ENV = Path('/home/bux/.claude/browser.env')
 ALLOWED_FILE = Path('/etc/bux/tg-allowed.txt')
 STATE_FILE = Path('/etc/bux/tg-state.json')
 QUEUE_FILE = Path('/etc/bux/tg-queue.json')
+# Marker for "I've already told the user about this SHA". Lets transient
+# bux-tg restarts (systemd flaps, polling backoff) stay silent while
+# update-driven restarts (different SHA) announce themselves once.
+LAST_ANNOUNCED_SHA = Path('/var/lib/bux/last-announced.sha')
 POLL_TIMEOUT = 30
 REPLY_MAX = 3500  # TG's limit is 4096; we chunk anyway
 
@@ -1298,6 +1302,54 @@ class Bot:
 				time.sleep(5)
 
 
+def _announce_online_if_new_sha(bot: Bot) -> None:
+	"""Tell every bound chat "✓ bux online (sha=…)" — but only once per SHA.
+
+	Why a marker file instead of always-announce: bux-tg gets restarted by
+	plenty of things that aren't user-initiated updates — systemd flaps,
+	long-poll backoff escapes, the post-update agent restart itself. A
+	naive "always send on startup" would spam the chat every time the
+	service blips. So we cache the last SHA we announced in
+	/var/lib/bux/last-announced.sha; same SHA → silent restart, different
+	SHA (or first ever boot) → one message.
+
+	No-op if no chat is bound yet (fresh install pre-/start). Best-effort
+	throughout — failure to announce must never block bot startup, since
+	the announcement is courtesy and the bot is the recovery surface.
+	"""
+	try:
+		repo = '/opt/bux/repo'
+		sha = subprocess.run(
+			['git', '-C', repo, 'rev-parse', '--short', 'HEAD'],
+			capture_output=True, text=True, timeout=3,
+		).stdout.strip()
+		if not sha:
+			return
+		try:
+			last = LAST_ANNOUNCED_SHA.read_text().strip()
+		except FileNotFoundError:
+			last = ''
+		if sha == last:
+			return
+		branch = subprocess.run(
+			['git', '-C', repo, 'rev-parse', '--abbrev-ref', 'HEAD'],
+			capture_output=True, text=True, timeout=3,
+		).stdout.strip() or '?'
+		chats = load_allow()
+		text = f'✓ bux online (sha={sha}, branch={branch})'
+		for chat_id in chats:
+			try:
+				bot.send(chat_id=chat_id, text=text)
+			except Exception:
+				LOG.exception('online-announce send failed for chat %s', chat_id)
+		# Write only after at least one send attempt, so a transient TG
+		# outage doesn't permanently suppress the announcement.
+		LAST_ANNOUNCED_SHA.parent.mkdir(parents=True, exist_ok=True)
+		LAST_ANNOUNCED_SHA.write_text(sha + '\n')
+	except Exception:
+		LOG.exception('announce_online_if_new_sha failed')
+
+
 def main() -> int:
 	logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)s %(levelname)s %(message)s')
 	env = _read_kv(TG_ENV)
@@ -1316,6 +1368,9 @@ def main() -> int:
 	_queue_init()
 	bot = Bot(token, setup_token)
 	threading.Thread(target=bot.queue_worker, name='bux-tg-queue', daemon=True).start()
+	# Announce *before* poll_loop so the user gets the "back online" ping
+	# immediately on restart, not whenever the first long-poll completes.
+	_announce_online_if_new_sha(bot)
 	bot.poll_loop()
 	return 0
 
