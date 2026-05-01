@@ -669,19 +669,31 @@ class Bot:
     def typing(self, chat_id: int) -> None:
         self.call("sendChatAction", chat_id=chat_id, action="typing")
 
+    def react(self, chat_id: int, message_id: int | None, emoji: str | None) -> None:
+        """Set a single-emoji reaction on the user's message; emoji=None clears.
+
+        Telegram's free-account allowlist excludes ⏳/✅/⚠️/❌ — verified picks:
+        🦄 (working) → 🎉 (done) → 💔 (error). Failures are swallowed so a
+        rejected emoji never poisons the task itself.
+        """
+        if not message_id:
+            return
+        reaction = [] if emoji is None else [{"type": "emoji", "emoji": emoji}]
+        try:
+            self.call("setMessageReaction", chat_id=chat_id, message_id=message_id, reaction=reaction)
+        except Exception:
+            LOG.debug("setMessageReaction failed (emoji=%r); ignoring", emoji)
+
     # ------------------------------------------------------------------
-    # Task dispatch — shell out to `claude -p "<text>"` on the box with
-    # BU + profile envs forwarded. Uses --resume against a persistent per-box
-    # session UUID so every message continues the same conversation.
+    # Task dispatch — shell out to `claude -p` on the box with BU + profile
+    # envs forwarded. Streaming mode: we ask claude for stream-json so we
+    # can release the queue lock the moment the parent turn emits its first
+    # assistant text, even if sub-agents are still running. Sub-agent events
+    # (parent_tool_use_id set) are filtered out so TG isn't spammed.
     # ------------------------------------------------------------------
-    def run_task(self, prompt: str) -> str:
+    def _build_claude_cmd(self, prompt: str, stream: bool) -> tuple[list[str], dict[str, str]]:
         box_env = _read_kv(BOX_ENV)
         browser_env = _read_kv(BROWSER_ENV)
-
-        # sudo strips the environment by default; `-E` only helps if sudoers
-        # has `env_keep` entries for the specific vars. We don't want to
-        # require a sudoers drop-in on OSS installs, so we pass each var
-        # explicitly via `sudo VAR=value …` — that's always forwarded.
         forwarded: dict[str, str] = {
             "HOME": "/home/bux",
             "USER": "bux",
@@ -695,52 +707,123 @@ class Bot:
         for k in ("BU_CDP_WS", "BU_BROWSER_ID", "BU_BROWSER_EXPIRES_AT"):
             if browser_env.get(k):
                 forwarded[k] = browser_env[k]
+        cmd = ["sudo", "-u", "bux", "-H"]
+        cmd += [f"{k}={v}" for k, v in forwarded.items()]
+        cmd += [
+            "/usr/bin/claude",
+            "-p",
+            *_session_args(),
+        ]
+        if stream:
+            cmd += [
+                "--output-format", "stream-json",
+                "--include-partial-messages",
+                "--verbose",
+            ]
+        else:
+            cmd += ["--output-format", "text"]
+        cmd += [
+            "--permission-mode", "bypassPermissions",
+            prompt,
+        ]
+        return cmd, forwarded
 
-        session_args = _session_args()
-
-        # Cross-process flock shared with any other claude invoker on this
-        # box. Acquire blocks, so concurrent messages queue cleanly.
+    def run_task_streaming(self, prompt: str, chat_id: int, mid: int | None) -> None:
+        """Stream claude's stdout, send each parent-turn assistant text to
+        TG, and release the queue lock on the first such block. Falls back
+        to plain mode if claude doesn't recognise --output-format=stream-json."""
+        cmd, _ = self._build_claude_cmd(prompt, stream=True)
         lock_fd = _acquire_claude_lock()
-        try:
-            try:
-                # Run as bux. We are root (service runs as root so we can sudo).
-                # `sudo VAR=val ...` sets env for the child without needing any
-                # sudoers env_keep configuration.
-                cmd = ["sudo", "-u", "bux", "-H"]
-                cmd += [f"{k}={v}" for k, v in forwarded.items()]
-                cmd += [
-                    "/usr/bin/claude",
-                    "-p",
-                    *session_args,
-                    "--output-format",
-                    "text",
-                    "--permission-mode",
-                    "bypassPermissions",
-                    prompt,
-                ]
-                proc = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=1800,
-                    cwd="/home/bux",
-                )
-                out = (proc.stdout or "").strip()
-                if not out and proc.returncode != 0:
-                    # Bubble stderr only when claude actually failed — keeps
-                    # normal replies clean, still surfaces diagnostics to TG
-                    # when something broke. Set BUX_DEBUG=1 to always include.
-                    err = (proc.stderr or "").strip()
-                    return err or f"(no output; rc={proc.returncode})"
-                if os.environ.get("BUX_DEBUG") and proc.stderr:
-                    out = f"{out}\n\n--stderr--\n{proc.stderr.strip()}"
-                return out or "(no output)"
-            except subprocess.TimeoutExpired:
-                return "⏱ Timed out after 30 min."
-            except Exception as e:
-                return f"❌ task failed: {e}"
-        finally:
+        released = False
+
+        def _release_once() -> None:
+            nonlocal released, lock_fd
+            if released or lock_fd is None:
+                return
             _release_claude_lock(lock_fd)
+            lock_fd = None
+            released = True
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd="/home/bux",
+            )
+            saw_parent_text = False
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except Exception:
+                    continue
+                etype = event.get("type")
+                if etype == "assistant":
+                    # Sub-agent assistant events carry parent_tool_use_id;
+                    # skip them so background workers don't spam TG.
+                    if event.get("parent_tool_use_id"):
+                        continue
+                    msg = event.get("message") or {}
+                    for block in msg.get("content") or []:
+                        if block.get("type") == "text":
+                            txt = (block.get("text") or "").strip()
+                            if not txt:
+                                continue
+                            self.send(chat_id, txt, reply_to=mid, markdown=True)
+                            saw_parent_text = True
+                            if not released:
+                                self.react(chat_id, mid, "🎉")
+                                _release_once()
+                elif etype == "result" and not saw_parent_text:
+                    # Run ended with no parent text — surface as failure.
+                    self.react(chat_id, mid, "💔")
+                    res = event.get("result")
+                    self.send(
+                        chat_id,
+                        (res.strip() if isinstance(res, str) and res.strip() else "❌ task ended with no reply."),
+                        reply_to=mid,
+                    )
+                # system / stream_event / user / others: ignore.
+
+            # Reap in background — sub-agents may still be running.
+            threading.Thread(target=proc.wait, daemon=True).start()
+
+            if not saw_parent_text:
+                # Possibly stream-json unsupported on this claude build.
+                stderr_tail = ""
+                try:
+                    stderr_tail = (proc.stderr.read() or "")[-400:] if proc.stderr else ""
+                except Exception:
+                    pass
+                if "unknown" in stderr_tail.lower() and "stream-json" in stderr_tail.lower():
+                    LOG.warning("stream-json unsupported; falling back to plain mode")
+                    self._run_task_plain(prompt, chat_id, mid)
+                    _release_once()
+                    return
+                if not released:
+                    self.react(chat_id, mid, "💔")
+        except Exception as e:
+            LOG.exception("streaming run_task failed")
+            try:
+                self.react(chat_id, mid, "💔")
+                self.send(chat_id, f"❌ task failed: {e}", reply_to=mid)
+            except Exception:
+                LOG.exception("also failed to send error reply")
+        finally:
+            _release_once()
+
+    def _run_task_plain(self, prompt: str, chat_id: int, mid: int | None) -> None:
+        """Non-streaming fallback path: matches the pre-stream behaviour."""
+        cmd, _ = self._build_claude_cmd(prompt, stream=False)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800, cwd="/home/bux")
+        out = (proc.stdout or "").strip() or f"(no output; rc={proc.returncode})"
+        self.send(chat_id, out, reply_to=mid, markdown=True)
+        self.react(chat_id, mid, "🎉" if proc.returncode == 0 else "💔")
 
     # ------------------------------------------------------------------
     def _transcribe_media(self, file_id: str, filename: str) -> tuple[str | None, str | None]:
@@ -1095,11 +1178,18 @@ class Bot:
             prompt = str(job.get("prompt") or "")
             try:
                 self.typing(chat_id)
-                result = self.run_task(prompt)
-                self.send(chat_id, result, reply_to=mid, markdown=True)
+                # Visible "working on it" indicator — swapped to 🎉 on
+                # success below, or to 💔 on failure. These emojis are
+                # TG-allowlisted for non-premium accounts (⏳/✅/⚠️/❌
+                # are rejected, so don't substitute without testing).
+                self.react(chat_id, mid, "🦄")
+                # Releases the queue lock on the first parent-turn
+                # assistant text so background sub-agents don't block it.
+                self.run_task_streaming(prompt, chat_id, mid)
             except Exception as e:
                 LOG.exception("queue job %s failed", job_id)
                 try:
+                    self.react(chat_id, mid, "💔")
                     self.send(chat_id, f"❌ task failed: {e}", reply_to=mid)
                 except Exception:
                     LOG.exception("also failed to send error reply")
