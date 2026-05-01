@@ -776,7 +776,10 @@ class Agent:
 			# Defaults to the branch the box was originally cloned from
 			# (whatever's checked out in /opt/bux/repo); cmd can pass
 			# `branch` to switch tracks, e.g. `stable` → `main`.
-			await self._update(branch=msg.get('branch') or '')
+			await self._update(
+				branch=msg.get('branch') or '',
+				request_id=msg.get('request_id') or '',
+			)
 		elif cmd == 'claude_login_start':
 			# Drive `claude /login` from a pty so the cloud can extract
 			# the OAuth URL and pump the callback code back without
@@ -1110,7 +1113,7 @@ class Agent:
 			})
 			return
 
-	async def _update(self, *, branch: str = '') -> None:
+	async def _update(self, *, branch: str = '', request_id: str = '') -> None:
 		"""Pull latest agent code from the OSS repo and restart services.
 
 		Steps:
@@ -1150,7 +1153,7 @@ class Agent:
 		if rc != 0:
 			LOG.warning('update: git fetch failed: %s', out)
 			await self._send({
-				'type': 'update_result',
+				'type': 'update_result', 'request_id': request_id,
 				'ok': False,
 				'error': f'fetch: {out[:200]}',
 			})
@@ -1165,7 +1168,7 @@ class Agent:
 		if rc != 0:
 			LOG.warning('update: git reset failed: %s', out)
 			await self._send({
-				'type': 'update_result',
+				'type': 'update_result', 'request_id': request_id,
 				'ok': False,
 				'error': f'reset: {out[:200]}',
 			})
@@ -1184,7 +1187,7 @@ class Agent:
 		if rc != 0:
 			LOG.warning('update: bootstrap failed: %s', out)
 			await self._send({
-				'type': 'update_result',
+				'type': 'update_result', 'request_id': request_id,
 				'ok': False,
 				'old_sha': old_sha,
 				'new_sha': new_sha,
@@ -1196,7 +1199,7 @@ class Agent:
 		# `systemctl restart box-agent`, which is what swaps in the new
 		# code — by the time it runs, this coroutine is dead.
 		await self._send({
-			'type': 'update_result',
+			'type': 'update_result', 'request_id': request_id,
 			'ok': True,
 			'old_sha': old_sha,
 			'new_sha': new_sha,
