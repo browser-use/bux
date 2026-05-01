@@ -30,6 +30,7 @@ SSH into it (I'll paste the host below), run install.sh with my BROWSER_USE_API_
 - A real **Chromium** session via [browser-harness](https://github.com/browser-use/browser-harness) — cookies persist, logins stick
 - A **Telegram bot** so you can text your agent — pass `TG_BOT_TOKEN=xxx` to the installer to enable
 - A **web terminal** bound to localhost for when SSH is too much
+- **Scoped sudo** so the agent can restart its own services without prompting (narrow allowlist — `systemctl restart|status` and `journalctl -u` on `bux-*` only; revoke with `sudo rm /etc/sudoers.d/bux`)
 - When claude hits a login wall / 2FA / CAPTCHA, it hands you a **live view URL** and waits — no credential-stuffing, no brittle workarounds
 
 ## Requirements

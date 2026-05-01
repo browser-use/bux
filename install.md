@@ -64,7 +64,8 @@ The script:
 2. Creates a `bux` system user with its own venv
 3. Drops the browser-keeper + telegram-bot + systemd units
 4. Installs [ztk](https://github.com/codejunkie99/ztk) (pinned) — compresses long Bash tool outputs before they hit Claude's context. Opt out with `WITH_ZTK=0`.
-5. Starts everything
+5. Drops `/etc/sudoers.d/bux` granting the agent **scoped passwordless sudo** for `systemctl restart|status|is-active` and `journalctl -u` on `bux-tg`, `bux-browser-keeper`, `bux-ttyd` only. Revoke with `sudo rm /etc/sudoers.d/bux`.
+6. Starts everything
 
 Takes ~2-3 minutes on a fresh box. Idempotent — safe to rerun after edits.
 
