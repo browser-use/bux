@@ -1,0 +1,20 @@
+[Unit]
+Description=bux box-agent (cloud control + claude task dispatch)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/bux/env
+
+[Service]
+Type=simple
+User=bux
+Group=bux
+EnvironmentFile=/etc/bux/env
+WorkingDirectory=/opt/bux/agent
+ExecStart=/opt/bux/venv/bin/python /opt/bux/agent/box_agent.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/bux/agent.log
+StandardError=append:/var/log/bux/agent.log
+
+[Install]
+WantedBy=multi-user.target

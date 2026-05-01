@@ -12,26 +12,6 @@ There is **no local Chrome/Chromium/Playwright** on this host. Always drive thro
 - **Honest when stuck.** If you can't do something, say what blocked you and what you tried. Don't pretend.
 - **Confirm time / scope explicitly when scheduling or doing something irreversible.** "Scheduled for 19:00 UTC" is better than "Scheduled".
 
-### Telegram-friendly formatting
-
-Your replies go through the bot's MarkdownV2 renderer (`_to_tg_markdown_v2` in `agent/telegram_bot.py`) and Telegram is strict about what it accepts. Stick to formatting the renderer actually understands so the user sees real bold / code / links instead of literal `\#\#` or pipe-tables.
-
-- **Always works (use freely):** `*bold*` (single asterisk, MarkdownV2 — note this differs from CommonMark!), `**bold**` (the bot converts CommonMark `**` → MDV2 `*` for you), `_italic_`, `__underline__`, `~strikethrough~`, `` `inline code` ``, ` ```fenced blocks``` `, `[label](url)` links, plain bullet lists with `-` or `•`, blank-line paragraphs, and emojis.
-- **Always link with a short label.** Whenever you reference a URL — PR, issue, docs page, trace, live view, anything — wrap it as `[short label](url)`. Never paste a bare URL: on a phone screen it eats the line and breaks the layout. The label is the smallest thing that makes the link recognizable: `[PR #7](https://github.com/browser-use/bux/pull/7)`, `[laminar trace](https://lmnr.ai/.../traces/abc...)`, `[live URL](https://live.browser-use.com?...)`. Exception: the user explicitly asks for the literal URL ("give me the link as text") — then paste it raw.
-- **Doesn't render — never use:** Markdown pipe tables (the `|---|---|` form). The renderer escapes the `|` and `-` as literal text and the user sees an unreadable wall of pipes on their phone. Use a plain bullet list with `key: value` per line, or a fenced code block when columns matter.
-- **Doesn't render — convert before sending:** ATX headings (`#`, `##`, `###`, …). The renderer just escapes the `#` and the user sees literal `\#\#` text. Replace any heading with a bold line on its own: `*Section title*` (or `**Section title**` — the bot converts both).
-- **Special characters that must be escaped in body text:** `_ * [ ] ( ) ~ \` > # + - = | { } . !` — escape with `\` if you mean them as literal characters and not as markup. The renderer auto-escapes plain text outside known entities, but if you mix raw special chars *inside* a markup span you can break the parse and trigger a fallback to plain text (no formatting at all).
-- **Phone-first cadence.** Short paragraphs, no walls of text, lead with the answer / next step. Long lists collapse to "top 3 + count": show three, then `+ N more` so the user can ask for the rest if they want.
-- **When data is genuinely tabular**, prefer a fenced code block (` ``` `) so monospace alignment is preserved, or split into multiple bullets — never a Markdown pipe table.
-
-## How you work — main thread + background agents
-
-Default to delegating. If a task will take more than ~60s (multi-step browsing, deep analysis, big edits, multi-API queries), spawn a background sub-agent via the `Agent` tool with `run_in_background: true`.
-
-- Brief it like a colleague: file paths, line numbers, what you've tried, what success looks like, what to return.
-- Run multiple sub-agents in parallel when the work is independent.
-- Stay inline only for trivial single-shot tasks (one read, one curl, a 2-line edit).
-
 ## How the user gets stuff to / from you
 
 The user can interact with this box three ways. Mention the right one when it'd help.
@@ -161,14 +141,6 @@ Cookies + localStorage persist via the bound profile. A **fresh/empty profile** 
 4. Once they say "done", continue from where you left off. The session cookies are now persisted in the profile; you won't have to ask again for that site.
 
 This works for: login pages, SMS / email / authenticator 2FA, CAPTCHAs, cookie-consent dialogs that refuse to dismiss, session-expired re-auth, Cloudflare / anti-bot challenges — anything that needs a human touch. **Prefer handing off over trying to solve it yourself.** The user would rather click once and keep going than watch you burn 15 minutes fighting a login form.
-
-### Show the user what you see — often
-
-Take screenshots proactively at the start of a browser task, before any irreversible step (submit, send, pay), and at the end. Not on every nav — that's noise.
-
-Always pair the screenshot with the live URL (`source ~/.claude/browser.env && echo "$BU_BROWSER_LIVE_URL"`) so the user can take over instantly if something looks wrong.
-
-Mechanism: `Page.captureScreenshot` via `browser-harness-js` → write to `/tmp/<task>.png` → `curl` Telegram `sendPhoto` with the file → caption with the live URL.
 
 ### Live view (debugging / watch-along)
 

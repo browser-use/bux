@@ -1,0 +1,19 @@
+[Unit]
+Description=bux Telegram bot (user-owned, runs on the box)
+After=network-online.target
+ConditionPathExists=/etc/bux/tg.env
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=/etc/bux/tg.env
+WorkingDirectory=/opt/bux/agent
+ExecStart=/opt/bux/venv/bin/python /opt/bux/agent/telegram_bot.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/bux/tg.log
+StandardError=append:/var/log/bux/tg.log
+
+[Install]
+WantedBy=multi-user.target
