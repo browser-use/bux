@@ -417,8 +417,43 @@ def _ensure_bux_dir(path: Path) -> Path:
     return path
 
 
+def _codex_thread_id_for(key: LaneKey) -> str | None:
+    """Return the persisted codex thread_id for this lane, or None.
+
+    Codex emits `thread.started` on the first `codex exec --json` call;
+    we capture that id and persist it so subsequent turns in the same
+    lane can `codex exec resume <id>` and keep conversation context.
+    Returns None on first message (no thread yet) — caller falls back
+    to a plain `codex exec --json` and saves the new id afterwards.
+    """
+    _ensure_bux_dir(SESSIONS_DIR)
+    f = SESSIONS_DIR / f"{_lane_slug(key)}.codex"
+    if not f.exists():
+        return None
+    try:
+        fd = os.open(str(f), os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            with os.fdopen(fd, "r") as fh:
+                tid = fh.read().strip()
+        except Exception:
+            os.close(fd)
+            raise
+        return tid or None
+    except OSError as e:
+        LOG.warning("reading %s failed (%s); treating as fresh", f, e)
+        return None
+
+
+def _save_codex_thread_id(key: LaneKey, thread_id: str) -> None:
+    """Persist the codex thread_id for this lane (atomic, symlink-safe)."""
+    if not thread_id:
+        return
+    f = SESSIONS_DIR / f"{_lane_slug(key)}.codex"
+    _write_session_uuid(f, thread_id)
+
+
 def _session_uuid_for(key: LaneKey) -> str:
-    """Return the per-lane claude/codex session UUID, persisting on first call.
+    """Return the per-lane claude session UUID, persisting on first call.
 
     On first call for the (chat_id, 0) lane after the legacy bot, we migrate
     the global /home/bux/.bux/session into the per-lane file so the user's
@@ -1085,13 +1120,17 @@ class Bot:
         """Stream a codex turn into the lane's TG topic.
 
         Uses `codex exec --json` (JSONL events). Forwards `item.completed`
-        events of type `agent_message` as TG bubbles. Codex doesn't natively
-        resume a thread by id from `exec`, so each message is independent —
-        conversation continuity within the lane is best-effort (codex's own
-        context window).
+        events of type `agent_message` as TG bubbles.
+
+        Per-lane continuity: the first message in a lane runs `codex exec`,
+        captures `thread_id` from the `thread.started` event, and persists
+        it to disk. Subsequent messages in the same lane run
+        `codex exec resume <thread_id>` so conversation context survives
+        across messages — same shape as claude's `--session-id` model.
         """
         chat_id, thread_id = key
         env = self._build_env(key, AGENT_CODEX)
+        existing_thread = _codex_thread_id_for(key)
 
         # Refuse early if codex isn't installed — the user gets a clear
         # install hint instead of a confusing FileNotFoundError.
@@ -1120,7 +1159,24 @@ class Bot:
         # codex itself emits a clear stderr message which we surface below.
 
         cmd = ["sudo", "-u", "bux", "-H"] + [f"{k}={v}" for k, v in env.items() if v]
-        cmd += [codex_bin, "exec", "--json", "--skip-git-repo-check", prompt]
+        if existing_thread:
+            # Resume the lane's existing codex thread so conversation context
+            # carries across messages. `codex exec resume <id>` is the
+            # documented form. If the thread id is invalid (codex pruned it,
+            # disk corruption), codex errors and we surface the stderr.
+            cmd += [
+                codex_bin,
+                "exec",
+                "resume",
+                existing_thread,
+                "--json",
+                "--skip-git-repo-check",
+                prompt,
+            ]
+        else:
+            # First message in this lane — `thread.started` arrives in the
+            # JSONL stream and we persist its id below.
+            cmd += [codex_bin, "exec", "--json", "--skip-git-repo-check", prompt]
 
         # stderr → file rather than DEVNULL so the no-output path can
         # surface the actual error message to the user (codex tends to
@@ -1165,10 +1221,27 @@ class Bot:
                     continue
                 et = ev.get("type") or ""
                 # Codex JSONL events of interest:
+                #   thread.started { thread_id: '...' }       — first turn only; persist for resume
                 #   item.completed { item: { type: 'agent_message', text: '...' } }
                 #   turn.completed (terminal)
                 #   turn.failed (terminal, error)
-                if et.startswith("item.") and et.endswith("completed"):
+                if et == "thread.started" and not existing_thread:
+                    # Field shape per codex docs: top-level `thread_id`. Be
+                    # defensive against schema drift — also check nested
+                    # `thread.id` / `session.id` shapes a future codex
+                    # version might emit.
+                    new_tid = (
+                        ev.get("thread_id")
+                        or (ev.get("thread") or {}).get("id")
+                        or (ev.get("session") or {}).get("id")
+                    )
+                    if new_tid:
+                        try:
+                            _save_codex_thread_id(key, str(new_tid))
+                            existing_thread = str(new_tid)
+                        except Exception:
+                            LOG.exception("persist codex thread_id failed")
+                elif et.startswith("item.") and et.endswith("completed"):
                     item = ev.get("item") or {}
                     if item.get("type") == "agent_message":
                         text = (item.get("text") or "").strip()
