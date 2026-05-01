@@ -589,6 +589,15 @@ _lanes_lock = threading.Lock()
 _lanes: dict[str, list[dict]] = {}  # lane_slug → [job, ...]
 _lane_workers: dict[str, threading.Thread] = {}
 
+# Per-lane handle to the in-flight agent subprocess (claude or codex), keyed
+# by `_lane_slug(key)`. `/cancel` reads this under `_inflight_lock` and sends
+# SIGKILL to unblock the lane when the agent shells into something
+# interactive (gh auth login, vim, ssh, psql) and wedges on stdin. The entry
+# is added right after Popen succeeds and removed in `finally` so an early
+# error path can't strand a stale handle.
+_inflight_procs: dict[str, subprocess.Popen] = {}
+_inflight_lock = threading.Lock()
+
 
 def _new_job_id() -> str:
     """8 hex chars. Short enough to type into /cancel <id>, long enough that
@@ -990,8 +999,13 @@ class Bot:
             # stdout; capturing stderr unread risks a 64 KB pipe deadlock
             # on a chatty claude. The fallback path captures both for the
             # no-output case.
+            # stdin=DEVNULL: claude itself doesn't read stdin under -p, but
+            # children it shells out to (gh auth login, ssh, vim, psql) do,
+            # and a child blocking on stdin would wedge the whole lane.
+            # /dev/null hands them an immediate EOF so they fail loudly.
             proc = subprocess.Popen(
                 cmd,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 text=True,
@@ -1007,6 +1021,12 @@ class Bot:
             )
             return
 
+        # Register the proc so `/cancel` (per lane) can SIGKILL it when the
+        # agent is wedged on an interactive child. Removed in `finally`.
+        slug = _lane_slug(key)
+        with _inflight_lock:
+            _inflight_procs[slug] = proc
+
         # No wall-clock cap: the agent can run as long as the user's task
         # needs. A genuinely-stuck claude pid sits forever until the user
         # kills it from ssh; that cost is local to one topic.
@@ -1014,107 +1034,129 @@ class Bot:
         any_text = False
         assert proc.stdout is not None
         try:
-            for line in proc.stdout:
-                try:
-                    ev = json.loads(line.strip() or "{}")
-                except Exception:
-                    continue
-                et = ev.get("type")
-                # Only forward parent-turn assistant events. Sub-agent
-                # internals carry parent_tool_use_id and stay hidden.
-                if et == "assistant" and not ev.get("parent_tool_use_id"):
-                    content = (ev.get("message") or {}).get("content") or []
-                    for block in content:
-                        if not (isinstance(block, dict) and block.get("type") == "text"):
-                            continue
-                        text = (block.get("text") or "").strip()
-                        if not text:
-                            continue
-                        self.send(
-                            chat_id,
-                            text,
-                            reply_to=reply_to,
-                            thread_id=thread_id,
-                            markdown=True,
-                        )
-                        if not any_text:
-                            any_text = True
-                            self.react(chat_id, reply_to, EMOJI_DONE)
-                elif et == "result":
-                    # Turn complete; stream is done.
-                    break
-        except Exception:
-            LOG.exception("stream-json loop failed; falling back to plain run")
-
-        # Drain the rest, kill the proc if it's lingering (tool wait, etc.).
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
             try:
-                proc.kill()
+                for line in proc.stdout:
+                    try:
+                        ev = json.loads(line.strip() or "{}")
+                    except Exception:
+                        continue
+                    et = ev.get("type")
+                    # Only forward parent-turn assistant events. Sub-agent
+                    # internals carry parent_tool_use_id and stay hidden.
+                    if et == "assistant" and not ev.get("parent_tool_use_id"):
+                        content = (ev.get("message") or {}).get("content") or []
+                        for block in content:
+                            if not (isinstance(block, dict) and block.get("type") == "text"):
+                                continue
+                            text = (block.get("text") or "").strip()
+                            if not text:
+                                continue
+                            self.send(
+                                chat_id,
+                                text,
+                                reply_to=reply_to,
+                                thread_id=thread_id,
+                                markdown=True,
+                            )
+                            if not any_text:
+                                any_text = True
+                                self.react(chat_id, reply_to, EMOJI_DONE)
+                    elif et == "result":
+                        # Turn complete; stream is done.
+                        break
+            except Exception:
+                LOG.exception("stream-json loop failed; falling back to plain run")
+
+            # Drain the rest, kill the proc if it's lingering (tool wait, etc.).
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
             except Exception:
                 pass
-        except Exception:
-            pass
 
-        if not any_text:
-            # Stream produced nothing visible — fall back to a plain run so
-            # the user gets *something*. Keeps the bot honest if claude
-            # hiccuped on the streaming format.
-            fb_cmd = ["sudo", "-u", "bux", "-H"] + [f"{k}={v}" for k, v in env.items() if v]
-            fb_cmd += [
-                "/usr/bin/claude",
-                "-p",
-                "--session-id",
-                sid,
-                "--permission-mode",
-                "bypassPermissions",
-                "--output-format",
-                "text",
-                prompt,
-            ]
-            try:
-                # No env= here: the `sudo VAR=val …` prefix is the only env
-                # the child claude sees. Don't leak the bot's own environ
-                # (TG_BOT_TOKEN, TG_SETUP_TOKEN) through sudo.
-                fb = subprocess.run(
-                    fb_cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=1800,
-                    cwd=str(WORKSPACE),
-                )
-                out = (fb.stdout or "").strip()
-                if not out:
-                    out = (fb.stderr or "").strip() or f"(no output; rc={fb.returncode})"
-                self.send(
-                    chat_id,
-                    out,
-                    reply_to=reply_to,
-                    thread_id=thread_id,
-                    markdown=True,
-                )
-                self.react(
-                    chat_id,
-                    reply_to,
-                    EMOJI_DONE if fb.returncode == 0 else EMOJI_ERROR,
-                )
-            except subprocess.TimeoutExpired:
+            # SIGKILL/SIGTERM means /cancel (or the timeout-kill above) ended
+            # the proc. Reply "🛑 Cancelled." into the lane and SKIP the
+            # no-output fallback — otherwise we'd silently re-run the same
+            # prompt the user just cancelled. A clean exit (rc >= 0) falls
+            # through to the normal fallback path below.
+            if proc.returncode in (-9, -15):
                 self.react(chat_id, reply_to, EMOJI_ERROR)
                 self.send(
                     chat_id,
-                    "⏱ Timed out after 30 min.",
+                    "🛑 Cancelled.",
                     reply_to=reply_to,
                     thread_id=thread_id,
                 )
-            except Exception as e:
-                self.react(chat_id, reply_to, EMOJI_ERROR)
-                self.send(
-                    chat_id,
-                    f"❌ task failed: {e}",
-                    reply_to=reply_to,
-                    thread_id=thread_id,
-                )
+                return
+
+            if not any_text:
+                # Stream produced nothing visible — fall back to a plain run so
+                # the user gets *something*. Keeps the bot honest if claude
+                # hiccuped on the streaming format.
+                fb_cmd = ["sudo", "-u", "bux", "-H"] + [f"{k}={v}" for k, v in env.items() if v]
+                fb_cmd += [
+                    "/usr/bin/claude",
+                    "-p",
+                    "--session-id",
+                    sid,
+                    "--permission-mode",
+                    "bypassPermissions",
+                    "--output-format",
+                    "text",
+                    prompt,
+                ]
+                try:
+                    # No env= here: the `sudo VAR=val …` prefix is the only env
+                    # the child claude sees. Don't leak the bot's own environ
+                    # (TG_BOT_TOKEN, TG_SETUP_TOKEN) through sudo.
+                    fb = subprocess.run(
+                        fb_cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=1800,
+                        cwd=str(WORKSPACE),
+                    )
+                    out = (fb.stdout or "").strip()
+                    if not out:
+                        out = (fb.stderr or "").strip() or f"(no output; rc={fb.returncode})"
+                    self.send(
+                        chat_id,
+                        out,
+                        reply_to=reply_to,
+                        thread_id=thread_id,
+                        markdown=True,
+                    )
+                    self.react(
+                        chat_id,
+                        reply_to,
+                        EMOJI_DONE if fb.returncode == 0 else EMOJI_ERROR,
+                    )
+                except subprocess.TimeoutExpired:
+                    self.react(chat_id, reply_to, EMOJI_ERROR)
+                    self.send(
+                        chat_id,
+                        "⏱ Timed out after 30 min.",
+                        reply_to=reply_to,
+                        thread_id=thread_id,
+                    )
+                except Exception as e:
+                    self.react(chat_id, reply_to, EMOJI_ERROR)
+                    self.send(
+                        chat_id,
+                        f"❌ task failed: {e}",
+                        reply_to=reply_to,
+                        thread_id=thread_id,
+                    )
+        finally:
+            # Always release the inflight handle for this lane, even on early
+            # error returns above — `slug` was set right after Popen succeeded.
+            with _inflight_lock:
+                if _inflight_procs.get(slug) is proc:
+                    _inflight_procs.pop(slug, None)
 
     def _run_codex(
         self,
@@ -1191,8 +1233,13 @@ class Bot:
 
         stderr_buf = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
         try:
+            # stdin=DEVNULL: codex doesn't read stdin in `exec --json` mode,
+            # but children it spawns (gh, ssh, vim, psql) can — and one such
+            # child blocking on stdin would wedge the entire lane. /dev/null
+            # hands them an immediate EOF so they fail loudly.
             proc = subprocess.Popen(
                 cmd,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=stderr_buf,
                 text=True,
@@ -1216,94 +1263,120 @@ class Bot:
             )
             return
 
+        # Register the proc so `/cancel` (per lane) can SIGKILL it. Removed
+        # in `finally` so an early-error path can't strand a stale handle.
+        slug = _lane_slug(key)
+        with _inflight_lock:
+            _inflight_procs[slug] = proc
+
         any_text = False
         assert proc.stdout is not None
         try:
-            for line in proc.stdout:
+            try:
+                for line in proc.stdout:
+                    try:
+                        ev = json.loads(line.strip() or "{}")
+                    except Exception:
+                        continue
+                    et = ev.get("type") or ""
+                    # Codex JSONL events of interest:
+                    #   thread.started { thread_id: '...' }       — first turn only; persist for resume
+                    #   item.completed { item: { type: 'agent_message', text: '...' } }
+                    #   turn.completed (terminal)
+                    #   turn.failed (terminal, error)
+                    if et == "thread.started" and not existing_thread:
+                        # Field shape per codex docs: top-level `thread_id`. Be
+                        # defensive against schema drift — also check nested
+                        # `thread.id` / `session.id` shapes a future codex
+                        # version might emit.
+                        new_tid = (
+                            ev.get("thread_id")
+                            or (ev.get("thread") or {}).get("id")
+                            or (ev.get("session") or {}).get("id")
+                        )
+                        if new_tid:
+                            try:
+                                _save_codex_thread_id(key, str(new_tid))
+                                existing_thread = str(new_tid)
+                            except Exception:
+                                LOG.exception("persist codex thread_id failed")
+                    elif et.startswith("item.") and et.endswith("completed"):
+                        item = ev.get("item") or {}
+                        if item.get("type") == "agent_message":
+                            text = (item.get("text") or "").strip()
+                            if text:
+                                self.send(
+                                    chat_id,
+                                    text,
+                                    reply_to=reply_to,
+                                    thread_id=thread_id,
+                                    markdown=True,
+                                )
+                                if not any_text:
+                                    any_text = True
+                                    self.react(chat_id, reply_to, EMOJI_DONE)
+                    elif et in ("turn.completed", "turn.failed"):
+                        # `turn.failed` is the only true terminal-error signal.
+                        # `error` events also appear during transient reconnects
+                        # ("Reconnecting... 1/5") and aren't fatal — see below.
+                        break
+                    elif et == "error":
+                        # Don't terminate the loop here: codex emits transient
+                        # `error` notices (reconnection retries, rate-limit
+                        # backoff) as progress signals. Just log and keep
+                        # streaming; if the failure is real, `turn.failed` will
+                        # arrive next and break us out.
+                        LOG.warning("codex transient error: %s", ev.get("message") or ev)
+            except Exception:
+                LOG.exception("codex JSONL loop failed")
+
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
                 try:
-                    ev = json.loads(line.strip() or "{}")
+                    proc.kill()
                 except Exception:
-                    continue
-                et = ev.get("type") or ""
-                # Codex JSONL events of interest:
-                #   thread.started { thread_id: '...' }       — first turn only; persist for resume
-                #   item.completed { item: { type: 'agent_message', text: '...' } }
-                #   turn.completed (terminal)
-                #   turn.failed (terminal, error)
-                if et == "thread.started" and not existing_thread:
-                    # Field shape per codex docs: top-level `thread_id`. Be
-                    # defensive against schema drift — also check nested
-                    # `thread.id` / `session.id` shapes a future codex
-                    # version might emit.
-                    new_tid = (
-                        ev.get("thread_id")
-                        or (ev.get("thread") or {}).get("id")
-                        or (ev.get("session") or {}).get("id")
-                    )
-                    if new_tid:
-                        try:
-                            _save_codex_thread_id(key, str(new_tid))
-                            existing_thread = str(new_tid)
-                        except Exception:
-                            LOG.exception("persist codex thread_id failed")
-                elif et.startswith("item.") and et.endswith("completed"):
-                    item = ev.get("item") or {}
-                    if item.get("type") == "agent_message":
-                        text = (item.get("text") or "").strip()
-                        if text:
-                            self.send(
-                                chat_id,
-                                text,
-                                reply_to=reply_to,
-                                thread_id=thread_id,
-                                markdown=True,
-                            )
-                            if not any_text:
-                                any_text = True
-                                self.react(chat_id, reply_to, EMOJI_DONE)
-                elif et in ("turn.completed", "turn.failed"):
-                    # `turn.failed` is the only true terminal-error signal.
-                    # `error` events also appear during transient reconnects
-                    # ("Reconnecting... 1/5") and aren't fatal — see below.
-                    break
-                elif et == "error":
-                    # Don't terminate the loop here: codex emits transient
-                    # `error` notices (reconnection retries, rate-limit
-                    # backoff) as progress signals. Just log and keep
-                    # streaming; if the failure is real, `turn.failed` will
-                    # arrive next and break us out.
-                    LOG.warning("codex transient error: %s", ev.get("message") or ev)
-        except Exception:
-            LOG.exception("codex JSONL loop failed")
-
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            try:
-                proc.kill()
+                    pass
             except Exception:
                 pass
-        except Exception:
-            pass
 
-        if not any_text:
-            err = ""
+            # SIGKILL/SIGTERM means /cancel ended the proc. Reply
+            # "🛑 Cancelled." into the lane and SKIP the no-output fallback
+            # so we don't surface a confusing stderr message for a kill the
+            # user explicitly asked for. A clean exit (rc >= 0) falls
+            # through to the normal no-output handling below.
+            if proc.returncode in (-9, -15):
+                self.react(chat_id, reply_to, EMOJI_ERROR)
+                self.send(
+                    chat_id,
+                    "🛑 Cancelled.",
+                    reply_to=reply_to,
+                    thread_id=thread_id,
+                )
+                return
+
+            if not any_text:
+                err = ""
+                try:
+                    stderr_buf.seek(0)
+                    err = stderr_buf.read().strip()
+                except Exception:
+                    pass
+                self.react(chat_id, reply_to, EMOJI_ERROR)
+                self.send(
+                    chat_id,
+                    err or "(codex returned no output)",
+                    reply_to=reply_to,
+                    thread_id=thread_id,
+                )
+        finally:
+            with _inflight_lock:
+                if _inflight_procs.get(slug) is proc:
+                    _inflight_procs.pop(slug, None)
             try:
-                stderr_buf.seek(0)
-                err = stderr_buf.read().strip()
+                stderr_buf.close()
             except Exception:
                 pass
-            self.react(chat_id, reply_to, EMOJI_ERROR)
-            self.send(
-                chat_id,
-                err or "(codex returned no output)",
-                reply_to=reply_to,
-                thread_id=thread_id,
-            )
-        try:
-            stderr_buf.close()
-        except Exception:
-            pass
 
     @staticmethod
     def _which_codex() -> str | None:
@@ -1527,8 +1600,8 @@ class Bot:
                 "/agent claude|codex — switch this topic to a different agent\n"
                 "/live — live-view URL of the active browser\n"
                 "/queue — pending tasks in this topic\n"
-                "/cancel — drop everything pending in this topic\n"
-                "/cancel <id> — drop one pending task\n"
+                "/cancel — kill the running task + drop everything pending in this topic\n"
+                "/cancel <id> — cancel one task (running or queued)\n"
                 "/schedules — list reminders / cron jobs\n"
                 "/version — show the bux agent version\n"
                 "/update — pull latest code + restart (or /update <branch>)",
@@ -1647,22 +1720,43 @@ class Bot:
         thread_id: int,
         job_id: str,
     ) -> None:
+        # Per-lane cancel. The original design preserved in-flight ("can't
+        # safely kill mid-task") but in practice the only time users hit
+        # /cancel is when the agent is wedged on an interactive child
+        # (gh auth login, ssh, vim) — preserving the wedge made the bot
+        # unusable until bux-tg was manually restarted. Now /cancel
+        # SIGKILLs the in-flight proc *for this slug only* so other lanes
+        # keep running.
         if not job_id:
             dropped = _drop_all_queued(slug)
-            if dropped == 0:
+            killed_in_flight = False
+            with _inflight_lock:
+                proc = _inflight_procs.get(slug)
+                if proc is not None and proc.poll() is None:
+                    try:
+                        proc.kill()
+                        killed_in_flight = True
+                    except Exception:
+                        LOG.exception("failed to kill in-flight agent for lane %s", slug)
+            if dropped == 0 and not killed_in_flight:
                 self.send(
                     chat_id,
-                    "Nothing queued to cancel.",
+                    "Nothing to cancel.",
                     reply_to=reply_to,
                     thread_id=thread_id,
                 )
-            else:
-                self.send(
-                    chat_id,
-                    f"Cancelled {dropped} pending task(s). In-flight task continues.",
-                    reply_to=reply_to,
-                    thread_id=thread_id,
-                )
+                return
+            parts: list[str] = []
+            if killed_in_flight:
+                parts.append("killed running task")
+            if dropped > 0:
+                parts.append(f"cancelled {dropped} pending task(s)")
+            self.send(
+                chat_id,
+                "✓ " + " + ".join(parts) + ".",
+                reply_to=reply_to,
+                thread_id=thread_id,
+            )
             return
         removed = _remove_queued(slug, job_id)
         if removed is None:
@@ -1674,14 +1768,35 @@ class Bot:
                 markdown=True,
             )
         elif removed.get("status") == "in_flight":
-            self.send(
-                chat_id,
-                f"Task `{job_id}` is already running and can't be cancelled. "
-                "It'll finish on its own.",
-                reply_to=reply_to,
-                thread_id=thread_id,
-                markdown=True,
-            )
+            # `/cancel <id>` against the running task — same SIGKILL path
+            # as bare `/cancel`, just scoped to this single id. We already
+            # know the id is the in-flight one for this slug because
+            # `_remove_queued` returned its row.
+            killed = False
+            with _inflight_lock:
+                proc = _inflight_procs.get(slug)
+                if proc is not None and proc.poll() is None:
+                    try:
+                        proc.kill()
+                        killed = True
+                    except Exception:
+                        LOG.exception("failed to kill in-flight agent for lane %s", slug)
+            if killed:
+                self.send(
+                    chat_id,
+                    f"🛑 Cancelled `{job_id}`.",
+                    reply_to=reply_to,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+            else:
+                self.send(
+                    chat_id,
+                    f"Task `{job_id}` finished before we could kill it.",
+                    reply_to=reply_to,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
         else:
             self.send(
                 chat_id,

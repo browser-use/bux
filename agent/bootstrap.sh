@@ -135,6 +135,39 @@ for unit in box-agent.service bux-ttyd.service bux-browser-keeper.service bux-tg
   ln -sf "$AGENT_DIR/$unit" "/etc/systemd/system/$unit"
 done
 
+# --- boot-time pull oneshot ------------------------------------------------
+# On every reboot, pull latest agent code from OSS and re-run bootstrap.sh
+# BEFORE the long-lived units start. Same idea as the user-data first-boot
+# pull on the cloud side, but covers the case of an existing box getting
+# rebooted (stop+start, instance refresh, etc.) — without this, a user-
+# triggered reboot could revert the box to whatever it had on disk last,
+# missing fixes that landed in OSS while it was running.
+#
+# Type=oneshot + Before=box-agent.service so the pull always lands before
+# the agent starts. Best-effort: a github outage at boot logs a warning
+# but doesn't block the agent from coming up on the previous SHA.
+cat > /etc/systemd/system/bux-boot-update.service <<'UNITEOF'
+[Unit]
+Description=bux boot-time git pull + bootstrap
+After=network-online.target
+Wants=network-online.target
+Before=box-agent.service bux-tg.service bux-browser-keeper.service bux-ttyd.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'sudo -u bux git -C /opt/bux/repo pull --ff-only --quiet || true; /bin/bash /opt/bux/agent/bootstrap.sh'
+StandardOutput=append:/var/log/bux/boot-update.log
+StandardError=append:/var/log/bux/boot-update.log
+# A long fetch shouldn't block boot indefinitely. 60s is enough for a
+# shallow pull on a healthy network; on timeout we skip and the agent
+# starts on the existing on-disk code.
+TimeoutStartSec=60
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+
 # Drop any unit from a previous version that no longer exists in this
 # commit (e.g. bux-slack.service after Slack removal). Keeps systemd's
 # unit registry in sync with the repo.
@@ -156,6 +189,9 @@ systemctl enable bux-browser-keeper.service
 # bux-tg stays enabled-but-conditional — only runs once /etc/bux/tg.env
 # is written by the agent's tg_install handler.
 systemctl enable bux-tg.service
+
+# Boot-time pull runs ahead of the others on every reboot.
+systemctl enable bux-boot-update.service
 
 # --- self-heal cron -------------------------------------------------------
 # A user with sudo can `systemctl disable box-agent`, leaving the box
