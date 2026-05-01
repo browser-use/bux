@@ -506,6 +506,20 @@ def _save_codex_thread_id(key: LaneKey, thread_id: str) -> None:
     _write_session_uuid(f, thread_id)
 
 
+def _claude_session_flag(sid: str) -> list[str]:
+    """Pick `--session-id` (create) vs `--resume` (continue) for `sid`.
+
+    Claude Code 2.x rejects `--session-id <existing>` with "Session ID is
+    already in use" — it's create-only. We detect prior creation by looking
+    for the transcript file claude writes at
+    `~/.claude/projects/-home-bux/<sid>.jsonl` after the first turn (WORKSPACE
+    is /home/bux, encoded as `-home-bux`). Existing transcript → resume; no
+    transcript → create.
+    """
+    transcript = Path("/home/bux/.claude/projects/-home-bux") / f"{sid}.jsonl"
+    return ["--resume", sid] if transcript.exists() else ["--session-id", sid]
+
+
 def _session_uuid_for(key: LaneKey) -> str:
     """Return the per-lane claude session UUID, persisting on first call.
 
@@ -1276,17 +1290,14 @@ class Bot:
         env = self._build_env(key, AGENT_CLAUDE)
         sid = _session_uuid_for(key)
 
-        # --session-id is the create-or-resume flag: claude creates a session
-        # with this UUID on first use and resumes it on subsequent calls. The
-        # neighbor flag --resume is RESUME-ONLY (errors / opens the picker if
-        # the session doesn't exist), which would break on the first message
-        # of every fresh lane. Always use --session-id with our pinned UUID.
+        # Claude Code 2.x split create vs. resume: `--session-id <uuid>`
+        # creates and errors if the UUID already exists, `--resume <uuid>`
+        # continues an existing session. Pick based on transcript presence.
         cmd = ["sudo", "-u", "bux", "-H"] + [f"{k}={v}" for k, v in env.items() if v]
         cmd += [
             "/usr/bin/claude",
             "-p",
-            "--session-id",
-            sid,
+            *_claude_session_flag(sid),
             "--permission-mode",
             "bypassPermissions",
             "--output-format",
@@ -1402,8 +1413,7 @@ class Bot:
                 fb_cmd += [
                     "/usr/bin/claude",
                     "-p",
-                    "--session-id",
-                    sid,
+                    *_claude_session_flag(sid),
                     "--permission-mode",
                     "bypassPermissions",
                     "--output-format",
