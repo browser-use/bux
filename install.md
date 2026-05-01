@@ -61,8 +61,8 @@ curl -fsSL https://raw.githubusercontent.com/browser-use/bux/main/install.sh \
 
 The script:
 1. Installs Node.js 24 + Claude Code + ttyd + browser-harness
-2. Creates a `bux` system user with its own venv
-3. Drops the browser-keeper + telegram-bot + systemd units
+2. Creates a `bux` system user with its own venv (with `claude-agent-sdk` for the long-lived bot)
+3. Drops the browser-keeper + telegram-bot + systemd units. The Telegram bot uses [`claude-agent-sdk`](https://github.com/anthropics/claude-agent-sdk-python): one long-lived `ClaudeSDKClient` per chat, with concurrent mid-turn queries, soft-cancel via `/cancel`, and persistent per-chat session continuity at `/var/lib/bux/sessions.json`.
 4. Installs [ztk](https://github.com/codejunkie99/ztk) (pinned) — compresses long Bash tool outputs before they hit Claude's context. Opt out with `WITH_ZTK=0`.
 5. Starts everything
 

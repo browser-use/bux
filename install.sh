@@ -255,7 +255,10 @@ if [ ! -d /opt/bux/venv ]; then
 	sudo -u bux python3 -m venv /opt/bux/venv
 fi
 sudo -u bux /opt/bux/venv/bin/pip install --quiet --upgrade pip
-sudo -u bux /opt/bux/venv/bin/pip install --quiet websockets httpx
+# claude-agent-sdk powers the new long-lived per-chat ClaudeSDKClient bot
+# (agent/telegram_bot_sdk.py). It shells out to /usr/bin/claude under the
+# hood, so the existing claude install stays mandatory.
+sudo -u bux /opt/bux/venv/bin/pip install --quiet websockets httpx claude-agent-sdk
 
 # --- browser-harness-js skill ---------------------------------------------
 if [ ! -d /home/bux/.claude/skills/cdp ]; then
@@ -388,9 +391,16 @@ fi
 
 # --- drop agent files ------------------------------------------------------
 say 'installing bux agent files'
-install -o bux -g bux -m 0644 "$REPO_DIR/agent/browser_keeper.py" /opt/bux/browser_keeper.py
-install -o bux -g bux -m 0644 "$REPO_DIR/agent/telegram_bot.py"   /opt/bux/telegram_bot.py
-install -o bux -g bux -m 0644 "$REPO_DIR/agent/CLAUDE.md"         /home/bux/CLAUDE.md
+install -o bux -g bux -m 0644 "$REPO_DIR/agent/browser_keeper.py"    /opt/bux/browser_keeper.py
+install -o bux -g bux -m 0644 "$REPO_DIR/agent/telegram_bot.py"      /opt/bux/telegram_bot.py
+install -o bux -g bux -m 0644 "$REPO_DIR/agent/telegram_bot_sdk.py"  /opt/bux/telegram_bot_sdk.py
+install -o bux -g bux -m 0644 "$REPO_DIR/agent/CLAUDE.md"            /home/bux/CLAUDE.md
+
+# Per-chat session_id mirror used by the SDK-backed bot to resume the
+# same claude session across restarts. Owned by root because the bot
+# runs as root; mode 0700 since chat ids aren't sensitive but the file
+# only ever needs to be touched by bux-tg.service.
+install -d -o root -g root -m 0700 /var/lib/bux
 
 # --- tg-send: shell helper to push a message to the bound TG chat ---------
 # Used by `at` / cron jobs (and claude from a shell) so scheduled work can
@@ -580,7 +590,7 @@ User=root
 Group=root
 EnvironmentFile=-/etc/bux/tg.env
 WorkingDirectory=/opt/bux
-ExecStart=/opt/bux/venv/bin/python /opt/bux/telegram_bot.py
+ExecStart=/opt/bux/venv/bin/python /opt/bux/telegram_bot_sdk.py
 Restart=always
 RestartSec=5
 StandardOutput=append:/var/log/bux/tg.log
