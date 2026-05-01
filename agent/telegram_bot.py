@@ -1080,6 +1080,9 @@ class Bot:
         self.api = f"https://api.telegram.org/bot{token}"
         self.client = httpx.Client(timeout=POLL_TIMEOUT + 10)
         self.state = load_state()
+        # In-memory invite tokens: {token: expiry_unix}. Single-use, ~10 min TTL.
+        # Lost on restart by design — re-issue with /invite.
+        self._invite_tokens: dict[str, float] = {}
 
     # ----- Telegram API plumbing -----
 
@@ -1716,7 +1719,40 @@ class Bot:
             "silently dropped — even if someone discovers the bot handle.\n\n"
             "Text me anything and I'll run it on your bux. Want parallel work? "
             "Turn on Topics in this chat and each topic becomes a separate "
-            "agent session. `/agent codex` per-topic to switch from claude.",
+            "agent session. `/agent codex` per-topic to switch from claude.\n\n"
+            "Want a second chat (e.g. a new group)? Run /invite here and paste "
+            "the resulting `/bind <token>` in the new chat.",
+        )
+
+    def _gc_invite_tokens(self) -> None:
+        now = time.time()
+        self._invite_tokens = {t: e for t, e in self._invite_tokens.items() if e > now}
+
+    def _mint_invite_token(self, ttl: int = 600) -> str:
+        """Single-use token authorizing one new chat to join the allow-list."""
+        self._gc_invite_tokens()
+        token = secrets.token_urlsafe(8)
+        self._invite_tokens[token] = time.time() + ttl
+        return token
+
+    def _consume_invite_token(self, token: str) -> bool:
+        self._gc_invite_tokens()
+        return self._invite_tokens.pop(token, None) is not None
+
+    def _bind_via_invite(self, chat_id: int) -> None:
+        """Add chat_id to the allow-list via an /invite token from a bound chat.
+
+        Unlike _bind_chat, this does not touch the setup_token (already burned
+        at first bind) and the welcome reflects multi-chat reality.
+        """
+        add_allow(chat_id)
+        LOG.info("invite-bound chat_id=%s", chat_id)
+        self.send(
+            chat_id,
+            "✓ Linked.\n\n"
+            f"Chat id: {chat_id}\n\n"
+            "This chat is now authorized alongside your other chats. Forum "
+            "topics each get their own agent session and run in parallel.",
         )
 
     # ----- Attachments -----
@@ -1861,8 +1897,15 @@ class Bot:
         # Binding: first message wins. Topic-id is irrelevant — once the
         # parent chat is bound, every topic in it is automatically allowed.
         if chat_id not in allow:
+            # /bind <token> from an unbound chat: redeem an invite minted by
+            # /invite in an already-bound chat. Lets a user add a second
+            # chat (e.g. a new group) without re-running setup.
+            cmd, arg = _parse_command(text)
+            if cmd == "/bind" and arg and self._consume_invite_token(arg.strip()):
+                self._bind_via_invite(chat_id)
+                return
             if not self.setup_token:
-                LOG.info("dropping msg from chat_id=%s (already bound)", chat_id)
+                LOG.info("dropping msg from chat_id=%s (not bound)", chat_id)
                 return
             LOG.info("binding chat_id=%s (first-message wins)", chat_id)
             self._bind_chat(chat_id)
@@ -1916,6 +1959,7 @@ class Bot:
                 "/schedules — list reminders / cron jobs\n"
                 "/login — auth status / connect a service (e.g. /login gh)\n"
                 "/logout — disconnect a service (e.g. /logout gh)\n"
+                "/invite — mint a token to authorize a second chat (paste `/bind <token>` there)\n"
                 "/version — show the bux agent version\n"
                 "/update — pull latest code + restart (or /update <branch>)",
                 reply_to=mid,
@@ -1958,6 +2002,30 @@ class Bot:
             return
         if cmd == "/logout":
             self._cmd_logout(chat_id, mid, thread_id, arg)
+            return
+        if cmd == "/invite":
+            token = self._mint_invite_token()
+            self.send(
+                chat_id,
+                "Send this in the *new* chat or group within 10 minutes:\n\n"
+                f"`/bind {token}`\n\n"
+                "Make sure I'm a member there first. Single-use; expires in "
+                "10 minutes; lost on bot restart.",
+                reply_to=mid,
+                thread_id=thread_id,
+                markdown=True,
+            )
+            return
+        if cmd == "/bind":
+            # Already bound — friendly no-op so the user knows the command
+            # landed but nothing changed.
+            self.send(
+                chat_id,
+                "This chat is already authorized — no need to /bind here. "
+                "Run /bind in a *new* chat after /invite.",
+                reply_to=mid,
+                thread_id=thread_id,
+            )
             return
 
         # Attachment + caption combo: download synchronously (small file) and
