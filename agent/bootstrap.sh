@@ -62,12 +62,30 @@ fi
 # The agent (running as bux) shells out `systemctl restart bux-tg` after
 # writing /etc/bux/tg.env. Without this rule, polkit would require an
 # interactive prompt or sudo.
+# --- sudoers: let bux re-run bootstrap.sh during self-update --------------
+# box-agent runs as bux. The `update` cmd handler does git pull + bash
+# bootstrap.sh; bootstrap.sh writes /etc/systemd/* and /etc/cron.d/*, which
+# require root. Grant a narrow sudoers rule for exactly this script (any
+# checkout under the bux-owned repo dir).
+cat > /etc/sudoers.d/bux-bootstrap <<'SUDOERS'
+bux ALL=(root) NOPASSWD: /opt/bux/repo/agent/bootstrap.sh
+bux ALL=(root) NOPASSWD: /bin/bash /opt/bux/repo/agent/bootstrap.sh
+SUDOERS
+chmod 440 /etc/sudoers.d/bux-bootstrap
+
 cat > /etc/polkit-1/rules.d/50-bux-chat.rules <<'POLKIT'
 polkit.addRule(function(action, subject) {
     if (action.id == "org.freedesktop.systemd1.manage-units" &&
         subject.user == "bux") {
         var unit = action.lookup("unit");
-        if (unit == "bux-tg.service") {
+        // bux-tg: agent restarts after writing /etc/bux/tg.env on install.
+        // box-agent: agent restarts itself at the tail of self-update so
+        //   the new code takes effect.
+        // bux-browser-keeper / bux-ttyd: same self-update path.
+        if (unit == "bux-tg.service" ||
+            unit == "box-agent.service" ||
+            unit == "bux-browser-keeper.service" ||
+            unit == "bux-ttyd.service") {
             return polkit.Result.YES;
         }
     }

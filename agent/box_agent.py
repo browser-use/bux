@@ -37,6 +37,50 @@ ENV_PATH = Path('/etc/bux/env')
 HEARTBEAT_INTERVAL = 30
 TG_ENV = Path('/etc/bux/tg.env')
 
+# Where the OSS repo is cloned by install.sh at bake time. /opt/bux/agent is
+# a symlink to /opt/bux/repo/agent so systemd units' ExecStart=/opt/bux/agent
+# paths resolve through the symlink. Updates run `git pull` here.
+REPO_DIR = Path('/opt/bux/repo')
+
+
+def _get_agent_sha() -> str:
+	"""Short git SHA of the cloned agent repo, or 'unknown' off-repo (e.g.
+	dev runs from a tarball). Surfaced in the hello payload so the cloud
+	can show "running v0.4.2 (a3f9c1d)" in /bux."""
+	try:
+		import subprocess
+
+		out = subprocess.run(
+			['git', '-C', str(REPO_DIR), 'rev-parse', '--short', 'HEAD'],
+			capture_output=True,
+			text=True,
+			timeout=3,
+		)
+		if out.returncode == 0:
+			return out.stdout.strip()
+	except Exception:
+		pass
+	return 'unknown'
+
+
+def _get_agent_branch() -> str:
+	"""Branch the agent repo is currently tracking. Lets the cloud surface
+	"on stable" vs "on main" so users know whether they're pinned."""
+	try:
+		import subprocess
+
+		out = subprocess.run(
+			['git', '-C', str(REPO_DIR), 'rev-parse', '--abbrev-ref', 'HEAD'],
+			capture_output=True,
+			text=True,
+			timeout=3,
+		)
+		if out.returncode == 0:
+			return out.stdout.strip()
+	except Exception:
+		pass
+	return 'unknown'
+
 
 def load_env() -> dict[str, str]:
 	"""Parse /etc/bux/env written by user-data at first boot.
@@ -532,7 +576,13 @@ class Agent:
 		async with websockets.connect(self.ws_url, additional_headers=headers) as ws:
 			self.ws = ws
 			LOG.info('connected to %s', self.ws_url)
-			await self._send({'type': 'hello', 'box_id': self.box_id, 'agent_version': '0.4.0'})
+			await self._send({
+				'type': 'hello',
+				'box_id': self.box_id,
+				'agent_version': '0.4.0',
+				'agent_sha': _get_agent_sha(),
+				'agent_branch': _get_agent_branch(),
+			})
 
 			hb_task = asyncio.create_task(self._heartbeat_loop())
 			auth_task = asyncio.create_task(self._auth_poll_loop())
@@ -721,6 +771,12 @@ class Agent:
 				msg.get('setup_token', ''),
 				msg.get('bot_username', ''),
 			)
+		elif cmd == 'update':
+			# Pull latest agent code from the OSS repo and restart services.
+			# Defaults to the branch the box was originally cloned from
+			# (whatever's checked out in /opt/bux/repo); cmd can pass
+			# `branch` to switch tracks, e.g. `stable` → `main`.
+			await self._update(branch=msg.get('branch') or '')
 		elif cmd == 'claude_login_start':
 			# Drive `claude /login` from a pty so the cloud can extract
 			# the OAuth URL and pump the callback code back without
@@ -1053,6 +1109,102 @@ class Agent:
 				},
 			})
 			return
+
+	async def _update(self, *, branch: str = '') -> None:
+		"""Pull latest agent code from the OSS repo and restart services.
+
+		Steps:
+		  1. `git fetch` to grab the latest refs.
+		  2. If `branch` was passed, switch to it. Otherwise stay on the
+		     currently-checked-out branch.
+		  3. `git reset --hard origin/<branch>` to advance.
+		  4. `bash bootstrap.sh` to re-apply systemd units / polkit / cron
+		     in case they changed (idempotent).
+		  5. systemd restarts box-agent itself, killing this process. Reply
+		     before that happens so the cloud sees `update_result` ok.
+
+		If anything fails, we DON'T roll back yet — that's a follow-up
+		feature. For now, the next user-triggered Update tries again.
+		"""
+		import subprocess
+
+		old_sha = _get_agent_sha()
+
+		def _run(args: list[str], cwd: str = str(REPO_DIR)) -> tuple[int, str]:
+			try:
+				r = subprocess.run(
+					args,
+					cwd=cwd,
+					capture_output=True,
+					text=True,
+					timeout=60,
+				)
+				return r.returncode, ((r.stdout or '') + (r.stderr or '')).strip()
+			except Exception as e:
+				return 1, str(e)
+
+		# Fetch first (cheap; survives transient failures by failing here
+		# before we touch local state). box-agent runs as bux which owns
+		# the repo, so no sudo needed.
+		rc, out = _run(['git', 'fetch', '--prune', 'origin'])
+		if rc != 0:
+			LOG.warning('update: git fetch failed: %s', out)
+			await self._send({
+				'type': 'update_result',
+				'ok': False,
+				'error': f'fetch: {out[:200]}',
+			})
+			return
+
+		# Determine target branch: explicit > current.
+		target_branch = branch or _get_agent_branch()
+		if target_branch == 'unknown':
+			target_branch = 'main'
+
+		rc, out = _run(['git', 'reset', '--hard', f'origin/{target_branch}'])
+		if rc != 0:
+			LOG.warning('update: git reset failed: %s', out)
+			await self._send({
+				'type': 'update_result',
+				'ok': False,
+				'error': f'reset: {out[:200]}',
+			})
+			return
+
+		new_sha = _get_agent_sha()
+		LOG.info('update: %s → %s on %s', old_sha, new_sha, target_branch)
+
+		# Re-apply systemd units / polkit / cron / pip deps. Idempotent.
+		# Runs via sudo because bootstrap.sh writes /etc/systemd/* etc.
+		# Sudoers entry is set up in bootstrap.sh itself for self-bootstrapping.
+		rc, out = _run(
+			['sudo', '/bin/bash', str(REPO_DIR / 'agent' / 'bootstrap.sh')],
+			cwd='/',
+		)
+		if rc != 0:
+			LOG.warning('update: bootstrap failed: %s', out)
+			await self._send({
+				'type': 'update_result',
+				'ok': False,
+				'old_sha': old_sha,
+				'new_sha': new_sha,
+				'error': f'bootstrap: {out[:200]}',
+			})
+			return
+
+		# Reply BEFORE systemctl restarts us. bootstrap.sh ends with a
+		# `systemctl restart box-agent`, which is what swaps in the new
+		# code — by the time it runs, this coroutine is dead.
+		await self._send({
+			'type': 'update_result',
+			'ok': True,
+			'old_sha': old_sha,
+			'new_sha': new_sha,
+			'branch': target_branch,
+		})
+		# bootstrap.sh already restarted us at the end of its run.
+		# When systemd kills us mid-coroutine, the WS just hangs up;
+		# the new agent process picks up from a fresh hello.
 
 	async def _tg_install(self, bot_token: str, setup_token: str, bot_username: str) -> None:
 		if not bot_token:
