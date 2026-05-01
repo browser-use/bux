@@ -926,17 +926,16 @@ class Bot:
         env = self._build_env(key, AGENT_CLAUDE)
         sid = _session_uuid_for(key)
 
-        # `claude --resume <uuid>` only works after the session exists. The
-        # first call has to use --session-id; subsequent calls --resume.
-        # We don't know which without a probe, so always pass --session-id
-        # on first creation — but the existing _session_uuid_for guarantees
-        # we have a uuid; if it's net-new the file just got written. Use
-        # --resume regardless: claude treats it as create-or-resume.
+        # --session-id is the create-or-resume flag: claude creates a session
+        # with this UUID on first use and resumes it on subsequent calls. The
+        # neighbor flag --resume is RESUME-ONLY (errors / opens the picker if
+        # the session doesn't exist), which would break on the first message
+        # of every fresh lane. Always use --session-id with our pinned UUID.
         cmd = ["sudo", "-u", "bux", "-H"] + [f"{k}={v}" for k, v in env.items() if v]
         cmd += [
             "/usr/bin/claude",
             "-p",
-            "--resume",
+            "--session-id",
             sid,
             "--permission-mode",
             "bypassPermissions",
@@ -1026,7 +1025,7 @@ class Bot:
             fb_cmd += [
                 "/usr/bin/claude",
                 "-p",
-                "--resume",
+                "--session-id",
                 sid,
                 "--permission-mode",
                 "bypassPermissions",
@@ -1106,6 +1105,8 @@ class Bot:
                 "• ChatGPT subscription: run `codex login` once as the bux user "
                 "(`sudo -iu bux codex login` from ttyd or ssh) and follow the OAuth flow.\n"
                 "• API key: drop `OPENAI_API_KEY=...` into `/home/bux/.secrets/openai.env`.\n\n"
+                "Pick one — if both are set, codex silently uses the API key "
+                "for billing (openai/codex#20099).\n\n"
                 "Or `/agent claude` to switch back.",
                 reply_to=reply_to,
                 thread_id=thread_id,
@@ -1182,18 +1183,18 @@ class Bot:
                             if not any_text:
                                 any_text = True
                                 self.react(chat_id, reply_to, EMOJI_DONE)
-                elif et in ("turn.completed", "turn.failed", "thread.completed"):
+                elif et in ("turn.completed", "turn.failed"):
+                    # `turn.failed` is the only true terminal-error signal.
+                    # `error` events also appear during transient reconnects
+                    # ("Reconnecting... 1/5") and aren't fatal — see below.
                     break
                 elif et == "error":
-                    err = ev.get("message") or "codex error"
-                    self.react(chat_id, reply_to, EMOJI_ERROR)
-                    self.send(
-                        chat_id,
-                        f"❌ codex: {err}",
-                        reply_to=reply_to,
-                        thread_id=thread_id,
-                    )
-                    break
+                    # Don't terminate the loop here: codex emits transient
+                    # `error` notices (reconnection retries, rate-limit
+                    # backoff) as progress signals. Just log and keep
+                    # streaming; if the failure is real, `turn.failed` will
+                    # arrive next and break us out.
+                    LOG.warning("codex transient error: %s", ev.get("message") or ev)
         except Exception:
             LOG.exception("codex JSONL loop failed")
 
@@ -1826,7 +1827,15 @@ class Bot:
         LOG.info("bux-tg starting poll loop")
         while True:
             try:
-                params = {"timeout": POLL_TIMEOUT}
+                # allowed_updates filters server-side so we don't burn
+                # update_ids on channel_post / callback_query / inline_query /
+                # poll / chat_join_request / etc — we only ever consume
+                # message + edited_message. Every other update type the bot
+                # would silently drop after the round-trip.
+                params: dict = {
+                    "timeout": POLL_TIMEOUT,
+                    "allowed_updates": ["message", "edited_message"],
+                }
                 if self.state.get("offset"):
                     params["offset"] = self.state["offset"] + 1
                 data = self.call("getUpdates", **params)
