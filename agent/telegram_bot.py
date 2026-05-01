@@ -1444,7 +1444,7 @@ class Bot:
                 chat_id,
                 "Text me anything — I'll run it on your bux.\n\n"
                 "Forum topics each get their own agent session and run in "
-                "parallel (cap 4 concurrent).\n\n"
+                "parallel — no concurrency cap, only the box's RAM gates it.\n\n"
                 "Commands\n"
                 "/agent claude|codex — switch this topic to a different agent\n"
                 "/live — live-view URL of the active browser\n"
