@@ -588,6 +588,233 @@ def _queue_snapshot(chat_id: int) -> list[dict]:
 		return [dict(j) for j in _queue if j.get('chat_id') == chat_id]
 
 
+# =============================================================================
+# Auth providers — `/login <name>` / `/logout <name>`.
+#
+# Each provider knows how to:
+#   - check current auth status (read-only, fast)
+#   - run a login flow (typically device-code; emits progress lines via
+#     a callback so the bot can post the URL/code to TG mid-flight)
+#   - log out (clear local creds, optional /etc/bux/env scrub)
+#
+# Adding a new provider = drop a class below + register in `AUTH_PROVIDERS`.
+# Keep providers framework-agnostic: no Bot reference, no TG knowledge —
+# just stdout/stderr-style progress strings the caller can relay.
+# =============================================================================
+
+
+class _GhProvider:
+	"""GitHub auth via `gh auth login --web` device-code flow.
+
+	The `--web` flag prints a one-time code + URL and polls GitHub's API
+	until the user authorizes in their browser. No interactive stdin —
+	we can run it as a subprocess, parse the URL/code from stderr in
+	real time, send them to the user via TG, then `proc.wait()` for the
+	authorization to complete (gh polls internally).
+
+	On success we ALSO write the token into /etc/bux/env as GH_TOKEN
+	so non-`gh` git operations (raw `git push https://github.com/...`)
+	pick it up via the systemd EnvironmentFile mechanism.
+	"""
+
+	name = 'gh'
+	label = 'GitHub'
+
+	def check(self) -> tuple[bool, str]:
+		try:
+			# Run as bux so we read /home/bux/.config/gh/hosts.yml — that's
+			# where claude (which runs as bux) will look. Running as root
+			# would read /root/.config/gh which claude can't see.
+			r = subprocess.run(
+				['sudo', '-u', 'bux', '-H', 'gh', 'auth', 'status', '--hostname', 'github.com'],
+				capture_output=True, text=True, timeout=10,
+			)
+			# gh writes status to stderr. "Logged in to github.com account X"
+			# on success; "not logged in" on failure.
+			out = (r.stdout + r.stderr).strip()
+			if r.returncode == 0:
+				# Try to extract the account name for a friendlier message.
+				for line in out.splitlines():
+					line = line.strip()
+					if 'account' in line.lower() and 'logged in' in line.lower():
+						return True, line
+				return True, 'logged in'
+			return False, 'not logged in'
+		except FileNotFoundError:
+			return False, 'gh CLI not installed'
+		except subprocess.TimeoutExpired:
+			return False, 'gh auth status timed out'
+
+	def login(self, on_progress) -> tuple[bool, str]:
+		"""Run device-code flow; emit progress strings (URL + code) via
+		on_progress(text) callback. Returns (success, final_status)."""
+		try:
+			# Run as bux (-H so HOME=/home/bux), not root. gh writes its
+			# config to ~/.config/gh/hosts.yml; claude (which also runs
+			# as bux) reads from the same path. If we ran as root the
+			# auth would land in /root/.config and claude wouldn't see it.
+			#
+			# --web kicks off the device-code flow. --skip-ssh-key avoids
+			# the "Generate a new SSH key?" prompt that otherwise blocks
+			# even with stdin=DEVNULL on some gh versions.
+			# stdin=DEVNULL: defense in depth — gh shouldn't read stdin
+			# in --web mode but we make sure it can't block on it.
+			proc = subprocess.Popen(
+				['sudo', '-u', 'bux', '-H',
+				 'gh', 'auth', 'login', '--web', '--hostname', 'github.com',
+				 '--git-protocol', 'https', '--skip-ssh-key'],
+				stdin=subprocess.DEVNULL,
+				stdout=subprocess.PIPE,
+				stderr=subprocess.STDOUT,  # gh writes everything to stderr; merge for one stream
+				text=True,
+				bufsize=1,
+			)
+		except FileNotFoundError:
+			return False, 'gh CLI not installed on this box'
+
+		# Parse stdout line-by-line: gh prints
+		#   "! First copy your one-time code: ABCD-1234"
+		#   "Press Enter to open https://github.com/login/device in your browser..."
+		# We want the code AND the URL. Send to TG as one combined message
+		# so the user sees both at the same time.
+		code = ''
+		url = 'https://github.com/login/device'
+		announced = False
+		assert proc.stdout is not None
+		try:
+			for raw in proc.stdout:
+				line = raw.rstrip()
+				low = line.lower()
+				if 'one-time code' in low:
+					# Extract the code (last whitespace-separated token).
+					parts = line.split()
+					if parts:
+						code = parts[-1].strip()
+				if 'github.com/login/device' in line:
+					# Use the URL gh prints in case it ever changes.
+					for tok in line.split():
+						if tok.startswith('http'):
+							url = tok.rstrip('.')
+							break
+				if not announced and code:
+					on_progress(
+						f'Open {url} on any device and enter code: {code}\n\n'
+						"I'll let you know once GitHub authorizes."
+					)
+					announced = True
+				# Final success line ends the loop naturally when the pipe closes.
+		except Exception:
+			LOG.exception('gh login: stdout read failed')
+
+		# `gh auth login --web` blocks until the user authorizes (or it
+		# times out — gh's own ~15min default). We wait the same.
+		rc = proc.wait()
+		if rc != 0:
+			return False, f'gh auth failed (rc={rc})'
+
+		# Persist the token into /etc/bux/env so subsequent box-agent /
+		# bux-tg restarts inherit it (gh hosts.yml lives under bux's
+		# HOME and is auto-loaded by gh; GH_TOKEN env covers raw git).
+		# Read the token as bux so we hit the same hosts.yml we just wrote.
+		try:
+			tok = subprocess.run(
+				['sudo', '-u', 'bux', '-H',
+				 'gh', 'auth', 'token', '--hostname', 'github.com'],
+				capture_output=True, text=True, timeout=5,
+			).stdout.strip()
+			if tok:
+				_set_box_env_var('GH_TOKEN', tok)
+		except Exception:
+			LOG.exception('gh login: failed to persist GH_TOKEN to /etc/bux/env')
+
+		return True, 'connected'
+
+	def logout(self) -> tuple[bool, str]:
+		try:
+			# Run as bux for consistency with login/check — logs out the
+			# bux user's gh, not root's.
+			subprocess.run(
+				['sudo', '-u', 'bux', '-H',
+				 'gh', 'auth', 'logout', '--hostname', 'github.com'],
+				stdin=subprocess.DEVNULL,
+				capture_output=True, text=True, timeout=10,
+			)
+		except Exception:
+			LOG.exception('gh logout failed')
+		# Scrub GH_TOKEN regardless — even if `gh auth logout` failed,
+		# the user clearly wants to be logged out.
+		_unset_box_env_var('GH_TOKEN')
+		return True, 'logged out'
+
+
+def _set_box_env_var(key: str, value: str) -> None:
+	"""Append/replace KEY=VALUE in /etc/bux/env, then restart consumers
+	so the new env is in their environment.
+
+	/etc/bux/env is the EnvironmentFile= for box-agent and bux-tg. New
+	values aren't picked up until the unit restarts.
+	"""
+	# Read existing kv, replace KEY if present, otherwise append.
+	existing: dict[str, str] = {}
+	try:
+		for line in BOX_ENV.read_text().splitlines():
+			line = line.strip()
+			if not line or line.startswith('#') or '=' not in line:
+				continue
+			k, _, v = line.partition('=')
+			existing[k.strip()] = v.strip()
+	except FileNotFoundError:
+		pass
+	existing[key] = value
+	rendered = '\n'.join(f'{k}={v}' for k, v in existing.items()) + '\n'
+	# Atomic write so a concurrent reader can't see a half-file.
+	tmp = BOX_ENV.with_suffix('.env.tmp')
+	tmp.write_text(rendered)
+	tmp.chmod(0o640)
+	tmp.replace(BOX_ENV)
+	# box-agent and bux-tg both EnvironmentFile this. box-agent restart
+	# is async via systemctl; bux-tg restart will kill us mid-call, so
+	# DON'T restart bux-tg here — the next deploy / reboot picks it up,
+	# and `gh` already has the token in its own hosts.yml so the
+	# new env var only matters for raw git operations.
+	try:
+		subprocess.run(
+			['systemctl', 'restart', 'box-agent.service'],
+			stdin=subprocess.DEVNULL, capture_output=True, timeout=10,
+		)
+	except Exception:
+		LOG.exception('failed to restart box-agent after env update')
+
+
+def _unset_box_env_var(key: str) -> None:
+	try:
+		lines = BOX_ENV.read_text().splitlines()
+	except FileNotFoundError:
+		return
+	kept = [
+		line for line in lines
+		if not (line.strip() and not line.strip().startswith('#') and line.split('=', 1)[0].strip() == key)
+	]
+	rendered = '\n'.join(kept) + ('\n' if kept else '')
+	tmp = BOX_ENV.with_suffix('.env.tmp')
+	tmp.write_text(rendered)
+	tmp.chmod(0o640)
+	tmp.replace(BOX_ENV)
+	try:
+		subprocess.run(
+			['systemctl', 'restart', 'box-agent.service'],
+			stdin=subprocess.DEVNULL, capture_output=True, timeout=10,
+		)
+	except Exception:
+		LOG.exception('failed to restart box-agent after env unset')
+
+
+AUTH_PROVIDERS: dict[str, _GhProvider] = {
+	'gh': _GhProvider(),
+	# Future: 'vercel': _VercelProvider(), 'npm': _NpmProvider(), etc.
+}
+
+
 class Bot:
 	def __init__(self, token: str, setup_token: str) -> None:
 		self.token = token
@@ -895,6 +1122,8 @@ class Bot:
 				'/queue — see pending tasks\n'
 				'/cancel — drop everything pending\n'
 				'/cancel <id> — drop one pending task\n'
+				'/login — auth status / connect a service (e.g. /login gh)\n'
+				'/logout — disconnect a service (e.g. /logout gh)\n'
 				'/schedules — list reminders / cron jobs (ask claude to cancel)\n'
 				'/version — show the bux agent version\n'
 				'/update — pull latest code + restart (or /update <branch>)',
@@ -920,6 +1149,12 @@ class Bot:
 			return
 		if cmd == '/update':
 			self._cmd_update(chat_id, mid, arg)
+			return
+		if cmd == '/login':
+			self._cmd_login(chat_id, mid, arg)
+			return
+		if cmd == '/logout':
+			self._cmd_logout(chat_id, mid, arg)
 			return
 
 		# Enqueue and acknowledge. Worker thread does the actual claude run
@@ -1274,6 +1509,88 @@ class Bot:
 		except Exception as e:
 			LOG.exception('/update failed')
 			self.send(chat_id, f'❌ update failed: {e}', reply_to=reply_to)
+
+	def _cmd_login(self, chat_id: int, reply_to: int | None, arg: str) -> None:
+		"""`/login` — list providers + status. `/login <name>` — start flow.
+
+		The actual login runs in a background thread because device-code
+		flows block until the user authorizes (gh polls for ~15min). We
+		don't want the bot's main poll loop stuck waiting; instead we
+		send progress messages from the worker thread.
+		"""
+		name = arg.strip().lower()
+		if not name:
+			# List status of every registered provider.
+			lines = ['*Auth status:*']
+			for pname, prov in AUTH_PROVIDERS.items():
+				connected, status = prov.check()
+				icon = '✓' if connected else '·'
+				lines.append(f'{icon} `{pname}` — {status}')
+			lines.append('')
+			lines.append('Use `/login <name>` to connect (e.g. `/login gh`).')
+			self.send(chat_id, '\n'.join(lines), reply_to=reply_to, markdown=True)
+			return
+		prov = AUTH_PROVIDERS.get(name)
+		if prov is None:
+			known = ', '.join(AUTH_PROVIDERS.keys()) or '(none)'
+			self.send(
+				chat_id,
+				f'Unknown provider `{name}`. Known: {known}.',
+				reply_to=reply_to, markdown=True,
+			)
+			return
+		# If already connected, short-circuit. Saves the user a redundant
+		# device-code dance and prevents accidentally rotating their token.
+		connected, status = prov.check()
+		if connected:
+			self.send(
+				chat_id,
+				f'✓ `{name}` already connected ({status}). Use `/logout {name}` to disconnect first.',
+				reply_to=reply_to, markdown=True,
+			)
+			return
+
+		def _on_progress(text: str) -> None:
+			self.send(chat_id, text, reply_to=reply_to)
+
+		def _runner() -> None:
+			self.send(chat_id, f'Connecting to {prov.label}…', reply_to=reply_to)
+			try:
+				ok, msg = prov.login(_on_progress)
+			except Exception as e:
+				LOG.exception('login %s failed', name)
+				self.send(chat_id, f'❌ `{name}` login failed: {e}', reply_to=reply_to, markdown=True)
+				return
+			icon = '✓' if ok else '❌'
+			self.send(chat_id, f'{icon} `{name}` {msg}', reply_to=reply_to, markdown=True)
+
+		threading.Thread(target=_runner, name=f'bux-login-{name}', daemon=True).start()
+
+	def _cmd_logout(self, chat_id: int, reply_to: int | None, arg: str) -> None:
+		"""`/logout` — list providers + status. `/logout <name>` — disconnect."""
+		name = arg.strip().lower()
+		if not name:
+			# Same listing as /login (helps the user see what's currently
+			# logged in without remembering which command they want).
+			self._cmd_login(chat_id, reply_to, '')
+			return
+		prov = AUTH_PROVIDERS.get(name)
+		if prov is None:
+			known = ', '.join(AUTH_PROVIDERS.keys()) or '(none)'
+			self.send(
+				chat_id,
+				f'Unknown provider `{name}`. Known: {known}.',
+				reply_to=reply_to, markdown=True,
+			)
+			return
+		try:
+			ok, msg = prov.logout()
+		except Exception as e:
+			LOG.exception('logout %s failed', name)
+			self.send(chat_id, f'❌ `{name}` logout failed: {e}', reply_to=reply_to, markdown=True)
+			return
+		icon = '✓' if ok else '❌'
+		self.send(chat_id, f'{icon} `{name}` {msg}', reply_to=reply_to, markdown=True)
 
 	def queue_worker(self) -> None:
 		"""Single drain loop. Pops one job at a time, runs claude, replies.
