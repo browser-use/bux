@@ -452,8 +452,15 @@ if [ "${#text}" -gt 4000 ]; then
 fi
 # Build payload, optionally injecting message_thread_id and reply_to_message_id.
 # Numeric coercion in jq → bad values 400 here instead of confusing TG.
-jq_filter='{chat_id: ($c|tonumber), text: $t}'
-jq_args=(--arg c "$chat_id" --arg t "$text")
+# Suppress link previews by default — same reason as the bot itself
+# (preview cards eat phone-screen real estate). Callers that want a
+# preview can `TG_LINK_PREVIEW=1 tg-send …`.
+preview_disabled=true
+if [ "${TG_LINK_PREVIEW:-}" = "1" ]; then
+  preview_disabled=false
+fi
+jq_filter='{chat_id: ($c|tonumber), text: $t, link_preview_options: {is_disabled: ($lp == "true")}}'
+jq_args=(--arg c "$chat_id" --arg t "$text" --arg lp "$preview_disabled")
 if [ -n "${TG_THREAD_ID:-}" ]; then
   jq_filter="${jq_filter} + {message_thread_id: (\$tid|tonumber)}"
   jq_args+=(--arg tid "$TG_THREAD_ID")
