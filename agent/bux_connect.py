@@ -193,7 +193,14 @@ def cmd_list(env: dict[str, str]) -> int:
     except Exception as e:
         print(f"list failed: {e}", file=sys.stderr)
         return 1
-    items = getattr(page, "items", None) or list(page) if not isinstance(page, list) else page
+    # The SDK returns a paginated response object with .items in current
+    # versions; iterate directly when it doesn't.
+    if isinstance(page, list):
+        items = page
+    elif hasattr(page, "items"):
+        items = page.items
+    else:
+        items = list(page)
     if not items:
         print("no connected accounts")
         return 0

@@ -476,11 +476,14 @@ TGSEND
 chmod 755 /usr/local/bin/tg-send
 
 # --- bux-connect: gh-login-style wrapper for Composio service connections -
-# A symlink so `git pull` propagates without re-running install.sh, same
-# pattern as the systemd units. The script's shebang points at the venv
-# python, which has the `composio` SDK installed via requirements.txt.
+# Drop a stable copy at /opt/bux/ so the /usr/local/bin/bux-connect symlink
+# resolves on first install, before bootstrap.sh has had a chance to set up
+# the /opt/bux/agent → /opt/bux/repo/agent symlink. bootstrap.sh later
+# re-points /usr/local/bin/bux-connect at the live repo so /update sees
+# changes without re-running install.sh.
 install -d -o bux -g bux -m 0700 /home/bux/.secrets
-ln -sf /opt/bux/agent/bux_connect.py /usr/local/bin/bux-connect
+install -o bux -g bux -m 0755 "$REPO_DIR/agent/bux_connect.py" /opt/bux/bux_connect.py
+ln -sf /opt/bux/bux_connect.py /usr/local/bin/bux-connect
 
 # --- pre-seed ~/.claude.json so first `claude` run skips dialogs -----------
 if [ ! -f /home/bux/.claude.json ]; then
