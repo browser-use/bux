@@ -542,18 +542,18 @@ fi
 sudo -u bux -H npm config set prefix /home/bux/.npm-global 2>/dev/null || true
 install -d -o bux -g bux -m 0755 /home/bux/.npm-global /home/bux/.local /home/bux/.local/bin
 
-# --- Codex CLI (alternative agent, /agent codex per forum topic) -----------
-# Pre-install for the bux user so `/terminal codex login` (or auto-dispatch
-# via `/agent codex`) works without a manual install. Auth is left to the
+# --- Codex CLI (alternative agent, /codex per forum topic) -----------------
+# Pre-install for the bux user so `/codex login` (or auto-dispatch
+# via `/codex`) works without a manual install. Auth is left to the
 # user — either drop `OPENAI_API_KEY=...` into /home/bux/.secrets/openai.env,
-# or run `/terminal codex login` once and complete the OAuth flow from TG.
+# or run `/codex login` once and complete the device-code flow from TG.
 # Install runs as bux so the binary lands in /home/bux/.npm-global/bin,
 # which is on bux's PATH (set by the .profile block above). Non-fatal:
 # an npm hiccup shouldn't break a Claude-only install.
 if ! sudo -iu bux command -v codex >/dev/null 2>&1; then
 	say 'installing Codex CLI for bux'
 	sudo -iu bux npm install -g @openai/codex \
-		|| warn 'codex install failed (non-fatal — /terminal codex login will hint how to install later)'
+		|| warn 'codex install failed (non-fatal — /codex login will hint how to install later)'
 fi
 
 # --- login banner: print live browser URL on each ssh login ---------------
