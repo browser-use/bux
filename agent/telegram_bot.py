@@ -1498,6 +1498,11 @@ class Bot:
 
         `thread_id` routes the reply into a forum topic so a per-topic
         conversation stays scoped.
+
+        `reply_to` is accepted for backward-compat with existing call sites
+        but ignored: phone-screen UX is cleaner without TG's quoted-reply
+        affordance on every bot message. A follow-up can rip the parameter
+        out across the file.
         """
         self.send_returning_id(
             chat_id=chat_id, text=text, reply_to=reply_to,
@@ -1518,7 +1523,10 @@ class Bot:
         more text arrives — they need the id to call editMessageText.
         For multi-chunk sends, only the first id is returned (subsequent
         chunks get their own ids that the caller can't address).
+
+        `reply_to` is ignored — see `send()` for the rationale.
         """
+        del reply_to
         chunks = (
             _chunk_for_telegram(text, REPLY_MAX)
             if markdown
@@ -1532,7 +1540,6 @@ class Bot:
                     "sendMessage",
                     chat_id=chat_id,
                     text=rendered,
-                    reply_to_message_id=reply_to,
                     message_thread_id=thread_id or None,
                     parse_mode="MarkdownV2",
                 )
@@ -1542,7 +1549,6 @@ class Bot:
                         "sendMessage",
                         chat_id=chat_id,
                         text=chunk,
-                        reply_to_message_id=reply_to,
                         message_thread_id=thread_id or None,
                     )
             else:
@@ -1550,7 +1556,6 @@ class Bot:
                     "sendMessage",
                     chat_id=chat_id,
                     text=chunk,
-                    reply_to_message_id=reply_to,
                     message_thread_id=thread_id or None,
                 )
             if first_id is None and resp.get("ok"):
@@ -2546,7 +2551,22 @@ class Bot:
                 thread_id=thread_id,
             )
             return
-        final_prompt = (attach_prefix + text).strip() or (
+        # When the user explicitly replied to a previous message, surface
+        # that context to the agent so it knows what's being followed up on.
+        # TG only sets `reply_to_message` on explicit replies — sending a
+        # fresh message into a forum topic doesn't trip this. Service-event
+        # quotes (topic creation, etc.) carry no text/caption, so the empty
+        # snippet check below filters them out.
+        reply_prefix = ""
+        quoted = msg.get("reply_to_message") or {}
+        quoted_text = (quoted.get("text") or quoted.get("caption") or "").strip()
+        quoted_text = " ".join(quoted_text.split())
+        if quoted_text:
+            snippet = quoted_text[:20]
+            if len(quoted_text) > 20:
+                snippet += "…"
+            reply_prefix = f'[Replying to: "{snippet}"] '
+        final_prompt = (reply_prefix + attach_prefix + text).strip() or (
             "Look at the attached file and tell me what it is."
         )
         job = {
