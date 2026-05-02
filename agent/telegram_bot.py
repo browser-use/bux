@@ -398,6 +398,26 @@ def _humanize_duration_ms(ms: int) -> str:
     return f"{m / 60:.1f}h"
 
 
+def _normalize_codex_usage(usage: dict | None) -> dict | None:
+    """Translate codex's usage shape into the keys _format_final_footer
+    expects (which were originally claude's). Codex emits:
+      { input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens }
+    Footer expects:
+      { input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens }
+    Codex has no equivalent of cache_creation, so that stays unset.
+    """
+    if not isinstance(usage, dict):
+        return None
+    out: dict = {}
+    if isinstance(usage.get("input_tokens"), int):
+        out["input_tokens"] = usage["input_tokens"]
+    if isinstance(usage.get("output_tokens"), int):
+        out["output_tokens"] = usage["output_tokens"]
+    if isinstance(usage.get("cached_input_tokens"), int):
+        out["cache_read_input_tokens"] = usage["cached_input_tokens"]
+    return out or None
+
+
 def _format_final_footer(usage: dict | None, duration_ms: int | None) -> str:
     """Build the raw stats line that goes at the bottom of the
     collapsed-steps blockquote. Returns "" if no data is available.
@@ -2803,6 +2823,15 @@ class Bot:
         with _inflight_lock:
             _inflight_procs[slug] = proc
 
+        # Match the claude path: one rolling TG bubble per turn, started
+        # immediately with a placeholder + random thinking emoji so the
+        # user has visible "I'm on it" feedback before the first text.
+        # Codex usually emits a single `agent_message` per turn, but
+        # multi-message turns work too — they just stream as additional
+        # blocks into the same bubble.
+        stream_msg = StreamingMessage(self, chat_id, reply_to, thread_id)
+        stream_msg.start()
+        started_at = time.time()
         any_text = False
         assert proc.stdout is not None
         try:
@@ -2816,7 +2845,7 @@ class Bot:
                     # Codex JSONL events of interest:
                     #   thread.started { thread_id: '...' }       — first turn only; persist for resume
                     #   item.completed { item: { type: 'agent_message', text: '...' } }
-                    #   turn.completed (terminal)
+                    #   turn.completed { usage: { input_tokens, cached_input_tokens, output_tokens } }
                     #   turn.failed (terminal, error)
                     if et == "thread.started" and not existing_thread:
                         # Field shape per codex docs: top-level `thread_id`. Be
@@ -2839,13 +2868,7 @@ class Bot:
                         if item.get("type") == "agent_message":
                             text = (item.get("text") or "").strip()
                             if text:
-                                self.send(
-                                    chat_id,
-                                    text,
-                                    reply_to=reply_to,
-                                    thread_id=thread_id,
-                                    markdown=True,
-                                )
+                                stream_msg.append(text)
                                 if not any_text:
                                     any_text = True
                                     self.react(chat_id, reply_to, EMOJI_DONE)
@@ -2853,6 +2876,9 @@ class Bot:
                         # `turn.failed` is the only true terminal-error signal.
                         # `error` events also appear during transient reconnects
                         # ("Reconnecting... 1/5") and aren't fatal — see below.
+                        usage = _normalize_codex_usage(ev.get("usage"))
+                        duration_ms = int((time.time() - started_at) * 1000)
+                        stream_msg.finalize(usage=usage, duration_ms=duration_ms)
                         break
                     elif et == "error":
                         # Don't terminate the loop here: codex emits transient
@@ -2863,6 +2889,10 @@ class Bot:
                         LOG.warning("codex transient error: %s", ev.get("message") or ev)
             except Exception:
                 LOG.exception("codex JSONL loop failed")
+            # Defensive: same idempotent finalize as the claude path so a
+            # stream that breaks mid-turn still flips the bubble out of the
+            # placeholder state instead of leaving a dangling "..." view.
+            stream_msg.finalize()
 
             try:
                 proc.wait(timeout=5)
