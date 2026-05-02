@@ -31,9 +31,9 @@ Flow:
   3. Once allowed, each message is keyed to a lane (chat_id, thread_id) and
      enqueued. A worker drains that lane, dispatching each job to the lane's
      bound agent (claude default; `/codex` flips it).
-  4. Stream-json events from claude come back as TG message bubbles in the
-     lane's topic, with a per-turn random "thinking" emoji in the placeholder
-     bubble and 🎉/💔 reactions on the user's message at end-of-turn.
+  4. Stream-json events from claude come back as one editable TG message
+     bubble in the lane's topic, with a per-turn random "thinking" emoji in
+     the placeholder and a 💔 reaction only on failure.
 """
 
 from __future__ import annotations
@@ -141,9 +141,8 @@ _SERVICE_MESSAGE_FIELDS = frozenset({
     "passport_data",
 })
 
-# Reaction emojis on the user's message. Telegram's free-tier reaction
-# allowlist excludes ⏳/✅/⚠️/❌ — these are verified-allowed picks.
-EMOJI_DONE = "🎉"
+# Failure reaction on the user's message. Telegram's free-tier reaction
+# allowlist excludes ⏳/✅/⚠️/❌ — this is a verified-allowed pick.
 EMOJI_ERROR = "💔"
 
 # Pool the placeholder bubble draws from on every new turn — one random pick
@@ -320,19 +319,19 @@ def _render_expandable_blockquote(text: str) -> str:
 _STEP_SEPARATOR = "\n---------------\n"
 
 
-def _build_header(total: int, shown: int, sub_agents: int) -> str:
+def _build_header(total: int, shown: int, sub_agents: int, marker: str) -> str:
     """Compose the first (collapsed-visible) line of the blockquote.
 
-    `📝 N steps` always. When trimming kicks in we extend with
+    `<turn emoji> N messages` always. When trimming kicks in we extend with
     `(last K shown)` so the count remains honest about what's actually
     rendered. When sub-agents have been spawned we append
     ` · 🤖 +M sub-agents`. The indicator is omitted entirely when
     sub_agents == 0 so quiet turns stay quiet.
     """
     if shown < total:
-        head = f"📝 {total} steps (last {shown} shown)"
+        head = f"{marker} {total} messages (last {shown} shown)"
     else:
-        head = f"📝 {total} step" + ("s" if total != 1 else "")
+        head = f"{marker} {total} message" + ("s" if total != 1 else "")
     if sub_agents > 0:
         head += f" · 🤖 +{sub_agents} sub-agent" + ("s" if sub_agents != 1 else "")
     return head
@@ -344,13 +343,14 @@ def _render_collapsed_steps(
     max_body: int,
     sub_agents: int = 0,
     trailer: str = "",
+    marker: str = "💭",
 ) -> str:
-    """Render `parts` as one expandable blockquote with a step-count header.
+    """Render `parts` as one expandable blockquote with a message-count header.
 
     `trailer`, if given, becomes the LAST line inside the blockquote,
-    separated from the steps by a divider — used for the
-    `🪙 X tokens · ⏱ Ys` footer so it only shows up when the user
-    expands the steps. Pass raw text; escaping happens in
+    separated from the messages by a divider — used for the
+    stats footer so it only shows up when the user expands the messages.
+    Pass raw text; escaping happens in
     `_render_expandable_blockquote`.
 
     Returns "" for empty input. Trims OLDEST blocks until the rendered
@@ -361,7 +361,7 @@ def _render_collapsed_steps(
         return ""
     work = list(parts)
     while True:
-        body = _build_header(total, len(work), sub_agents) + "\n" + _STEP_SEPARATOR.join(work)
+        body = _build_header(total, len(work), sub_agents, marker) + "\n" + _STEP_SEPARATOR.join(work)
         if trailer:
             body += _STEP_SEPARATOR + trailer
         out = _render_expandable_blockquote(body)
@@ -370,11 +370,16 @@ def _render_collapsed_steps(
         work = work[1:]
 
 
-def _render_streaming_view(blocks: list[str], max_body: int, sub_agents: int = 0) -> str:
+def _render_streaming_view(
+    blocks: list[str],
+    max_body: int,
+    sub_agents: int = 0,
+    marker: str = "💭",
+) -> str:
     """Render every assistant text block as one collapsed blockquote.
 
     Used while the agent is still emitting — keeps the bubble compact on
-    a chatty turn. The collapsed first line shows `📝 N steps` (plus a
+    a chatty turn. The collapsed first line shows `<emoji> N messages` (plus a
     `🤖 +M sub-agents` suffix when applicable) so the user sees progress
     without expanding. Surviving blocks are separated by a
     `---------------` divider when expanded.
@@ -382,15 +387,26 @@ def _render_streaming_view(blocks: list[str], max_body: int, sub_agents: int = 0
     parts = [b.strip() for b in blocks if b and b.strip()]
     if not parts:
         return ""
-    return _render_collapsed_steps(parts, len(parts), max_body, sub_agents=sub_agents)
+    return _render_collapsed_steps(parts, len(parts), max_body, sub_agents=sub_agents, marker=marker)
 
 
 def _humanize_tokens(n: int) -> str:
     if n >= 1_000_000:
-        return f"{n / 1_000_000:.1f}M"
+        v = n / 1_000_000
+        return f"{v:.0f}M" if v >= 10 else f"{v:.1f}M"
     if n >= 1_000:
-        return f"{n / 1_000:.1f}k"
+        v = n / 1_000
+        return f"{v:.0f}k" if v >= 10 else f"{v:.1f}k"
     return str(n)
+
+
+def _humanize_cached_input(cache_read: int, input_t: int) -> str:
+    """Compact cached/total-input pair, e.g. 25/28M."""
+    if input_t >= 1_000_000 or cache_read >= 1_000_000:
+        return f"{cache_read / 1_000_000:.0f}/{input_t / 1_000_000:.0f}M"
+    if input_t >= 1_000 or cache_read >= 1_000:
+        return f"{cache_read / 1_000:.0f}/{input_t / 1_000:.0f}k"
+    return f"{cache_read}/{input_t}"
 
 
 def _humanize_duration_ms(ms: int) -> str:
@@ -423,20 +439,49 @@ def _normalize_codex_usage(usage: dict | None) -> dict | None:
     return out or None
 
 
-def _format_final_footer(usage: dict | None, duration_ms: int | None) -> str:
+def _count_claude_tool_uses(ev: dict) -> int:
+    if ev.get("type") != "assistant":
+        return 0
+    content = (ev.get("message") or {}).get("content") or []
+    if not isinstance(content, list):
+        return 0
+    return sum(
+        1
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "tool_use"
+    )
+
+
+def _is_codex_tool_event(ev: dict) -> bool:
+    et = str(ev.get("type") or "").lower()
+    item = ev.get("item") if isinstance(ev.get("item"), dict) else {}
+    item_type = str(item.get("type") or "").lower()
+    if item_type in {
+        "function_call",
+        "custom_tool_call",
+        "local_shell_call",
+        "mcp_tool_call",
+        "web_search_call",
+    }:
+        return True
+    if "tool_call" in item_type or item_type.endswith("_call"):
+        return "result" not in item_type and "output" not in item_type
+    return et.endswith(".completed") and ("tool_call" in et or "function_call" in et)
+
+
+def _format_final_footer(
+    usage: dict | None,
+    duration_ms: int | None,
+    tool_calls: int = 0,
+) -> str:
     """Build the raw stats line that goes at the bottom of the
     collapsed-steps blockquote. Returns "" if no data is available.
     Body is intentionally NOT MDV2-escaped — the caller passes it
     through `_render_expandable_blockquote`, which escapes lines.
 
-    Format: `📥 in · 📤 out · 💾 cache-read · ✨ cache-write · ⏱ Ys`.
-    The earlier rolled-up `🪙 X tokens` was misleading — claude makes
-    multiple model invocations per turn and each re-reads the full
-    cached prompt, so the sum was easily 5–10× the active context.
-    Splitting by category makes the real cost legible: 📥/📤 are what
-    this turn newly billed at full rate, 💾/✨ are cache traffic.
-    Each emoji's slot is omitted when the underlying count is zero so
-    quiet turns don't carry a row of zero-counts.
+    Format: `🪙 total · 📥 cached/input · 📤 out · 🛠 tools · ⏱ Ys`.
+    The cached/input pair puts cache traffic second and keeps the active
+    context legible without a long row of token categories.
     """
     parts: list[str] = []
     if isinstance(usage, dict):
@@ -444,14 +489,28 @@ def _format_final_footer(usage: dict | None, duration_ms: int | None) -> str:
         output_t = usage.get("output_tokens")
         cache_read = usage.get("cache_read_input_tokens")
         cache_create = usage.get("cache_creation_input_tokens")
+        total = 0
         if isinstance(input_t, int) and input_t > 0:
+            total += input_t
+        if isinstance(output_t, int) and output_t > 0:
+            total += output_t
+        if total > 0:
+            parts.append(f"🪙 {_humanize_tokens(total)}")
+        if (
+            isinstance(input_t, int)
+            and input_t > 0
+            and isinstance(cache_read, int)
+            and cache_read > 0
+        ):
+            parts.append(f"📥 {_humanize_cached_input(cache_read, input_t)}")
+        elif isinstance(input_t, int) and input_t > 0:
             parts.append(f"📥 {_humanize_tokens(input_t)}")
         if isinstance(output_t, int) and output_t > 0:
             parts.append(f"📤 {_humanize_tokens(output_t)}")
-        if isinstance(cache_read, int) and cache_read > 0:
-            parts.append(f"💾 {_humanize_tokens(cache_read)}")
         if isinstance(cache_create, int) and cache_create > 0:
             parts.append(f"✨ {_humanize_tokens(cache_create)}")
+    if tool_calls > 0:
+        parts.append(f"🛠 {tool_calls}")
     if isinstance(duration_ms, int) and duration_ms > 0:
         parts.append(f"⏱ {_humanize_duration_ms(duration_ms)}")
     return " · ".join(parts)
@@ -463,13 +522,15 @@ def _render_final_view(
     sub_agents: int = 0,
     usage: dict | None = None,
     duration_ms: int | None = None,
+    tool_calls: int = 0,
+    marker: str = "💭",
 ) -> str:
     """Render the final-turn view: collapsed thinking trace ON TOP with a
-    step-count header, final answer prominent BELOW.
+    message-count header, final answer prominent BELOW.
 
-    The `🪙 X tokens · ⏱ Ys` footer lives INSIDE the collapsed
+    The stats footer lives INSIDE the collapsed
     blockquote, as the last line — so the user only sees it when they
-    expand the steps. Keeps the visible main bubble (the answer) free
+    expand the messages. Keeps the visible main bubble (the answer) free
     of metadata while still surfacing the stats for those who want them.
 
     Heuristic: the last text block claude emitted is the answer; anything
@@ -483,13 +544,18 @@ def _render_final_view(
     steps = parts[:-1]
     if not steps:
         # One-shot turn: skip the footer entirely. The user asked for
-        # tokens/duration only when "there were some thinking steps so
+        # tokens/duration only when "there were some thinking messages so
         # it took a little bit longer."
         return final_md
-    footer = _format_final_footer(usage, duration_ms)
+    footer = _format_final_footer(usage, duration_ms, tool_calls=tool_calls)
     steps_max = max(max_body - len(final_md) - 2, 200)
     steps_md = _render_collapsed_steps(
-        steps, len(steps), steps_max, sub_agents=sub_agents, trailer=footer
+        steps,
+        len(steps),
+        steps_max,
+        sub_agents=sub_agents,
+        trailer=footer,
+        marker=marker,
     )
     if not steps_md:
         return final_md
@@ -2142,7 +2208,7 @@ class StreamingMessage:
         gets surfaced, which is fine to live with.
       * If the rendered body would exceed _MAX_BODY (TG's safe edit
         ceiling), drop the OLDEST blocks first — never the final one —
-        and prepend a "…earlier steps trimmed" marker so the user knows
+        and prepend a "…earlier messages trimmed" marker so the user knows
         content is hidden. We never multi-message: keeps the entire
         session in one editable bubble.
 
@@ -2170,6 +2236,7 @@ class StreamingMessage:
         chat_id: int,
         reply_to: int | None,
         thread_id: int | None,
+        thinking_emoji: str | None = None,
     ) -> None:
         self._bot = bot
         self._chat_id = chat_id
@@ -2181,10 +2248,12 @@ class StreamingMessage:
         # when nothing has changed (avoids "message is not modified" 400s).
         self._last_emitted = ""
         self._last_edit_at = 0.0
+        self._thinking_emoji = thinking_emoji or random_thinking_emoji()
         # Distinct parent_tool_use_ids seen for this turn → sub-agent count
         # in the header. Set so we only count each sub-agent once even
         # though it emits many events.
         self._sub_agent_ids: set[str] = set()
+        self._tool_call_count = 0
         # Sticky stats from the `result` event. The defensive finalize()
         # that runs after the stream loop has no event to read from, so
         # we cache the last-known usage/duration here and re-use them on
@@ -2204,6 +2273,11 @@ class StreamingMessage:
         self._sub_agent_ids.add(parent_tool_use_id)
         self._rerender_streaming()
 
+    def note_tool_call(self, count: int = 1) -> None:
+        if count <= 0:
+            return
+        self._tool_call_count += count
+
     def _rerender_streaming(self) -> None:
         """Re-emit the streaming view. Used when the header changes for
         a reason other than a new text block (e.g. a sub-agent showed
@@ -2212,7 +2286,10 @@ class StreamingMessage:
         if self._message_id is None or time.time() - self._last_edit_at < self._DEBOUNCE_SEC:
             return
         rendered = _render_streaming_view(
-            self._blocks, self._MAX_BODY, sub_agents=len(self._sub_agent_ids)
+            self._blocks,
+            self._MAX_BODY,
+            sub_agents=len(self._sub_agent_ids),
+            marker=self._thinking_emoji,
         )
         if not rendered:
             return
@@ -2230,7 +2307,7 @@ class StreamingMessage:
         """
         if self._message_id is not None:
             return
-        rendered = _render_expandable_blockquote(random_thinking_emoji())
+        rendered = _render_expandable_blockquote(self._thinking_emoji)
         if not rendered:
             return
         self._send_initial(rendered)
@@ -2242,7 +2319,10 @@ class StreamingMessage:
             return
         self._blocks.append(chunk)
         rendered = _render_streaming_view(
-            self._blocks, self._MAX_BODY, sub_agents=len(self._sub_agent_ids)
+            self._blocks,
+            self._MAX_BODY,
+            sub_agents=len(self._sub_agent_ids),
+            marker=self._thinking_emoji,
         )
         if not rendered:
             return
@@ -2263,8 +2343,8 @@ class StreamingMessage:
         Called once per turn on claude's `result` event. The last block
         is lifted out of the blockquote as the prominent answer; earlier
         blocks stay folded underneath. When `usage` / `duration_ms` are
-        provided AND the turn actually had thinking steps, a footer line
-        with `🪙 X tokens · ⏱ Ys` is appended below the answer.
+        provided AND the turn actually had thinking messages, a stats footer
+        is appended below the answer.
 
         Stats are sticky across calls: a defensive finalize() after the
         stream loop has no event to read from, but we re-use whatever
@@ -2282,6 +2362,8 @@ class StreamingMessage:
             sub_agents=len(self._sub_agent_ids),
             usage=self._last_usage,
             duration_ms=self._last_duration_ms,
+            tool_calls=self._tool_call_count,
+            marker=self._thinking_emoji,
         )
         if not rendered:
             return
@@ -2656,6 +2738,7 @@ class Bot:
         prompt: str,
         reply_to: int | None,
         sender: dict | None = None,
+        thinking_emoji: str | None = None,
     ) -> None:
         """Dispatch the user's prompt to this lane's agent.
 
@@ -2676,9 +2759,9 @@ class Bot:
         LOG.info("run_task lane=%s agent=%s", _lane_slug(key), agent)
         try:
             if agent == AGENT_CODEX:
-                self._run_codex(key, prompt, reply_to, sender=sender)
+                self._run_codex(key, prompt, reply_to, sender=sender, thinking_emoji=thinking_emoji)
             else:
-                self._run_claude(key, prompt, reply_to, sender=sender)
+                self._run_claude(key, prompt, reply_to, sender=sender, thinking_emoji=thinking_emoji)
         except Exception as e:
             LOG.exception("run_task lane=%s failed", _lane_slug(key))
             try:
@@ -2698,6 +2781,7 @@ class Bot:
         prompt: str,
         reply_to: int | None,
         sender: dict | None = None,
+        thinking_emoji: str | None = None,
     ) -> None:
         """Stream a claude turn into the lane's TG topic.
 
@@ -2770,7 +2854,7 @@ class Bot:
         # docstring for the why. start() sends a `...` placeholder bubble
         # immediately so the user has a visible "I'm on it" signal, even
         # before claude has emitted its first text block.
-        stream_msg = StreamingMessage(self, chat_id, reply_to, thread_id)
+        stream_msg = StreamingMessage(self, chat_id, reply_to, thread_id, thinking_emoji=thinking_emoji)
         stream_msg.start()
         any_text = False
         assert proc.stdout is not None
@@ -2783,6 +2867,9 @@ class Bot:
                         continue
                     et = ev.get("type")
                     parent_id = ev.get("parent_tool_use_id")
+                    tool_uses = _count_claude_tool_uses(ev)
+                    if tool_uses:
+                        stream_msg.note_tool_call(tool_uses)
                     # Sub-agent internals don't show their text in the
                     # bubble, but we count distinct parent_tool_use_ids so
                     # the header can show `🤖 +N sub-agents`. Anything
@@ -2803,12 +2890,11 @@ class Bot:
                             stream_msg.append(text)
                             if not any_text:
                                 any_text = True
-                                self.react(chat_id, reply_to, EMOJI_DONE)
                     elif et == "result":
                         # Turn complete; flip to the final view (last block
                         # prominent, earlier blocks collapsed underneath).
                         # Pull token usage + duration from the result so
-                        # the footer can show `🪙 X tokens · ⏱ Ys`.
+                        # the footer can show token / tool / duration stats.
                         usage = ev.get("usage") if isinstance(ev.get("usage"), dict) else None
                         duration_ms = ev.get("duration_ms")
                         if not isinstance(duration_ms, int):
@@ -2885,11 +2971,8 @@ class Bot:
                         thread_id=thread_id,
                         markdown=True,
                     )
-                    self.react(
-                        chat_id,
-                        reply_to,
-                        EMOJI_DONE if fb.returncode == 0 else EMOJI_ERROR,
-                    )
+                    if fb.returncode != 0:
+                        self.react(chat_id, reply_to, EMOJI_ERROR)
                 except subprocess.TimeoutExpired:
                     self.react(chat_id, reply_to, EMOJI_ERROR)
                     self.send(
@@ -2919,6 +3002,7 @@ class Bot:
         prompt: str,
         reply_to: int | None,
         sender: dict | None = None,
+        thinking_emoji: str | None = None,
     ) -> None:
         """Stream a codex turn into the lane's TG topic.
 
@@ -3051,7 +3135,7 @@ class Bot:
         # Codex usually emits a single `agent_message` per turn, but
         # multi-message turns work too — they just stream as additional
         # blocks into the same bubble.
-        stream_msg = StreamingMessage(self, chat_id, reply_to, thread_id)
+        stream_msg = StreamingMessage(self, chat_id, reply_to, thread_id, thinking_emoji=thinking_emoji)
         stream_msg.start()
         started_at = time.time()
         any_text = False
@@ -3087,13 +3171,14 @@ class Bot:
                                 LOG.exception("persist codex thread_id failed")
                     elif et.startswith("item.") and et.endswith("completed"):
                         item = ev.get("item") or {}
+                        if _is_codex_tool_event(ev):
+                            stream_msg.note_tool_call()
                         if item.get("type") == "agent_message":
                             text = (item.get("text") or "").strip()
                             if text:
                                 stream_msg.append(text)
                                 if not any_text:
                                     any_text = True
-                                    self.react(chat_id, reply_to, EMOJI_DONE)
                     elif et in ("turn.completed", "turn.failed"):
                         # `turn.failed` is the only true terminal-error signal.
                         # `error` events also appear during transient reconnects
@@ -3864,6 +3949,7 @@ class Bot:
         final_prompt = (reply_prefix + attach_prefix + text).strip() or (
             "Look at the attached file and tell me what it is."
         )
+        thinking_emoji = random_thinking_emoji()
         job = {
             "id": _new_job_id(),
             "chat_id": chat_id,
@@ -3873,6 +3959,7 @@ class Bot:
             "queued_at": time.time(),
             "status": "queued",
             "sender": sender,
+            "thinking_emoji": thinking_emoji,
         }
         depth = _enqueue(slug, job, self._lane_drain)
         self.typing(chat_id, thread_id=thread_id)
@@ -3882,7 +3969,7 @@ class Bot:
         if depth > 1:
             self.send(
                 chat_id,
-                f"🧠 queued (#{depth})",
+                f"{thinking_emoji} queued (#{depth})",
                 reply_to=mid,
                 thread_id=thread_id,
             )
@@ -4166,6 +4253,9 @@ class Bot:
                 thread_id = job.get("thread_id") or 0
                 mid = job.get("message_id")
                 prompt = str(job.get("prompt") or "")
+                thinking_emoji = job.get("thinking_emoji")
+                if not isinstance(thinking_emoji, str) or not thinking_emoji:
+                    thinking_emoji = None
                 if not isinstance(chat_id, int):
                     LOG.warning("lane %s job %s missing chat_id; skipping", slug, job_id)
                     with _lanes_lock:
@@ -4180,6 +4270,7 @@ class Bot:
                         prompt,
                         reply_to=mid if isinstance(mid, int) else None,
                         sender=sender,
+                        thinking_emoji=thinking_emoji,
                     )
                 except Exception:
                     LOG.exception("lane %s job %s failed", slug, job_id)
