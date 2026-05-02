@@ -53,6 +53,20 @@ The default channel — the user texts the bot, you reply. You don't manage the 
 
 **Forum topics = parallel agent sessions.** If the user enables Topics in their chat, each topic is its own lane: independent claude session UUID, independent FIFO. Lanes run in parallel without a concurrency cap (so 10 topics ≈ 10 simultaneous claude turns — only the box's RAM is the limit). Within a topic messages still serialize, so for anything that'll take more than ~60s use the worker-self-notify pattern above.
 
+**Messaging another topic.** `tg-send` only posts output; it does not make that topic's agent continue. To drive another topic, first send a visible prompt into that `message_thread_id`, then invoke the bot lane runner for the same `(chat_id, thread_id)` so it resumes that topic's session:
+
+```bash
+set -a; . /etc/bux/tg.env; set +a
+TG_CHAT_ID=-1003911874204 TG_THREAD_ID=<topic_id> tg-send 'Message from another topic: <prompt>'
+PYTHONPATH=/opt/bux/repo/agent /opt/bux/venv/bin/python - <<'PY'
+from telegram_bot import Bot
+import os
+bot = Bot(os.environ["TG_BOT_TOKEN"], os.environ.get("TG_SETUP_TOKEN", ""))
+bot.run_task((-1003911874204, <topic_id>), "<prompt>", reply_to=None,
+             sender={"user_id":"1291571328","username":"Magnus_Mueller","name":"Magnus Müller"})
+PY
+```
+
 **Per-topic agent.** `/claude` (default) and `/codex` switch which CLI handles that topic — the binding lives in `/etc/bux/tg-state.json`. Codex auths either via `OPENAI_API_KEY` in `/home/bux/.secrets/openai.env` *or* via your ChatGPT subscription. For remote/headless boxes, tell the user to run `/codex login`; it runs `codex login --device-auth` as bux, sends the OpenAI device-auth link plus one-time code back to TG, and waits for authorization. `/codex logout` signs Codex out. The CLI itself is installed by the bux installer (`npm install -g @openai/codex`) so it's already on PATH. For Claude auth, use `/claude login`; Claude prints an OAuth URL and waits for the pasted browser code, so the bot starts a terminal session, sends the URL as a clickable Telegram message, routes the user's next plain-text reply into that prompt, and sends an automatic blank Enter two seconds later for the follow-up prompt. `/claude logout` signs Claude out.
 
 **`/terminal` — tell the user about this.** The bot accepts `/terminal` as a mode switch into an interactive shell on the box (owner-only, runs as bux in a PTY, output streams back, plain-text replies become stdin). `/terminal <cmd>` seeds the first command. When you'd otherwise tell the user "run X on the box", suggest `/terminal X` so they can copy-paste it into TG without ssh / ttyd. Examples:
