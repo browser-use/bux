@@ -4009,7 +4009,7 @@ class Bot:
                 "/cancel — kill the running task / terminal + drop "
                 "everything pending in this topic\n"
                 "/cancel <id> — cancel one task (running or queued)\n"
-                "/compact — summarize this topic's claude session to free up context\n"
+                "/compact — summarize this topic's agent session to free up context\n"
                 "/schedules — list reminders / cron jobs\n"
                 "/login — auth status / connect a service (e.g. /login github, /login claude, /login codex)\n"
                 "/logout — disconnect a service (e.g. /logout github, /logout claude, /logout codex)\n"
@@ -4095,32 +4095,18 @@ class Bot:
             self._cmd_logout(chat_id, mid, thread_id, arg, sender=sender, owner=owner)
             return
         if cmd == "/compact":
-            # Forward to claude as a slash command. `claude -p "/compact"`
-            # interprets it natively (verified via the `slash_commands`
-            # list in claude's init event), summarizes the session, and
-            # writes the compacted state back to the session file so
-            # subsequent `--resume` turns start from the summary.
+            # Forward to the lane's agent as a slash command. Both claude
+            # and codex interpret `/compact` natively and write the compacted
+            # state back to their session/thread storage, so later resume
+            # turns start from the summary.
             #
-            # `/compact <instructions>` is supported by claude's own
-            # implementation: trailing text becomes guidance for what to
-            # focus on when summarizing. We pass it through verbatim.
-            #
-            # codex doesn't have an equivalent — bail with a clear note
-            # rather than forwarding "/compact" verbatim.
-            if _agent_for(key, self.state) != AGENT_CLAUDE:
-                self.send(
-                    chat_id,
-                    "/compact only works on a `claude` lane. "
-                    "Switch with `/claude` first.",
-                    reply_to=mid,
-                    thread_id=thread_id,
-                    markdown=True,
-                )
-                return
+            # `/compact <instructions>` is supported by the CLIs: trailing
+            # text becomes guidance for what to focus on when summarizing.
+            # We pass it through verbatim.
             # Rewrite the prompt and let the rest of handle() enqueue it
             # like a normal turn — the streaming bubble will surface
-            # whatever summary claude emits. Preserve the trailing arg
-            # so `/compact focus on the bug fixes` reaches claude with
+            # whatever summary the active agent emits. Preserve the trailing
+            # arg so `/compact focus on the bug fixes` reaches the CLI with
             # its instructions intact.
             text = "/compact" + (" " + arg if arg else "")
 
