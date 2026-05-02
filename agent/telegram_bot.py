@@ -1497,6 +1497,13 @@ class StreamingMessage:
         # in the header. Set so we only count each sub-agent once even
         # though it emits many events.
         self._sub_agent_ids: set[str] = set()
+        # Sticky stats from the `result` event. The defensive finalize()
+        # that runs after the stream loop has no event to read from, so
+        # we cache the last-known usage/duration here and re-use them on
+        # subsequent finalize() calls — otherwise the defensive call
+        # would re-render WITHOUT the footer and undo it.
+        self._last_usage: dict | None = None
+        self._last_duration_ms: int | None = None
 
     def note_sub_agent(self, parent_tool_use_id: str) -> None:
         """Record a sub-agent event. If this is a new parent_tool_use_id
@@ -1570,15 +1577,23 @@ class StreamingMessage:
         blocks stay folded underneath. When `usage` / `duration_ms` are
         provided AND the turn actually had thinking steps, a footer line
         with `🪙 X tokens · ⏱ Ys` is appended below the answer.
+
+        Stats are sticky across calls: a defensive finalize() after the
+        stream loop has no event to read from, but we re-use whatever
+        was passed last time so the footer doesn't get stripped.
         """
+        if usage is not None:
+            self._last_usage = usage
+        if duration_ms is not None:
+            self._last_duration_ms = duration_ms
         if not self._blocks:
             return
         rendered = _render_final_view(
             self._blocks,
             self._MAX_BODY,
             sub_agents=len(self._sub_agent_ids),
-            usage=usage,
-            duration_ms=duration_ms,
+            usage=self._last_usage,
+            duration_ms=self._last_duration_ms,
         )
         if not rendered:
             return
