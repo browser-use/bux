@@ -235,6 +235,82 @@ def _to_tg_markdown_v2(text: str) -> str:
     return rendered
 
 
+def _render_expandable_blockquote(text: str) -> str:
+    """Wrap `text` in a Telegram MarkdownV2 expandable blockquote.
+
+    Syntax: first line starts with `**>`, subsequent lines with `>`, and
+    the whole thing closes with `||` appended to the last line. The body
+    is escaped as plain MDV2 — we don't try to honor inline markdown
+    inside the collapsed section. That keeps the renderer simple and
+    avoids interactions between blockquote markup and code spans.
+
+    Returns "" for empty input so callers can build conditional sections.
+    """
+    if not text or not text.strip():
+        return ""
+    lines = text.split("\n")
+    escaped = [_escape_mdv2_plain(line) for line in lines]
+    out: list[str] = []
+    for i, line in enumerate(escaped):
+        prefix = "**>" if i == 0 else ">"
+        out.append(prefix + line)
+    out[-1] = out[-1] + "||"
+    return "\n".join(out)
+
+
+def _render_streaming_view(blocks: list[str]) -> str:
+    """Render every assistant text block as one collapsed blockquote.
+
+    Used while the agent is still emitting — keeps the bubble compact on
+    a chatty turn. User taps to expand if they want to see live progress.
+    Empty / whitespace-only blocks are dropped.
+    """
+    parts = [b.strip() for b in blocks if b and b.strip()]
+    if not parts:
+        return ""
+    return _render_expandable_blockquote("\n\n".join(parts))
+
+
+def _render_final_view(blocks: list[str]) -> str:
+    """Render the final-turn view: last block prominent, earlier blocks
+    folded into the collapsed blockquote underneath.
+
+    Heuristic: the last text block claude emitted is the answer; anything
+    before it was thinking/narration. If there's only one block, no
+    blockquote — just the answer. If the last block is empty, fall back
+    to streaming view.
+    """
+    parts = [b.strip() for b in blocks if b and b.strip()]
+    if not parts:
+        return ""
+    final_md = _to_tg_markdown_v2(parts[-1])
+    steps_md = _render_expandable_blockquote("\n\n".join(parts[:-1]))
+    if not steps_md:
+        return final_md
+    return final_md + "\n\n" + steps_md
+
+
+def _fit_under(render_fn, blocks: list[str], max_body: int) -> str:
+    """Render `blocks` via `render_fn`; if the result exceeds `max_body`,
+    drop the OLDEST block and retry. A "…earlier steps trimmed" marker is
+    prepended so the user knows content is hidden. Always preserves the
+    final block (claude's answer) — only intermediate narration is
+    dropped.
+    """
+    work = list(blocks)
+    trimmed = False
+    while True:
+        body = ([f"…earlier steps trimmed ({len(blocks) - len(work)})"] if trimmed else []) + work
+        out = render_fn(body)
+        if len(out) <= max_body:
+            return out
+        # Refuse to drop the final block — it's the user's answer.
+        if len(work) <= 1:
+            return out
+        work = work[1:]
+        trimmed = True
+
+
 def _chunk_for_telegram(text: str, max_len: int) -> list[str]:
     """Split on paragraph boundaries when possible so we don't slice
     mid-formatting (which TG would 400 on for MarkdownV2).
@@ -1242,47 +1318,48 @@ AUTH_PROVIDERS: dict[str, _GhProvider] = {
 
 
 class StreamingMessage:
-    """Rolling TG message that grows in place via editMessageText.
+    """Rolling TG message that grows in place via editMessageText, with
+    every text block folded into a collapsible blockquote.
 
-    Replaces the old "send a new TG message per assistant text block"
-    pattern, which buzzed the user's phone on every claude narration
-    step. Now: first append → sendMessage (one notification). Subsequent
-    appends → buffered + flushed via editMessageText on a debounce, no
-    notification. User sees the message grow live if they're looking,
-    or just one ping with the full text when they tap in.
+    Why blockquotes:
+      Claude emits multiple text blocks per turn — narration, plans, tool
+      results, and finally the answer. The first iteration of this class
+      concatenated them into one growing bubble; on a chatty turn the
+      user's phone showed a wall of progress and had to scroll past the
+      narration to find the actual answer. TG's MarkdownV2 expandable
+      blockquote (`**>...||`) is a perfect fit: collapsed by default, so
+      the bubble stays compact, and tap-to-expand for users who want to
+      see the trace.
 
-    Two TG limits worth handling:
-      * 4096 char hard limit per message. When the buffer would exceed,
-        we send a NEW message (rollover) and continue editing that.
-        Result: a long turn = one ping per ~4000 chars instead of per
-        chunk, which is still a huge win.
-      * editMessageText returns 400 "not modified" if the new text is
-        identical, and 429 if we edit too fast. Both swallowed in `edit`.
+    Render rules:
+      * While streaming (every append): everything goes in one
+        expandable blockquote so the bubble is one collapsed line.
+      * On finalize() (claude's `result` event): the LAST block becomes
+        the prominent answer outside the blockquote; earlier blocks stay
+        collapsed underneath. Heuristic — claude almost always ends a
+        turn with a real reply; if it ends on narration the wrong thing
+        gets surfaced, which is fine to live with.
+      * If the rendered body would exceed _MAX_BODY (TG's safe edit
+        ceiling), drop the OLDEST blocks first — never the final one —
+        and prepend a "…earlier steps trimmed" marker so the user knows
+        content is hidden. We never multi-message: keeps the entire
+        session in one editable bubble.
 
     Lifecycle:
-      msg = StreamingMessage(bot, chat_id, reply_to, thread_id)
-      msg.append("…")    # called per claude text block
-      msg.flush()        # forced edit; called on the final `result` event
+      msg = StreamingMessage(bot, chat_id, thread_id)
+      msg.append("…")     # one call per claude text block
+      msg.finalize()      # called on the `result` event; flips to final view
 
-    Thread-safe per-instance: append() is called from the parser thread,
-    no other consumer.
+    Thread-safe per-instance: append() / finalize() are called from the
+    single parser thread; no other consumer.
     """
 
     # Edit at most every N seconds. TG tolerates ~1 edit/sec/chat; we
-    # leave headroom and prefer "user sees text in chunks" over a single
-    # huge final-burst edit (which wouldn't notify but also wouldn't
-    # show progress for a 60s turn).
+    # leave headroom and prefer "user sees the bubble grow" over one
+    # huge final-burst edit at the end of a 60s turn.
     _DEBOUNCE_SEC = 1.5
-    # Tied to REPLY_MAX so the rollover threshold is always <= the
-    # threshold at which Bot.send would split a message into chunks.
-    # If _MAX_BODY were larger (e.g. 3800 vs REPLY_MAX 3500), a body
-    # in the 3501-3800 range would silently multi-chunk inside
-    # send_returning_id, leaving us tracking only the first chunk's
-    # message_id while the second chunk became an orphaned bubble that
-    # later edits couldn't reach. Subsequent edits would then update
-    # the head bubble to contain BOTH chunks of text, double-rendering
-    # the second chunk on screen. Keep them equal so a body that hits
-    # _MAX_BODY rollover triggers BEFORE the multi-chunk path.
+    # Bound the rendered body so the single message fits comfortably
+    # under TG's 4096 char hard cap on messages and edits.
     _MAX_BODY = REPLY_MAX
 
     def __init__(
@@ -1294,161 +1371,74 @@ class StreamingMessage:
     ) -> None:
         self._bot = bot
         self._chat_id = chat_id
-        self._reply_to = reply_to
+        self._reply_to = reply_to  # ignored; see Bot.send docstring.
         self._thread_id = thread_id
-        # current message we're growing
+        self._blocks: list[str] = []
         self._message_id: int | None = None
-        self._buffer = ""
-        # last text we successfully sent/edited — skip an edit when the
-        # buffer hasn't grown (avoids "message is not modified" 400s).
+        # last rendered MDV2 we successfully sent/edited — skip an edit
+        # when nothing has changed (avoids "message is not modified" 400s).
         self._last_emitted = ""
         self._last_edit_at = 0.0
 
     def append(self, chunk: str) -> None:
-        """Add a text block to the rolling message; debounce the edit.
-
-        First call sends; subsequent calls edit. If accepting `chunk`
-        would push the current message over _MAX_BODY, we flush the
-        existing buffer (without `chunk`) into the open message, then
-        send a NEW message containing only `chunk`.
-        """
+        """Record a new assistant text block; render & push (debounced)."""
         chunk = (chunk or "").strip()
         if not chunk:
             return
-
-        # Compute the prospective post-append buffer WITHOUT mutating
-        # self._buffer yet — the rollover branch needs the pre-append
-        # state to flush, otherwise the current message ends with
-        # `chunk` AND the new message starts with `chunk`, duplicating it.
-        sep = "\n\n" if self._buffer else ""
-        prospective = self._buffer + sep + chunk
-
-        if self._message_id is None:
-            # First chunk → send a brand new message. THIS is the only
-            # call in the whole turn that produces a TG notification on
-            # the user's phone (edits don't re-notify).
-            self._buffer = prospective
-            self._send_new()
+        self._blocks.append(chunk)
+        rendered = _fit_under(_render_streaming_view, self._blocks, self._MAX_BODY)
+        if not rendered:
             return
-
-        # Rollover: only triggers when there's already an open message
-        # and accepting `chunk` would breach the cap. Flush the existing
-        # buffer (sans chunk) so the previous message is finalized at
-        # its prior content, then open a fresh message holding chunk
-        # alone. Without the pre-append-state flush, the previous and
-        # next messages would visibly share `chunk` at their boundary.
-        #
-        # CRITICAL: only roll over if the flush actually succeeded. If
-        # the edit failed (429 after retry, network blip), the on-screen
-        # message is missing the most recent text — abandoning the
-        # buffer to start fresh would silently drop those chars.
-        # Instead, commit `prospective` to self._buffer and fall through
-        # to the normal edit path; the next append (or the final flush
-        # on `result`) retries the same content. The buffer can grow
-        # past _MAX_BODY here; if it eventually exceeds TG's 4096 hard
-        # limit, edit() returns False and we keep retrying — louder
-        # failure than silent truncation.
-        if len(prospective) > self._MAX_BODY:
-            if self.flush():
-                self._buffer = chunk
-                self._last_emitted = ""
-                self._message_id = None
-                self._send_new()
-                return
-            # Flush failed: keep accumulating into the same open message.
-            # Fall through to the normal edit path.
-
-        # Normal in-place edit path: extend the buffer, debounce the
-        # network call. The `result`-event flush() guarantees the user
-        # sees the final state regardless of where any no-op landed.
-        self._buffer = prospective
+        if self._message_id is None:
+            self._send_initial(rendered)
+            return
         if time.time() - self._last_edit_at < self._DEBOUNCE_SEC:
             return
-        self._emit()
+        self._edit(rendered)
 
-    def flush(self) -> bool:
-        """Force the current buffer state to TG. Returns True if the
-        on-screen content now matches self._buffer (either the edit
-        succeeded, or there was nothing to do). False = caller must
-        not advance state past the current buffer."""
-        if self._message_id is None or self._buffer == self._last_emitted:
-            return True
-        return self._emit()
+    def finalize(self) -> None:
+        """Flip to the final view and force an edit, ignoring the debounce.
 
-    def _send_new(self) -> None:
-        """Send self._buffer as a brand-new TG message; record its id.
-
-        If self._buffer exceeds _MAX_BODY (a single huge assistant block
-        on first contact, or a chunk whose own length is past the cap),
-        send all-but-the-tail as one or more standalone messages first,
-        then keep the tail as the editable open message. This preserves
-        every char while still leaving us with a single message_id we
-        can edit on subsequent appends.
-
-        Without this, naively passing a >REPLY_MAX body to
-        send_returning_id would multi-chunk inside the helper and we'd
-        only capture the FIRST id — later chunks would orphan as
-        bubbles that never grow (and any further append() edits would
-        target the WRONG message).
+        Called once per turn on claude's `result` event. The last block
+        is lifted out of the blockquote as the prominent answer; earlier
+        blocks stay folded underneath.
         """
-        body = self._buffer
-        if len(body) > self._MAX_BODY:
-            # Spill: send the head as standalone messages; the tail
-            # becomes the editable open message. Split on a paragraph
-            # boundary when possible to keep formatting natural;
-            # otherwise hard-cut so tail is exactly _MAX_BODY chars.
-            #
-            # We need: head = body[:cut], tail = body[cut:], where
-            # len(tail) <= _MAX_BODY. Earliest valid cut is N-_MAX_BODY.
-            min_cut = len(body) - self._MAX_BODY
-            # Look for a \n\n at-or-after min_cut (closer to the end is
-            # better; gives tail the most context). Search a window.
-            search_end = min(len(body), min_cut + self._MAX_BODY)
-            cut = body.rfind("\n\n", min_cut, search_end)
-            if cut < 0:
-                cut = min_cut  # no boundary found; hard cut
-            head, tail = body[:cut].rstrip(), body[cut:].lstrip("\n")
-            if head:
-                # Send head as its own bubbles (multi-chunk if needed).
-                # We don't track ids for these — they're append-only
-                # context above the editable message.
-                self._bot.send(
-                    chat_id=self._chat_id,
-                    text=head,
-                    reply_to=self._reply_to,
-                    thread_id=self._thread_id,
-                    markdown=True,
-                )
-            body = tail
-            self._buffer = body
+        if not self._blocks:
+            return
+        rendered = _fit_under(_render_final_view, self._blocks, self._MAX_BODY)
+        if not rendered:
+            return
+        if self._message_id is None:
+            self._send_initial(rendered)
+            return
+        self._edit(rendered)
+
+    # ----- low-level send / edit -----
+
+    def _send_initial(self, rendered: str) -> None:
+        """First contact: send the rendered MDV2 body and stash the id."""
         self._message_id = self._bot.send_returning_id(
             chat_id=self._chat_id,
-            text=body,
-            reply_to=self._reply_to,
+            text=rendered,
             thread_id=self._thread_id,
-            markdown=True,
+            pre_rendered=True,
         )
-        self._last_emitted = body
+        self._last_emitted = rendered
         self._last_edit_at = time.time()
 
-    def _emit(self) -> bool:
-        """Push self._buffer to the open message. Returns True on success.
-
-        Caller uses the return value to decide whether it's safe to
-        advance state past self._buffer (rollover branch needs this).
-        """
-        if self._message_id is None:
-            return False
+    def _edit(self, rendered: str) -> None:
+        """Push `rendered` to the open message. Skips no-op edits."""
+        if self._message_id is None or rendered == self._last_emitted:
+            return
         ok = self._bot.edit(
             chat_id=self._chat_id,
             message_id=self._message_id,
-            text=self._buffer,
-            markdown=True,
+            text=rendered,
+            pre_rendered=True,
         )
         if ok:
-            self._last_emitted = self._buffer
+            self._last_emitted = rendered
             self._last_edit_at = time.time()
-        return ok
 
 
 class Bot:
@@ -1488,6 +1478,7 @@ class Bot:
         reply_to: int | None = None,
         thread_id: int | None = None,
         markdown: bool = False,
+        pre_rendered: bool = False,
     ) -> None:
         """Send a message into a chat (and optional forum topic).
 
@@ -1503,10 +1494,14 @@ class Bot:
         but ignored: phone-screen UX is cleaner without TG's quoted-reply
         affordance on every bot message. A follow-up can rip the parameter
         out across the file.
+
+        `pre_rendered=True` means `text` is already MarkdownV2 — skip the
+        converter but still send with parse_mode=MarkdownV2. Used by the
+        streaming renderer which composes its own blockquote markup.
         """
         self.send_returning_id(
             chat_id=chat_id, text=text, reply_to=reply_to,
-            thread_id=thread_id, markdown=markdown,
+            thread_id=thread_id, markdown=markdown, pre_rendered=pre_rendered,
         )
 
     def send_returning_id(
@@ -1516,6 +1511,7 @@ class Bot:
         reply_to: int | None = None,
         thread_id: int | None = None,
         markdown: bool = False,
+        pre_rendered: bool = False,
     ) -> int | None:
         """Same as send() but returns the message_id of the FIRST chunk.
 
@@ -1525,17 +1521,19 @@ class Bot:
         chunks get their own ids that the caller can't address).
 
         `reply_to` is ignored — see `send()` for the rationale.
+        `pre_rendered=True` skips MDV2 conversion (text is already MDV2).
         """
         del reply_to
+        as_markdown = markdown or pre_rendered
         chunks = (
             _chunk_for_telegram(text, REPLY_MAX)
-            if markdown
+            if as_markdown
             else [text[i : i + REPLY_MAX] or " " for i in range(0, max(len(text), 1), REPLY_MAX)]
         )
         first_id: int | None = None
         for chunk in chunks:
-            if markdown:
-                rendered = _to_tg_markdown_v2(chunk)
+            if as_markdown:
+                rendered = chunk if pre_rendered else _to_tg_markdown_v2(chunk)
                 resp = self.call(
                     "sendMessage",
                     chat_id=chat_id,
@@ -1570,6 +1568,7 @@ class Bot:
         message_id: int,
         text: str,
         markdown: bool = False,
+        pre_rendered: bool = False,
     ) -> bool:
         """Edit a previously-sent message in place. Returns True on success.
 
@@ -1581,10 +1580,15 @@ class Bot:
             The streaming caller debounces at 1.5s, so 429s are rare
             unless there are many concurrent chats; the single retry
             covers transient bursts without blocking forever.
+
+        `pre_rendered=True` means `text` is already MarkdownV2 — skip the
+        converter but still send with parse_mode=MarkdownV2.
         """
+        as_markdown = markdown or pre_rendered
+
         def _do_edit() -> dict:
-            if markdown:
-                rendered = _to_tg_markdown_v2(text)
+            if as_markdown:
+                rendered = text if pre_rendered else _to_tg_markdown_v2(text)
                 resp = self.call(
                     "editMessageText",
                     chat_id=chat_id,
@@ -1884,15 +1888,17 @@ class Bot:
                                 any_text = True
                                 self.react(chat_id, reply_to, EMOJI_DONE)
                     elif et == "result":
-                        # Turn complete; stream is done. Flush the buffer
-                        # so any debounced text lands before we exit.
-                        stream_msg.flush()
+                        # Turn complete; flip to the final view (last block
+                        # prominent, earlier blocks collapsed underneath).
+                        stream_msg.finalize()
                         break
             except Exception:
                 LOG.exception("stream-json loop failed; falling back to plain run")
-            # Defensive: flush whatever's pending even on early exit / parse
-            # errors, so a user mid-turn doesn't see a half-truncated bubble.
-            stream_msg.flush()
+            # Defensive: render whatever's pending even on early exit /
+            # parse errors, so a user mid-turn doesn't see a half-truncated
+            # bubble. finalize() is idempotent and force-edits past the
+            # debounce, which is what we want here.
+            stream_msg.finalize()
 
             # Drain the rest, kill the proc if it's lingering (tool wait, etc.).
             try:
