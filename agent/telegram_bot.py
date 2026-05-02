@@ -2721,6 +2721,17 @@ class Bot:
         # codex itself emits a clear stderr message which we surface below.
 
         cmd = ["sudo", "-u", "bux", "-H"] + [f"{k}={v}" for k, v in env.items() if v]
+        # `-a never -s danger-full-access` is codex's equivalent of claude's
+        # `--dangerously-skip-permissions`: never escalate to a human for
+        # approval, and let the model run shell commands with full disk
+        # access. Required for the bot's non-interactive lane model — there's
+        # nobody attached to answer an approval prompt, so without these
+        # codex stalls forever on any non-trivial command.
+        # Both flags are top-level (codex), not subcommand-level (exec).
+        codex_bypass_flags = [
+            "-a", "never",
+            "-s", "danger-full-access",
+        ]
         if existing_thread:
             # Resume the lane's existing codex thread so conversation context
             # carries across messages. `codex exec resume <id>` is the
@@ -2728,6 +2739,7 @@ class Bot:
             # disk corruption), codex errors and we surface the stderr.
             cmd += [
                 codex_bin,
+                *codex_bypass_flags,
                 "exec",
                 "resume",
                 existing_thread,
@@ -2738,7 +2750,14 @@ class Bot:
         else:
             # First message in this lane — `thread.started` arrives in the
             # JSONL stream and we persist its id below.
-            cmd += [codex_bin, "exec", "--json", "--skip-git-repo-check", prompt]
+            cmd += [
+                codex_bin,
+                *codex_bypass_flags,
+                "exec",
+                "--json",
+                "--skip-git-repo-check",
+                prompt,
+            ]
 
         # stderr → file rather than DEVNULL so the no-output path can
         # surface the actual error message to the user (codex tends to
