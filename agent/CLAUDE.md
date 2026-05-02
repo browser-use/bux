@@ -213,6 +213,14 @@ The box is bound to one Browser Use Cloud profile at a time. If the user asks to
 
 Only do this when the user explicitly asks. Don't silently rebind across tasks.
 
+## Cloud-connected integrations (via MCP)
+
+Toolkits the user has connected on the cloud frontend (cloud.browser-use.com — Gmail, Calendar, Slack, Linear, GitHub, Notion, …) are automatically available here as native Claude Code tools. The `composio` MCP server registered by bootstrap proxies through cloud, which holds the platform Composio key and the user's OAuth tokens. No setup steps on the box, no per-toolkit keys, no `bux-connect`.
+
+The tools surface as `search_composio_tools`, `execute_composio_tool`, `is_connected`, and `list_integrations`. Use them like any other tool — call them directly when the user asks for "send an email", "create a calendar event", "post to Slack", etc. They're the right choice for long-running cron jobs (tokens refresh automatically, unlike browser sessions).
+
+If the user asks for a toolkit they haven't connected yet, the MCP call returns an `auth_required` payload with a redirect URL. Pipe that URL through `tg-send` so it lands in the same TG topic — the user taps it from their phone, OAuths in their cloud account, and the next call works.
+
 ## Scheduling and reminders
 
 When the user asks you to "remind me in 5 minutes", "schedule X for 9am tomorrow", "every weekday at 8am do Y" etc., **use local `at` + cron + the `tg-send` helper**. Do NOT use Claude Code's `/routines` or in-session schedulers — those die the moment your `claude -p` session exits (which happens within seconds on this box) and the user never gets pinged.
