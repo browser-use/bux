@@ -1254,57 +1254,48 @@ class StreamingMessage:
     def append(self, chunk: str) -> None:
         """Add a text block to the rolling message; debounce the edit.
 
-        First call sends; subsequent calls edit. If the buffer would
-        exceed _MAX_BODY, flush + roll to a new message.
+        First call sends; subsequent calls edit. If accepting `chunk`
+        would push the current message over _MAX_BODY, we flush the
+        existing buffer (without `chunk`) into the open message, then
+        send a NEW message containing only `chunk`.
         """
         chunk = (chunk or "").strip()
         if not chunk:
             return
-        # Separate consecutive text blocks with a blank line so they read
-        # as paragraphs, not concatenated thoughts.
-        if self._buffer:
-            self._buffer += "\n\n" + chunk
-        else:
-            self._buffer = chunk
+
+        # Compute the prospective post-append buffer WITHOUT mutating
+        # self._buffer yet — the rollover branch needs the pre-append
+        # state to flush, otherwise the current message ends with
+        # `chunk` AND the new message starts with `chunk`, duplicating it.
+        sep = "\n\n" if self._buffer else ""
+        prospective = self._buffer + sep + chunk
 
         if self._message_id is None:
             # First chunk → send a brand new message. THIS is the only
-            # call in the whole turn that produces a TG notification.
-            self._message_id = self._bot.send_returning_id(
-                chat_id=self._chat_id,
-                text=self._buffer,
-                reply_to=self._reply_to,
-                thread_id=self._thread_id,
-                markdown=True,
-            )
-            self._last_emitted = self._buffer
-            self._last_edit_at = time.time()
+            # call in the whole turn that produces a TG notification on
+            # the user's phone (edits don't re-notify).
+            self._buffer = prospective
+            self._send_new()
             return
 
-        # If we've grown past the soft cap, roll to a fresh message so
-        # we don't bump TG's 4096 hard limit. Forces an edit-flush of the
-        # current message to make sure its content is final, then opens
-        # a new one with the latest chunk only.
-        if len(self._buffer) > self._MAX_BODY:
+        # Rollover: only triggers when there's already an open message
+        # and accepting `chunk` would breach the cap. Flush the existing
+        # buffer (sans chunk) so the previous message is finalized at
+        # its prior content, then open a fresh message holding chunk
+        # alone. Without the pre-append-state flush, the previous and
+        # next messages would visibly share `chunk` at their boundary.
+        if len(prospective) > self._MAX_BODY:
             self.flush()
-            # Reset state for the next message; only the new chunk goes
-            # into it (the previous content is already on screen).
             self._buffer = chunk
             self._last_emitted = ""
-            self._message_id = self._bot.send_returning_id(
-                chat_id=self._chat_id,
-                text=self._buffer,
-                reply_to=self._reply_to,
-                thread_id=self._thread_id,
-                markdown=True,
-            )
-            self._last_emitted = self._buffer
-            self._last_edit_at = time.time()
+            self._message_id = None
+            self._send_new()
             return
 
-        # Debounce: don't edit more than once every _DEBOUNCE_SEC. The
-        # final `flush()` on `result` event guarantees the user sees the
-        # complete message regardless of where this no-op landed.
+        # Normal in-place edit path: extend the buffer, debounce the
+        # network call. The `result`-event flush() guarantees the user
+        # sees the final state regardless of where any no-op landed.
+        self._buffer = prospective
         if time.time() - self._last_edit_at < self._DEBOUNCE_SEC:
             return
         self._emit()
@@ -1315,6 +1306,30 @@ class StreamingMessage:
         if self._message_id is None or self._buffer == self._last_emitted:
             return
         self._emit()
+
+    def _send_new(self) -> None:
+        """Send self._buffer as a brand-new TG message; record its id.
+
+        Caps the body at _MAX_BODY before sending. Without the cap a
+        single >REPLY_MAX assistant block would multi-chunk inside
+        send_returning_id and we'd only get the FIRST chunk's id —
+        subsequent chunks would orphan as bubbles that never grow.
+        """
+        body = self._buffer
+        if len(body) > self._MAX_BODY:
+            # Hard truncate to the cap. The next append() will see the
+            # next text block and roll into a new message naturally.
+            body = body[: self._MAX_BODY]
+            self._buffer = body
+        self._message_id = self._bot.send_returning_id(
+            chat_id=self._chat_id,
+            text=body,
+            reply_to=self._reply_to,
+            thread_id=self._thread_id,
+            markdown=True,
+        )
+        self._last_emitted = body
+        self._last_edit_at = time.time()
 
     def _emit(self) -> None:
         if self._message_id is None:
@@ -1447,34 +1462,69 @@ class Bot:
     ) -> bool:
         """Edit a previously-sent message in place. Returns True on success.
 
-        TG silently 400s "message is not modified" when text didn't change
-        and "message is too long" past 4096 chars — the caller should
-        ensure neither, but we swallow both rather than raising.
+        Handles three TG edge cases:
+          * 400 "message is not modified" — text was identical; treat as
+            success since the on-screen content already matches.
+          * 400 (other) on MarkdownV2 — escape mistake; retry as plain text.
+          * 429 — rate-limited; sleep retry_after (capped) and retry once.
+            The streaming caller debounces at 1.5s, so 429s are rare
+            unless there are many concurrent chats; the single retry
+            covers transient bursts without blocking forever.
         """
-        if markdown:
-            rendered = _to_tg_markdown_v2(text)
-            resp = self.call(
-                "editMessageText",
-                chat_id=chat_id,
-                message_id=message_id,
-                text=rendered,
-                parse_mode="MarkdownV2",
-            )
-            if resp.get("ok") is False and resp.get("error_code") == 400:
-                # MarkdownV2 escape mistake — retry as plain text.
+        def _do_edit() -> dict:
+            if markdown:
+                rendered = _to_tg_markdown_v2(text)
                 resp = self.call(
                     "editMessageText",
                     chat_id=chat_id,
                     message_id=message_id,
-                    text=text,
+                    text=rendered,
+                    parse_mode="MarkdownV2",
                 )
-        else:
+                if resp.get("ok") is False and resp.get("error_code") == 400:
+                    # Could be "not modified" OR a MarkdownV2 escape error.
+                    # On the first kind we want to claim success. On the
+                    # second we want to retry as plain text. The body's
+                    # description tells us which.
+                    desc = (resp.get("description") or "").lower()
+                    if "not modified" in desc:
+                        return {"ok": True, "_skipped": True}
+                    return self.call(
+                        "editMessageText",
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        text=text,
+                    )
+                return resp
             resp = self.call(
                 "editMessageText",
                 chat_id=chat_id,
                 message_id=message_id,
                 text=text,
             )
+            if resp.get("ok") is False and resp.get("error_code") == 400:
+                desc = (resp.get("description") or "").lower()
+                if "not modified" in desc:
+                    return {"ok": True, "_skipped": True}
+            return resp
+
+        resp = _do_edit()
+        if resp.get("ok") is False and resp.get("error_code") == 429:
+            # TG returns retry_after in the JSON description for 429s.
+            # Parse defensively — we never want a parse error here to
+            # raise into the streaming loop.
+            retry_after = 1
+            try:
+                desc = resp.get("description") or ""
+                # Body looks like '{"ok":false,"error_code":429,...,"parameters":{"retry_after":3}}'
+                parsed = json.loads(desc) if desc.startswith("{") else {}
+                ra = (parsed.get("parameters") or {}).get("retry_after")
+                if isinstance(ra, (int, float)) and ra > 0:
+                    retry_after = min(int(ra), 5)
+            except Exception:
+                pass
+            time.sleep(retry_after)
+            resp = _do_edit()
         return bool(resp.get("ok"))
 
     def typing(self, chat_id: int, thread_id: int | None = None) -> None:
