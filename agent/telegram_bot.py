@@ -173,6 +173,25 @@ AGENTS = (AGENT_CLAUDE, AGENT_CODEX)
 DEFAULT_AGENT = AGENT_CLAUDE
 
 
+# Registered with Telegram via setMyCommands at boot. Order = order shown
+# in the `/` autocomplete popup. Descriptions are short — TG clips them.
+BOT_COMMANDS: list[tuple[str, str]] = [
+    ("help", "show all commands"),
+    ("compact", "summarize this topic's session to free up context"),
+    ("agent", "switch this topic's agent (claude|codex)"),
+    ("live", "live-view URL of the active browser"),
+    ("queue", "pending tasks in this topic"),
+    ("cancel", "kill the running task + drop pending"),
+    ("schedules", "list reminders / cron jobs"),
+    ("login", "auth status / connect a service (e.g. /login gh)"),
+    ("logout", "disconnect a service (e.g. /logout gh)"),
+    ("invite", "mint a token to authorize a second chat"),
+    ("whoami", "your TG identity + this lane's agent"),
+    ("version", "show the bux agent version"),
+    ("update", "pull latest code + restart"),
+]
+
+
 # ---------------------------------------------------------------------------
 # MarkdownV2 helpers — Telegram's escape rules are strict and unforgiving.
 # These are unchanged from the legacy bot; rendering rules don't depend on
@@ -2499,6 +2518,24 @@ class Bot:
 
     # ----- Binding flow -----
 
+    def assert_my_commands(self) -> None:
+        """Register the bot's slash commands with Telegram so typing `/`
+        in chat surfaces the autocomplete tooltip. Run on every startup
+        so the registered list stays in sync with the code.
+
+        Descriptions are short — Telegram clips them in the popup. Order
+        is roughly "most useful first"; TG renders them as listed.
+        """
+        commands = [
+            {"command": name, "description": desc}
+            for name, desc in BOT_COMMANDS
+        ]
+        res = self.call("setMyCommands", commands=commands)
+        if res.get("ok"):
+            LOG.info("registered %d slash commands with Telegram", len(commands))
+        else:
+            LOG.warning("setMyCommands failed: %s", res)
+
     def assert_default_admin_rights(self) -> None:
         """Assert the default admin rights for `?startgroup=…` deeplinks.
 
@@ -3773,6 +3810,10 @@ def main() -> int:
     # it boots, so a fresh install (or a settings drift in BotFather) ends
     # up in a known good state without the operator having to remember.
     bot.assert_default_admin_rights()
+    # Re-register the slash-command list with TG so typing `/` in chat
+    # shows an up-to-date autocomplete tooltip. Idempotent; setMyCommands
+    # overwrites whatever was there.
+    bot.assert_my_commands()
     # Resume drain workers for any lane that still has queued work from
     # before the restart. Otherwise the "🔄 restarting → ✅ fully ready"
     # status flip in `_announce_online_if_new_sha` would never observe
