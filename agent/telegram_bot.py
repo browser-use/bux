@@ -1242,18 +1242,23 @@ def _snapshot_lane(slug: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# `!cmd` shell passthrough.
+# `/terminal` — interactive shell mode.
 #
-# Owner sends `!<cmd>`; we run it as the bux user inside a PTY and stream
-# stdout/stderr back to TG in debounced chunks. While the session is alive,
-# any plain-text message the owner sends in the same lane is forwarded to
-# the PTY's stdin (newline-appended) — so device-code flows (codex login,
-# gh auth login, …) work end-to-end: the prompt arrives in TG, the user
-# pastes the code as a normal reply, the bot writes it back to the running
-# process. `/cancel` (lane-scoped) kills the session group.
+# Owner sends `/terminal` (optionally with an initial command, e.g.
+# `/terminal codex login`). The bot spawns a persistent `bash` as the
+# bux user inside a PTY and streams output back to the lane. From that
+# moment on, every plain-text message in the lane is written to the
+# shell's stdin (newline-appended) — so an interactive login flow
+# (codex / gh device codes, sudo passwords, npx prompts) just works:
+# the URL / prompt lands in TG, the user pastes the answer as a normal
+# message, the bot routes it back to the running shell. `/exit` (or
+# typing `exit` as plain text) ends the session and the lane is back
+# to the bound agent. `/cancel` SIGKILLs the session group as a hard
+# escape hatch.
 #
-# Bypasses the lane FIFO on purpose: `!cmd` is meant for fast admin work
-# the user wants now, not behind a long claude turn.
+# `/terminal` while a session is already active is a no-op so a typo
+# doesn't tear down what the user is working on. Bypasses the lane
+# FIFO: terminal work is meant for the user to do now.
 # ---------------------------------------------------------------------------
 
 # Strip ANSI CSI / OSC sequences so colors / cursor moves don't show up as
@@ -1265,9 +1270,6 @@ _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07")
 # spam ten bubbles per tick.
 _SHELL_FLUSH_BYTES = 2500
 _SHELL_FLUSH_QUIET_SEC = 0.8
-# Default per-command wall clock. The user can chain another `!cmd` to
-# replace this one if it's still alive, or `/cancel` to kill it.
-_SHELL_DEFAULT_TIMEOUT_SEC = 1800
 
 _shell_sessions_lock = threading.Lock()
 _shell_sessions: dict[str, "ShellSession"] = {}  # lane_slug → session
@@ -1283,19 +1285,22 @@ def _get_shell_session(slug: str) -> "ShellSession | None":
 
 
 class ShellSession:
-    """One owner-driven `!cmd` PTY session, scoped to a single lane.
+    """One owner-driven persistent bash session inside a PTY, scoped to a lane.
 
     Lifecycle:
-      - start() forks `bash -c <cmd>` as bux inside a PTY.
+      - start() forks `bash` as bux inside a PTY. If `initial_cmd` is set,
+        it's written to bash's stdin right after the PTY is hooked up so
+        the user can do `/terminal codex login` as a single message.
       - A reader thread pulls from the master fd, strips ANSI, and posts
         debounced chunks to TG as monospace bubbles.
       - send_input(text) writes user-supplied text + "\\n" to the master
-        fd so codex / gh / read prompts get answered.
-      - kill() SIGKILLs the foreground process group; the reader notices
-        EOF, flushes any tail, and posts a final exit-code bubble.
+        fd. Plain-text messages in the lane go through this path.
+      - The user types `exit` (or sends Ctrl-D) → bash exits → reader sees
+        EOF → teardown posts a final exit-code bubble. `/exit` and
+        `/cancel` are server-side fast paths: the first sends `exit\\n`,
+        the second SIGKILLs the process group.
 
-    Only one session per lane. Starting a new `!cmd` while one is alive
-    kills the old one first.
+    Only one session per lane. `/terminal` while one is alive is a no-op.
     """
 
     def __init__(
@@ -1304,17 +1309,15 @@ class ShellSession:
         chat_id: int,
         thread_id: int,
         slug: str,
-        cmd: str,
+        initial_cmd: str | None = None,
         reply_to: int | None = None,
-        timeout: int = _SHELL_DEFAULT_TIMEOUT_SEC,
     ) -> None:
         self.bot = bot
         self.chat_id = chat_id
         self.thread_id = thread_id
         self.slug = slug
-        self.cmd = cmd
+        self.initial_cmd = initial_cmd
         self.reply_to = reply_to
-        self.timeout = timeout
         self.master_fd: int | None = None
         self.process: subprocess.Popen | None = None
         self._buffer = bytearray()
@@ -1325,11 +1328,6 @@ class ShellSession:
         self.started_at = 0.0
         self._reader_thread: threading.Thread | None = None
         self._flusher_thread: threading.Thread | None = None
-        # The user's stdin lines come in as plain TG messages. We log a
-        # short prefix into the output stream as `> <line>` so the bubble
-        # shows the prompt + answer the way a real terminal would, instead
-        # of just the program's eventual response with no echo.
-        self._echo_input = True
 
     # -- spawn ---------------------------------------------------------------
 
@@ -1342,12 +1340,29 @@ class ShellSession:
         except Exception:
             pass
 
-        # Run as bux, in /home/bux, with the bux user's normal env so
-        # `npm`, `codex`, `gh`, etc. find their config / creds. We use
-        # `sudo -iu bux -- bash -lc <cmd>` to get a login shell — this
-        # mirrors what the user gets from `sudo -iu bux` on ttyd / ssh,
-        # and gives the command the bux user's PATH / nvm / pyenv.
-        argv = ["sudo", "-iu", "bux", "--", "bash", "-lc", self.cmd]
+        # Persistent bash as the bux user with login env so `npm`, `codex`,
+        # `gh`, etc. find their config and creds. `sudo -iu bux -- bash -i`
+        # mirrors what the user gets from `sudo -iu bux` on ttyd / ssh.
+        # Force a minimal PS1 so we don't spam the lane with multi-line
+        # color prompts on every command — the bash itself still echoes
+        # input and prints output, which is the part that matters.
+        argv = [
+            "sudo", "-iu", "bux", "--",
+            "bash", "-i",
+        ]
+
+        def _make_session_leader() -> None:
+            # Run in the child between fork() and exec(): start a new
+            # session (so kill() can target the whole group), and make
+            # the slave PTY the controlling terminal so bash gets job
+            # control and doesn't print "cannot set terminal process
+            # group" / "no job control in this shell" on startup.
+            os.setsid()
+            try:
+                fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+            except OSError:
+                pass
+
         try:
             proc = subprocess.Popen(
                 argv,
@@ -1355,7 +1370,7 @@ class ShellSession:
                 stdout=slave_fd,
                 stderr=slave_fd,
                 close_fds=True,
-                start_new_session=True,  # new pgid so kill() can target the group
+                preexec_fn=_make_session_leader,
             )
         except Exception:
             os.close(master_fd)
@@ -1378,12 +1393,16 @@ class ShellSession:
         with _shell_sessions_lock:
             _shell_sessions[self.slug] = self
 
-        # Tell the user we're running. Show the cmd verbatim in a code
-        # bubble so special chars don't trip MDV2 escaping.
-        ack = f"💻 `{self.cmd}`\n_lane is in shell mode — replies go to stdin, /cancel to kill_"
+        ack_lines = [
+            "💻 *terminal session started*",
+            "_replies go straight to the shell — type `exit` or send /exit to leave, "
+            "/cancel to hard-kill_",
+        ]
+        if self.initial_cmd:
+            ack_lines.append(f"running: `{self.initial_cmd}`")
         self.bot.send(
             self.chat_id,
-            ack,
+            "\n".join(ack_lines),
             reply_to=self.reply_to,
             thread_id=self.thread_id,
             markdown=True,
@@ -1402,21 +1421,24 @@ class ShellSession:
         self._reader_thread.start()
         self._flusher_thread.start()
 
+        # Seed an initial command if the user typed `/terminal <cmd>`. The
+        # write happens after the threads start so the bash startup output
+        # and the seeded command's output both stream back as one flow.
+        if self.initial_cmd:
+            try:
+                os.write(self.master_fd, (self.initial_cmd + "\n").encode("utf-8", "replace"))
+            except Exception:
+                LOG.exception("seeding initial cmd for shell session %s failed", self.slug)
+
     # -- input ---------------------------------------------------------------
 
     def send_input(self, text: str) -> bool:
         """Write `text` (newline-appended) to the PTY master. Returns False
-        if the session has already exited."""
+        if the session has already exited. The PTY's own line-discipline
+        handles echoing what we write back into the read stream, so we
+        don't echo in user space — that would double-print every line."""
         if not self.alive or self.master_fd is None:
             return False
-        # Echo the line into the buffer first so the bubble shows the
-        # answer alongside whatever comes back. PTYs echo terminal input
-        # by default, but the bytes only go through if a reader is on the
-        # other side at write-time — which we can't guarantee — so do it
-        # in user space.
-        if self._echo_input and text:
-            with self._buffer_lock:
-                self._buffer.extend(b"> " + text.encode("utf-8", "replace") + b"\n")
         payload = (text + "\n").encode("utf-8", "replace")
         try:
             os.write(self.master_fd, payload)
@@ -1447,13 +1469,8 @@ class ShellSession:
 
     def _reader(self) -> None:
         assert self.master_fd is not None
-        deadline = self.started_at + self.timeout
         try:
             while not self._stop.is_set():
-                if time.time() > deadline:
-                    self._buffer_log_line(f"\n⏱ timed out after {self.timeout}s; killed.")
-                    self.kill("timeout")
-                    break
                 try:
                     rlist, _, _ = select.select([self.master_fd], [], [], 0.5)
                 except (ValueError, OSError):
@@ -1519,10 +1536,6 @@ class ShellSession:
                 pre_rendered=True,
             )
 
-    def _buffer_log_line(self, line: str) -> None:
-        with self._buffer_lock:
-            self._buffer.extend(line.encode("utf-8", "replace"))
-
     def _teardown(self) -> None:
         # Idempotent — both reader EOF and kill() can land here.
         if not self.alive:
@@ -1559,13 +1572,13 @@ class ShellSession:
 
         # Map common exit codes to a friendlier emoji.
         if rc is None:
-            footer = "💻 _session ended (unknown exit)_"
+            footer = "💻 _terminal closed — lane back to agent_"
         elif rc == 0:
-            footer = "✅ _exit 0 — lane back to agent_"
+            footer = "✅ _terminal closed (exit 0) — lane back to agent_"
         elif rc < 0:
-            footer = f"🛑 _killed (signal {-rc}) — lane back to agent_"
+            footer = f"🛑 _terminal killed (signal {-rc}) — lane back to agent_"
         else:
-            footer = f"❌ _exit {rc} — lane back to agent_"
+            footer = f"❌ _terminal closed (exit {rc}) — lane back to agent_"
         try:
             self.bot.send(
                 self.chat_id,
@@ -3142,54 +3155,45 @@ class Bot:
         key = _lane_key(chat_id, thread_id)
         slug = _lane_slug(key)
 
-        # `!cmd` shell passthrough. Owner-only — anyone else gets the
-        # normal agent path so guests can't run shell on the box. The
-        # exclamation-mark prefix is intentionally not a slash so it
-        # reads more like a chat shorthand than a bot command.
         owner = _owner_for(chat_id, self.state)
-        if text.startswith("!"):
+        cmd, arg = _parse_command(text)
+
+        # `/terminal` — owner-only mode switch. Spawns a persistent bash
+        # in this lane; from this point on plain-text messages route to
+        # its stdin. `/terminal <initial cmd>` seeds the first command,
+        # so `/terminal codex login` starts the shell + runs codex login
+        # in one shot. `/terminal` while a session is already alive is a
+        # no-op (the user said so) — protects an active session from a
+        # fat-fingered re-trigger.
+        if cmd == "/terminal":
             if not _is_owner(sender, owner):
                 self.send(
                     chat_id,
-                    "❌ `!cmd` is owner-only.",
+                    "❌ `/terminal` is owner-only.",
                     reply_to=mid,
                     thread_id=thread_id,
                     markdown=True,
                 )
                 return
-            shell_cmd = text[1:].strip()
-            if not shell_cmd:
-                # Bare `!` — surface session status.
-                existing = _get_shell_session(slug)
-                if existing is not None:
-                    self.send(
-                        chat_id,
-                        f"💻 shell session running: `{existing.cmd}` — reply to send stdin, "
-                        "/cancel to kill.",
-                        reply_to=mid,
-                        thread_id=thread_id,
-                        markdown=True,
-                    )
-                else:
-                    self.send(
-                        chat_id,
-                        "Usage: `!<command>` — e.g. `!ls -la` or `!sudo -iu bux codex login`.",
-                        reply_to=mid,
-                        thread_id=thread_id,
-                        markdown=True,
-                    )
-                return
-            # Replace any active session in this lane.
             existing = _get_shell_session(slug)
             if existing is not None:
-                existing.kill("replaced")
+                self.send(
+                    chat_id,
+                    "💻 terminal session already running here — replies go to its "
+                    "stdin. Type `exit` (or send /exit) to close it, /cancel to "
+                    "hard-kill.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
             try:
                 sess = ShellSession(
                     self,
                     chat_id=chat_id,
                     thread_id=thread_id,
                     slug=slug,
-                    cmd=shell_cmd,
+                    initial_cmd=arg.strip() or None,
                     reply_to=mid,
                 )
                 sess.start()
@@ -3197,17 +3201,45 @@ class Bot:
                 LOG.exception("shell start failed for %s", slug)
                 self.send(
                     chat_id,
-                    f"❌ failed to start shell: {e}",
+                    f"❌ failed to start terminal: {e}",
                     reply_to=mid,
                     thread_id=thread_id,
                 )
             return
 
-        # If a shell session is active in this lane, plain-text replies
+        # `/exit` — graceful close. Writes `exit\n` to the bash so any
+        # nested process gets a chance to clean up; bash exits, the
+        # reader sees EOF, the teardown footer fires. /cancel remains
+        # the hard-kill path. Outside a session, /exit is a no-op with
+        # a hint.
+        if cmd == "/exit":
+            sess = _get_shell_session(slug)
+            if sess is None:
+                self.send(
+                    chat_id,
+                    "No terminal session here. `/terminal` to start one.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
+            if not _is_owner(sender, owner):
+                self.send(
+                    chat_id,
+                    "❌ `/exit` is owner-only.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
+            sess.send_input("exit")
+            return
+
+        # If a shell session is active in this lane, plain-text messages
         # are stdin for it (codex login codes, gh auth login codes, `read`
         # answers, `y/n` prompts, …). Slash commands fall through below
-        # so the user can still `/cancel` or `/queue`.
-        if not (text.startswith("/")):
+        # so the user can still `/cancel`, `/queue`, etc.
+        if not text.startswith("/"):
             sess = _get_shell_session(slug)
             if sess is not None and _is_owner(sender, owner):
                 if sess.send_input(text):
@@ -3215,13 +3247,11 @@ class Bot:
                 else:
                     self.send(
                         chat_id,
-                        "❌ shell session is gone — message not delivered.",
+                        "❌ terminal session is gone — message not delivered.",
                         reply_to=mid,
                         thread_id=thread_id,
                     )
                 return
-
-        cmd, arg = _parse_command(text)
         if cmd in ("/start", "/help"):
             self.send(
                 chat_id,
@@ -3229,12 +3259,14 @@ class Bot:
                 "Forum topics each get their own agent session and run in "
                 "parallel — no concurrency cap, only the box's RAM gates it.\n\n"
                 "Commands\n"
-                "!<cmd> — run a shell command on the box (owner-only); replies "
-                "after that go to the command's stdin until it exits or you /cancel\n"
+                "/terminal — open an interactive shell here (owner-only); "
+                "replies route to stdin until you `exit` or send /exit. "
+                "/terminal <cmd> seeds the first command, e.g. `/terminal codex login`\n"
+                "/exit — close the active terminal session (graceful)\n"
                 "/agent claude|codex — switch this topic to a different agent\n"
                 "/live — live-view URL of the active browser\n"
                 "/queue — pending tasks in this topic\n"
-                "/cancel — kill the running task / shell session + drop "
+                "/cancel — kill the running task / terminal + drop "
                 "everything pending in this topic\n"
                 "/cancel <id> — cancel one task (running or queued)\n"
                 "/compact — summarize this topic's claude session to free up context\n"
