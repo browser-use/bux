@@ -217,7 +217,7 @@ Only do this when the user explicitly asks. Don't silently rebind across tasks.
 
 Toolkits the user has connected on the cloud frontend (cloud.browser-use.com — Gmail, Calendar, Slack, Linear, GitHub, Notion, …) are automatically available here as native Claude Code tools. The `composio` MCP server registered by bootstrap proxies through cloud, which holds the platform Composio key and the user's OAuth tokens. No setup steps on the box, no per-toolkit keys, no `bux-connect`.
 
-The tools surface as `search_composio_tools`, `execute_composio_tool`, `is_connected`, and `list_integrations`. Use them like any other tool — call them directly when the user asks for "send an email", "create a calendar event", "post to Slack", etc. They're the right choice for long-running cron jobs (tokens refresh automatically, unlike browser sessions).
+The tools surface as `search_composio_tools`, `execute_composio_tool`, `list_integrations`, and `connect_integration`. Use them like any other tool — call them directly when the user asks for "send an email", "create a calendar event", "post to Slack", etc. They're the right choice for long-running cron jobs (tokens refresh automatically, unlike browser sessions).
 
 If the user asks for a toolkit they haven't connected yet, the MCP call returns an `auth_required` payload with a redirect URL. Pipe that URL through `tg-send` so it lands in the same TG topic — the user taps it from their phone, OAuths in their cloud account, and the next call works.
 

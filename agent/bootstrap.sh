@@ -102,10 +102,22 @@ else
   # then re-add against the current token. -H so HOME resolves to /home/bux
   # and the registration lands in bux's ~/.claude.json, not root's.
   sudo -u bux -H claude mcp remove composio >/dev/null 2>&1 || true
-  sudo -u bux -H claude mcp add --transport http composio \
+  # Subshell with `set +x` so the bearer token never lands in trace output
+  # (currently bootstrap is set -euo pipefail without -x, but if anyone
+  # turns on tracing for debugging they shouldn't accidentally leak the
+  # token to /var/log/bux/install.log or the user-data console log).
+  ( set +x; sudo -u bux -H claude mcp add --transport http composio \
     https://api.browser-use.com/cloud/composio/mcp \
-    --header "Authorization: Bearer $BUX_BOX_TOKEN" >/dev/null
-  echo "bootstrap: registered cloud Composio MCP server"
+    --header "Authorization: Bearer $BUX_BOX_TOKEN" >/dev/null )
+  # Verify the registration actually wrote a usable entry. A silent
+  # failure here means the user doesn't get cloud integrations until
+  # their next /update — this fail-loud check turns that into a
+  # bootstrap-time error we'll see in install.log instead.
+  if ! sudo -u bux -H claude mcp list 2>/dev/null | grep -q '^composio'; then
+    echo "bootstrap: WARN composio MCP registration didn't take" >&2
+  else
+    echo "bootstrap: registered cloud Composio MCP server"
+  fi
 fi
 
 # --- login banner: live browser URL on each ssh login ---------------------
