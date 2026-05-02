@@ -1284,13 +1284,26 @@ class StreamingMessage:
         # its prior content, then open a fresh message holding chunk
         # alone. Without the pre-append-state flush, the previous and
         # next messages would visibly share `chunk` at their boundary.
+        #
+        # CRITICAL: only roll over if the flush actually succeeded. If
+        # the edit failed (429 after retry, network blip), the on-screen
+        # message is missing the most recent text — abandoning the
+        # buffer to start fresh would silently drop those chars.
+        # Instead, commit `prospective` to self._buffer and fall through
+        # to the normal edit path; the next append (or the final flush
+        # on `result`) retries the same content. The buffer can grow
+        # past _MAX_BODY here; if it eventually exceeds TG's 4096 hard
+        # limit, edit() returns False and we keep retrying — louder
+        # failure than silent truncation.
         if len(prospective) > self._MAX_BODY:
-            self.flush()
-            self._buffer = chunk
-            self._last_emitted = ""
-            self._message_id = None
-            self._send_new()
-            return
+            if self.flush():
+                self._buffer = chunk
+                self._last_emitted = ""
+                self._message_id = None
+                self._send_new()
+                return
+            # Flush failed: keep accumulating into the same open message.
+            # Fall through to the normal edit path.
 
         # Normal in-place edit path: extend the buffer, debounce the
         # network call. The `result`-event flush() guarantees the user
@@ -1300,26 +1313,60 @@ class StreamingMessage:
             return
         self._emit()
 
-    def flush(self) -> None:
-        """Force the current buffer state to TG. Idempotent (no-op if
-        we've already emitted this exact text)."""
+    def flush(self) -> bool:
+        """Force the current buffer state to TG. Returns True if the
+        on-screen content now matches self._buffer (either the edit
+        succeeded, or there was nothing to do). False = caller must
+        not advance state past the current buffer."""
         if self._message_id is None or self._buffer == self._last_emitted:
-            return
-        self._emit()
+            return True
+        return self._emit()
 
     def _send_new(self) -> None:
         """Send self._buffer as a brand-new TG message; record its id.
 
-        Caps the body at _MAX_BODY before sending. Without the cap a
-        single >REPLY_MAX assistant block would multi-chunk inside
-        send_returning_id and we'd only get the FIRST chunk's id —
-        subsequent chunks would orphan as bubbles that never grow.
+        If self._buffer exceeds _MAX_BODY (a single huge assistant block
+        on first contact, or a chunk whose own length is past the cap),
+        send all-but-the-tail as one or more standalone messages first,
+        then keep the tail as the editable open message. This preserves
+        every char while still leaving us with a single message_id we
+        can edit on subsequent appends.
+
+        Without this, naively passing a >REPLY_MAX body to
+        send_returning_id would multi-chunk inside the helper and we'd
+        only capture the FIRST id — later chunks would orphan as
+        bubbles that never grow (and any further append() edits would
+        target the WRONG message).
         """
         body = self._buffer
         if len(body) > self._MAX_BODY:
-            # Hard truncate to the cap. The next append() will see the
-            # next text block and roll into a new message naturally.
-            body = body[: self._MAX_BODY]
+            # Spill: send the head as standalone messages; the tail
+            # becomes the editable open message. Split on a paragraph
+            # boundary when possible to keep formatting natural;
+            # otherwise hard-cut so tail is exactly _MAX_BODY chars.
+            #
+            # We need: head = body[:cut], tail = body[cut:], where
+            # len(tail) <= _MAX_BODY. Earliest valid cut is N-_MAX_BODY.
+            min_cut = len(body) - self._MAX_BODY
+            # Look for a \n\n at-or-after min_cut (closer to the end is
+            # better; gives tail the most context). Search a window.
+            search_end = min(len(body), min_cut + self._MAX_BODY)
+            cut = body.rfind("\n\n", min_cut, search_end)
+            if cut < 0:
+                cut = min_cut  # no boundary found; hard cut
+            head, tail = body[:cut].rstrip(), body[cut:].lstrip("\n")
+            if head:
+                # Send head as its own bubbles (multi-chunk if needed).
+                # We don't track ids for these — they're append-only
+                # context above the editable message.
+                self._bot.send(
+                    chat_id=self._chat_id,
+                    text=head,
+                    reply_to=self._reply_to,
+                    thread_id=self._thread_id,
+                    markdown=True,
+                )
+            body = tail
             self._buffer = body
         self._message_id = self._bot.send_returning_id(
             chat_id=self._chat_id,
@@ -1331,9 +1378,14 @@ class StreamingMessage:
         self._last_emitted = body
         self._last_edit_at = time.time()
 
-    def _emit(self) -> None:
+    def _emit(self) -> bool:
+        """Push self._buffer to the open message. Returns True on success.
+
+        Caller uses the return value to decide whether it's safe to
+        advance state past self._buffer (rollover branch needs this).
+        """
         if self._message_id is None:
-            return
+            return False
         ok = self._bot.edit(
             chat_id=self._chat_id,
             message_id=self._message_id,
@@ -1343,6 +1395,7 @@ class StreamingMessage:
         if ok:
             self._last_emitted = self._buffer
             self._last_edit_at = time.time()
+        return ok
 
 
 class Bot:
