@@ -4637,13 +4637,15 @@ class Bot:
         while True:
             try:
                 # allowed_updates filters server-side so we don't burn
-                # update_ids on channel_post / callback_query / inline_query /
-                # poll / chat_join_request / etc — we only ever consume
-                # message + edited_message. Every other update type the bot
-                # would silently drop after the round-trip.
+                # update_ids on channel_post / inline_query / poll / etc —
+                # we only consume message + edited_message + callback_query.
+                # callback_query is for the tg-approve permission bridge
+                # (inline-keyboard taps on Allow/Deny prompts).
                 params: dict = {
                     "timeout": POLL_TIMEOUT,
-                    "allowed_updates": ["message", "edited_message"],
+                    "allowed_updates": [
+                        "message", "edited_message", "callback_query",
+                    ],
                 }
                 if self.state.get("offset"):
                     params["offset"] = self.state["offset"] + 1
@@ -4653,6 +4655,13 @@ class Bot:
                     self.state["offset"] = max(u["update_id"] for u in updates)
                     save_state(self.state)
                 for u in updates:
+                    if cb := u.get("callback_query"):
+                        threading.Thread(
+                            target=self._handle_callback_query,
+                            args=(cb,),
+                            daemon=True,
+                        ).start()
+                        continue
                     msg = u.get("message") or u.get("edited_message")
                     if not msg:
                         continue
@@ -4667,6 +4676,56 @@ class Bot:
             except Exception:
                 LOG.exception("unexpected; sleep 5s")
                 time.sleep(5)
+
+    def _handle_callback_query(self, cb: dict) -> None:
+        """Process an inline-keyboard tap from tg-approve's question prompt.
+
+        callback_data shape: `tga:<request_id>:<option_index>`. The hook
+        script (running as bux, blocking on a state file) polls
+        /tmp/tg-approvals/<id>.json — we write the chosen index there,
+        then strip the buttons off the original message and dismiss the
+        loading spinner on the user's tap. Owner-only: a tap from anyone
+        else gets an alert toast and no state file write.
+        """
+        try:
+            parts = (cb.get("data") or "").split(":")
+            if len(parts) != 3 or parts[0] != "tga":
+                return
+            request_id, idx_str = parts[1], parts[2]
+            try:
+                option_index = int(idx_str)
+            except ValueError:
+                return
+            sender = cb.get("from") or {}
+            owner_id = self.state.get("owner", {}).get("user_id")
+            if owner_id and str(sender.get("id")) != str(owner_id):
+                self.call("answerCallbackQuery", callback_query_id=cb["id"],
+                          text="Only the box owner can answer.", show_alert=True)
+                return
+            state_dir = Path("/tmp/tg-approvals")
+            state_dir.mkdir(parents=True, exist_ok=True)
+            (state_dir / f"{request_id}.json").write_text(json.dumps({
+                "option_index": option_index,
+                "user_id": sender.get("id"),
+                "answered_at": time.time(),
+            }))
+            self.call("answerCallbackQuery", callback_query_id=cb["id"],
+                      text=f"✅ option {option_index + 1}")
+            msg = cb.get("message") or {}
+            chat_id = (msg.get("chat") or {}).get("id")
+            mid = msg.get("message_id")
+            if chat_id and mid:
+                # Strip the buttons in place so a stale prompt can't be
+                # double-tapped, and append a small footer telling the
+                # other lane participants who answered what.
+                self.call("editMessageReplyMarkup", chat_id=chat_id,
+                          message_id=mid, reply_markup={"inline_keyboard": []})
+                who = sender.get("username") or sender.get("id")
+                self.call("sendMessage", chat_id=chat_id,
+                          text=f"option {option_index + 1} chosen by @{who}",
+                          reply_to_message_id=mid)
+        except Exception:
+            LOG.exception("callback_query handler failed")
 
 
 def _announce_online_if_new_sha(bot: "Bot") -> None:
