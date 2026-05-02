@@ -429,7 +429,7 @@ def _normalize_codex_usage(usage: dict | None) -> dict | None:
     """
     if not isinstance(usage, dict):
         return None
-    out: dict = {}
+    out: dict = {"provider": "codex"}
     if isinstance(usage.get("input_tokens"), int):
         out["input_tokens"] = usage["input_tokens"]
     if isinstance(usage.get("output_tokens"), int):
@@ -479,36 +479,44 @@ def _format_final_footer(
     Body is intentionally NOT MDV2-escaped — the caller passes it
     through `_render_expandable_blockquote`, which escapes lines.
 
-    Format: `🪙 total · 📥 cached/input · 📤 out · 🛠 tools · ⏱ Ys`.
-    The cached/input pair puts cache traffic second and keeps the active
-    context legible without a long row of token categories.
+    Format: `🪙 total N · 📥 cached/input A/B · 📤 output D ...`.
+    Claude and Codex report input differently: Claude's input_tokens is
+    uncached input only; Codex's input_tokens is total input with
+    cached_input_tokens as a subset. Normalize before rendering.
     """
     parts: list[str] = []
     if isinstance(usage, dict):
+        provider = usage.get("provider")
         input_t = usage.get("input_tokens")
         output_t = usage.get("output_tokens")
         cache_read = usage.get("cache_read_input_tokens")
         cache_create = usage.get("cache_creation_input_tokens")
-        total = 0
-        if isinstance(input_t, int) and input_t > 0:
-            total += input_t
+        total_input = usage.get("total_input_tokens")
+        if not isinstance(total_input, int) or total_input <= 0:
+            if provider == "codex":
+                # Codex reports input_tokens as total input and
+                # cached_input_tokens as the cached subset.
+                total_input = input_t if isinstance(input_t, int) and input_t > 0 else 0
+            else:
+                # Claude reports input_tokens as uncached input only.
+                total_input = 0
+                for n in (input_t, cache_read, cache_create):
+                    if isinstance(n, int) and n > 0:
+                        total_input += n
+        total_all = total_input
         if isinstance(output_t, int) and output_t > 0:
-            total += output_t
-        if total > 0:
-            parts.append(f"🪙 {_humanize_tokens(total)}")
-        if (
-            isinstance(input_t, int)
-            and input_t > 0
-            and isinstance(cache_read, int)
-            and cache_read > 0
-        ):
-            parts.append(f"📥 {_humanize_cached_input(cache_read, input_t)}")
-        elif isinstance(input_t, int) and input_t > 0:
-            parts.append(f"📥 {_humanize_tokens(input_t)}")
+            total_all += output_t
+        if total_all > 0:
+            parts.append(f"🪙 total {_humanize_tokens(total_all)}")
+        if isinstance(total_input, int) and total_input > 0:
+            if isinstance(cache_read, int) and cache_read > 0:
+                parts.append(f"📥 cached/input {_humanize_cached_input(cache_read, total_input)}")
+            else:
+                parts.append(f"📥 input {_humanize_tokens(total_input)}")
         if isinstance(output_t, int) and output_t > 0:
-            parts.append(f"📤 {_humanize_tokens(output_t)}")
+            parts.append(f"📤 output {_humanize_tokens(output_t)}")
         if isinstance(cache_create, int) and cache_create > 0:
-            parts.append(f"✨ {_humanize_tokens(cache_create)}")
+            parts.append(f"✨ cache-write {_humanize_tokens(cache_create)}")
     if tool_calls > 0:
         parts.append(f"🛠 {tool_calls}")
     if isinstance(duration_ms, int) and duration_ms > 0:
