@@ -659,7 +659,11 @@ EOF
 		# all messages in the group regardless of the BotFather privacy toggle,
 		# so users don't have to fiddle with /setprivacy. Forum topics become
 		# parallel agent lanes once the user enables Topics on the group.
-		forum_url="https://t.me/${bot_username}?startgroup=true&admin=can_manage_topics+can_pin_messages"
+		# Telegram's deeplink `admin=` parameter takes the bare ChatAdminRights
+		# flag names (no `can_` prefix). The Bot API JSON form (used by
+		# setMyDefaultAdministratorRights) is the one that uses can_*; don't
+		# mix the two namespaces.
+		forum_url="https://t.me/${bot_username}?startgroup=true&admin=manage_topics+pin_messages"
 		printf '\n  Recommended: add me to a group (then enable Topics for parallel lanes).\n'
 		printf '  %sScan the QR or open:%s\n\n' "$c_bold" "$c_reset"
 		printf '  %s\n\n' "$forum_url"
