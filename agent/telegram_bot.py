@@ -32,7 +32,8 @@ Flow:
      enqueued. A worker drains that lane, dispatching each job to the lane's
      bound agent (claude default; `/agent codex` flips it).
   4. Stream-json events from claude come back as TG message bubbles in the
-     lane's topic, with reaction emojis on the user's message (🤔→🎉/💔).
+     lane's topic, with a per-turn random "thinking" emoji in the placeholder
+     bubble and 🎉/💔 reactions on the user's message at end-of-turn.
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ import json
 import logging
 import os
 import pwd
+import random
 import re
 import secrets
 import signal
@@ -135,9 +137,34 @@ _SERVICE_MESSAGE_FIELDS = frozenset({
 
 # Reaction emojis on the user's message. Telegram's free-tier reaction
 # allowlist excludes ⏳/✅/⚠️/❌ — these are verified-allowed picks.
-EMOJI_WORKING = "🤔"
 EMOJI_DONE = "🎉"
 EMOJI_ERROR = "💔"
+
+# Pool the placeholder bubble draws from on every new turn — one random pick
+# per `StreamingMessage.start()`. Goes inside a regular message body, not a
+# reaction, so the Telegram reaction allowlist doesn't apply. Curated across
+# approval / laughter / astonishment / doubt so the vibe stays "agent is on
+# it" rather than going off into food or animals.
+THINKING_EMOJIS = (
+    # approval / cheering
+    "👍", "🥰", "👏", "🙏", "👌", "💯", "🤝", "✨",
+    "⭐", "🌟", "💪", "🤗", "✅", "🎯", "🥇", "🙌", "💫",
+    "🎊", "🥳", "🫡", "🆒", "💘",
+    # laughter / joy
+    "😄", "😁", "😂", "🤣", "😆", "🤪", "😜", "😝", "🤭", "🥲",
+    "😻", "🙃", "😋", "😎", "🥸", "😅", "🤠", "😇", "🤓", "🤡",
+    # astonishment / wow
+    "🤯", "😱", "🤩", "😲", "😮", "😯", "🫨", "🙀", "👀", "🫢",
+    "🫣", "😳", "🥶", "🥵", "🌪", "💥", "🎆", "🎇",
+    # doubt / thinking
+    "🤔", "🤨", "🧐", "🤷", "🙄",
+    "😶", "💭", "🐌", "🐢", "⏳", "🌀", "👻",
+)
+
+
+def random_thinking_emoji() -> str:
+    """One placeholder emoji per turn. Cosmetic; never security-sensitive."""
+    return random.choice(THINKING_EMOJIS)
 
 # Recognised agents per lane. Values double as PATH binary names.
 AGENT_CLAUDE = "claude"
@@ -1431,10 +1458,10 @@ class StreamingMessage:
         self._last_edit_at = 0.0
 
     def start(self) -> None:
-        """Send a `🤔` placeholder bubble immediately, before any text
-        has arrived. Replaces the EMOJI_WORKING reaction as the visible
-        "the bot is working on this" signal — a real bubble in the chat
-        is harder to miss than a reaction emoji on the user's message.
+        """Send a placeholder bubble immediately, before any text has
+        arrived. The emoji is a random pick from THINKING_EMOJIS so each
+        turn has a slightly different vibe (approval / laughter /
+        astonishment / doubt) instead of always the same 🤔.
 
         The first `append()` (or `finalize()`) edits this bubble in
         place, so the user only ever sees one message per turn.
@@ -1442,7 +1469,7 @@ class StreamingMessage:
         """
         if self._message_id is not None:
             return
-        rendered = _render_expandable_blockquote("🤔")
+        rendered = _render_expandable_blockquote(random_thinking_emoji())
         if not rendered:
             return
         self._send_initial(rendered)
