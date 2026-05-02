@@ -50,7 +50,6 @@ import random
 import re
 import secrets
 import select
-import shlex
 import signal
 import struct
 import subprocess
