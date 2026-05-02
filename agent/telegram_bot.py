@@ -683,7 +683,14 @@ def _prefix_sender(
     When we know the chat's owner, append a soft role tag so the agent
     can tell whether the current sender is the box owner or a guest who
     joined the group later. No hard authorization gate — just context.
+
+    Slash-command prompts (e.g. `/compact`) are passed through verbatim:
+    claude's slash-command parser only fires when the prompt STARTS with
+    `/`, and a `[from …]` prefix would leave the slash a few lines into
+    the body, defeating the parse.
     """
+    if prompt.startswith("/"):
+        return prompt
     label = _sender_label(sender)
     if not label:
         return prompt
