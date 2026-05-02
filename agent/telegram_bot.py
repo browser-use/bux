@@ -1396,11 +1396,12 @@ class StreamingMessage:
 
     Lifecycle:
       msg = StreamingMessage(bot, chat_id, thread_id)
-      msg.append("…")     # one call per claude text block
+      msg.start()         # send a `...` placeholder bubble immediately
+      msg.append("…")     # one call per claude text block; edits placeholder
       msg.finalize()      # called on the `result` event; flips to final view
 
-    Thread-safe per-instance: append() / finalize() are called from the
-    single parser thread; no other consumer.
+    Thread-safe per-instance: start() / append() / finalize() are called
+    from the single parser thread; no other consumer.
     """
 
     # Edit at most every N seconds. TG tolerates ~1 edit/sec/chat; we
@@ -1428,6 +1429,23 @@ class StreamingMessage:
         # when nothing has changed (avoids "message is not modified" 400s).
         self._last_emitted = ""
         self._last_edit_at = 0.0
+
+    def start(self) -> None:
+        """Send a `🤔` placeholder bubble immediately, before any text
+        has arrived. Replaces the EMOJI_WORKING reaction as the visible
+        "the bot is working on this" signal — a real bubble in the chat
+        is harder to miss than a reaction emoji on the user's message.
+
+        The first `append()` (or `finalize()`) edits this bubble in
+        place, so the user only ever sees one message per turn.
+        Idempotent: no-op if a message has already been sent.
+        """
+        if self._message_id is not None:
+            return
+        rendered = _render_expandable_blockquote("🤔")
+        if not rendered:
+            return
+        self._send_initial(rendered)
 
     def append(self, chunk: str) -> None:
         """Record a new assistant text block; render & push (debounced)."""
@@ -1910,8 +1928,11 @@ class Bot:
         # One rolling TG message per turn — every assistant text block
         # appends + edits, instead of N separate sendMessage calls. User
         # gets one notification for the whole turn. See StreamingMessage
-        # docstring for the why.
+        # docstring for the why. start() sends a `...` placeholder bubble
+        # immediately so the user has a visible "I'm on it" signal, even
+        # before claude has emitted its first text block.
         stream_msg = StreamingMessage(self, chat_id, reply_to, thread_id)
+        stream_msg.start()
         any_text = False
         assert proc.stdout is not None
         try:
@@ -2670,11 +2691,11 @@ class Bot:
             "status": "queued",
             "sender": sender,
         }
-        self.react(chat_id, mid, EMOJI_WORKING)
         depth = _enqueue(slug, job, self._lane_drain)
         self.typing(chat_id, thread_id=thread_id)
         # Only ack when the user is actually queueing behind something —
-        # the typing indicator + reaction emoji are enough for "I see you".
+        # the typing indicator + the placeholder bubble that StreamingMessage
+        # sends when work actually starts are enough for "I see you".
         if depth > 1:
             self.send(
                 chat_id,
