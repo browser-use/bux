@@ -1680,6 +1680,13 @@ class Bot:
     # ----- Telegram API plumbing -----
 
     def call(self, method: str, **params) -> dict:
+        # Auto-suppress link previews on every message we send or edit.
+        # PR comments, docs URLs, trace links etc. would otherwise eat a
+        # huge chunk of phone-screen real estate with their preview cards.
+        # Callers can still override by passing link_preview_options
+        # explicitly (e.g. {"is_disabled": False}).
+        if method in ("sendMessage", "editMessageText"):
+            params.setdefault("link_preview_options", {"is_disabled": True})
         try:
             r = self.client.post(
                 f"{self.api}/{method}",
