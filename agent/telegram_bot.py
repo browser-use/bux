@@ -307,9 +307,19 @@ def _build_header(total: int, shown: int, sub_agents: int) -> str:
 
 
 def _render_collapsed_steps(
-    parts: list[str], total: int, max_body: int, sub_agents: int = 0
+    parts: list[str],
+    total: int,
+    max_body: int,
+    sub_agents: int = 0,
+    trailer: str = "",
 ) -> str:
     """Render `parts` as one expandable blockquote with a step-count header.
+
+    `trailer`, if given, becomes the LAST line inside the blockquote,
+    separated from the steps by a divider — used for the
+    `🪙 X tokens · ⏱ Ys` footer so it only shows up when the user
+    expands the steps. Pass raw text; escaping happens in
+    `_render_expandable_blockquote`.
 
     Returns "" for empty input. Trims OLDEST blocks until the rendered
     body fits under `max_body`; keeps at least the most recent one so
@@ -320,6 +330,8 @@ def _render_collapsed_steps(
     work = list(parts)
     while True:
         body = _build_header(total, len(work), sub_agents) + "\n" + _STEP_SEPARATOR.join(work)
+        if trailer:
+            body += _STEP_SEPARATOR + trailer
         out = _render_expandable_blockquote(body)
         if len(out) <= max_body or len(work) <= 1:
             return out
@@ -360,9 +372,10 @@ def _humanize_duration_ms(ms: int) -> str:
 
 
 def _format_final_footer(usage: dict | None, duration_ms: int | None) -> str:
-    """Build the `🪙 X tokens · ⏱ Ys` line that goes under the final
-    answer. Returns "" if neither piece is available so the caller can
-    skip the join. Output is already MDV2-escaped."""
+    """Build the raw `🪙 X tokens · ⏱ Ys` line that goes at the bottom of
+    the collapsed-steps blockquote. Returns "" if neither piece is
+    available. Body is intentionally NOT MDV2-escaped — the caller passes
+    it through `_render_expandable_blockquote`, which escapes lines."""
     parts: list[str] = []
     if isinstance(usage, dict):
         # Sum every int field in `usage` — input, output, cache_creation,
@@ -374,9 +387,7 @@ def _format_final_footer(usage: dict | None, duration_ms: int | None) -> str:
             parts.append(f"🪙 {_humanize_tokens(total)} tokens")
     if isinstance(duration_ms, int) and duration_ms > 0:
         parts.append(f"⏱ {_humanize_duration_ms(duration_ms)}")
-    if not parts:
-        return ""
-    return _escape_mdv2_plain(" · ".join(parts))
+    return " · ".join(parts)
 
 
 def _render_final_view(
@@ -387,9 +398,12 @@ def _render_final_view(
     duration_ms: int | None = None,
 ) -> str:
     """Render the final-turn view: collapsed thinking trace ON TOP with a
-    step-count header (plus `🤖 +M sub-agents` when applicable), final
-    answer in the middle, and a `🪙 X tokens · ⏱ Ys` footer at the bottom
-    when the turn actually had thinking steps.
+    step-count header, final answer prominent BELOW.
+
+    The `🪙 X tokens · ⏱ Ys` footer lives INSIDE the collapsed
+    blockquote, as the last line — so the user only sees it when they
+    expand the steps. Keeps the visible main bubble (the answer) free
+    of metadata while still surfacing the stats for those who want them.
 
     Heuristic: the last text block claude emitted is the answer; anything
     before it was thinking/narration. If there's only one block (a
@@ -406,15 +420,13 @@ def _render_final_view(
         # it took a little bit longer."
         return final_md
     footer = _format_final_footer(usage, duration_ms)
-    # Reserve space for the final answer, the join's "\n\n", and the
-    # footer + its leading "\n\n" (if present).
-    footer_reserve = (len(footer) + 2) if footer else 0
-    steps_max = max(max_body - len(final_md) - 2 - footer_reserve, 200)
-    steps_md = _render_collapsed_steps(steps, len(steps), steps_max, sub_agents=sub_agents)
-    body = steps_md + "\n\n" + final_md if steps_md else final_md
-    if footer:
-        body = body + "\n\n" + footer
-    return body
+    steps_max = max(max_body - len(final_md) - 2, 200)
+    steps_md = _render_collapsed_steps(
+        steps, len(steps), steps_max, sub_agents=sub_agents, trailer=footer
+    )
+    if not steps_md:
+        return final_md
+    return steps_md + "\n\n" + final_md
 
 
 def _chunk_for_telegram(text: str, max_len: int) -> list[str]:
