@@ -184,6 +184,8 @@ DEFAULT_AGENT = AGENT_CLAUDE
 # in the `/` autocomplete popup. Descriptions are short — TG clips them.
 BOT_COMMANDS: list[tuple[str, str]] = [
     ("help", "show all commands"),
+    ("terminal", "open an interactive shell (e.g. /terminal codex login)"),
+    ("exit", "close the active terminal session"),
     ("compact", "summarize this topic's session to free up context"),
     ("agent", "switch this topic's agent (claude|codex)"),
     ("live", "live-view URL of the active browser"),
