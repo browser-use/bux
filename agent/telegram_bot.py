@@ -1228,9 +1228,17 @@ class StreamingMessage:
     # huge final-burst edit (which wouldn't notify but also wouldn't
     # show progress for a 60s turn).
     _DEBOUNCE_SEC = 1.5
-    # Stay safely under TG's 4096 hard limit so MarkdownV2 escaping has
-    # room to add backslashes without bumping us over.
-    _MAX_BODY = 3800
+    # Tied to REPLY_MAX so the rollover threshold is always <= the
+    # threshold at which Bot.send would split a message into chunks.
+    # If _MAX_BODY were larger (e.g. 3800 vs REPLY_MAX 3500), a body
+    # in the 3501-3800 range would silently multi-chunk inside
+    # send_returning_id, leaving us tracking only the first chunk's
+    # message_id while the second chunk became an orphaned bubble that
+    # later edits couldn't reach. Subsequent edits would then update
+    # the head bubble to contain BOTH chunks of text, double-rendering
+    # the second chunk on screen. Keep them equal so a body that hits
+    # _MAX_BODY rollover triggers BEFORE the multi-chunk path.
+    _MAX_BODY = REPLY_MAX
 
     def __init__(
         self,
