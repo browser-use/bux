@@ -987,6 +987,20 @@ def _lanes_init() -> None:
         _save_lanes_to_disk_locked()
 
 
+def _spawn_lane_worker_locked(slug: str, run_drain) -> None:
+    """Caller holds _lanes_lock. Idempotent: no-op if a worker exists."""
+    if slug in _lane_workers:
+        return
+    t = threading.Thread(
+        target=run_drain,
+        args=(slug,),
+        name=f"lane-{slug}",
+        daemon=True,
+    )
+    _lane_workers[slug] = t
+    t.start()
+
+
 def _enqueue(slug: str, job: dict, run_drain) -> int:
     """Push job onto its lane's queue. Returns new lane depth.
     Spawns a worker if the lane has none alive (caller passes the drain fn)."""
@@ -994,16 +1008,36 @@ def _enqueue(slug: str, job: dict, run_drain) -> int:
         _lanes.setdefault(slug, []).append(job)
         _save_lanes_to_disk_locked()
         depth = len(_lanes[slug])
-        if slug not in _lane_workers:
-            t = threading.Thread(
-                target=run_drain,
-                args=(slug,),
-                name=f"lane-{slug}",
-                daemon=True,
-            )
-            _lane_workers[slug] = t
-            t.start()
+        _spawn_lane_worker_locked(slug, run_drain)
     return depth
+
+
+def _resume_pending_workers(run_drain) -> int:
+    """Spawn drain threads for every lane that already has queued work.
+
+    Called once at boot, after `_lanes_init()` rehydrates from disk. Without
+    this, leftover queued jobs from a previous run would sit dormant until
+    the next user message landed in that exact lane — and the boot-time
+    "fully ready" announcement would never fire because nobody is draining
+    the snapshot. Returns lane count for logging.
+    """
+    with _lanes_lock:
+        slugs = [slug for slug, jobs in _lanes.items() if jobs]
+        for slug in slugs:
+            _spawn_lane_worker_locked(slug, run_drain)
+    return len(slugs)
+
+
+def _snapshot_pending_job_ids() -> set[str]:
+    """Snapshot every job id currently in the lane state. Used at boot to
+    track when the leftover work from a previous run has fully drained."""
+    with _lanes_lock:
+        return {
+            j.get("id")
+            for jobs in _lanes.values()
+            for j in jobs
+            if isinstance(j.get("id"), str)
+        }
 
 
 def _pop_next_locked(slug: str) -> dict | None:
@@ -3344,19 +3378,25 @@ class Bot:
 
 
 def _announce_online_if_new_sha(bot: "Bot") -> None:
-    """Tell every bound chat "✓ bux online (sha=…)" — but only once per SHA.
+    """Two-stage boot announcement, gated by SHA so restart spam is silent.
 
-    Why a marker file instead of always-announce: bux-tg gets restarted by
-    plenty of things that aren't user-initiated updates — systemd flaps,
-    long-poll backoff escapes, the post-update agent restart itself. A naive
-    "always send on startup" would spam the chat every time the service
-    blips. So we cache the last SHA we announced in
-    /var/lib/bux/last-announced.sha; same SHA → silent restart, different
-    SHA (or first ever boot) → one message.
+    Stage 1 (immediately at boot): a single "🔄 restarting (sha=…)" message
+    per bound chat. We capture each message_id so we can edit it in place.
 
-    No-op if no chat is bound yet (fresh install pre-/start). Best-effort
-    throughout — failure to announce must never block bot startup, since the
-    announcement is courtesy and the bot is the recovery surface.
+    Stage 2 (when leftover work has drained): a watcher thread polls until
+    every job that was pending at boot is gone from the lane state, then
+    edits the same message to "✅ fully ready (sha=…)". This is how the
+    user knows their NEXT message will be processed without queueing
+    behind an old in-flight job.
+
+    If there's nothing pending at boot, stage 1 is skipped and we send
+    "✅ ready (sha=…)" directly — no "restarting" stage to confuse.
+
+    Why the SHA gate: bux-tg gets restarted by plenty of things that
+    aren't user-initiated — systemd flaps, long-poll backoff escapes,
+    the post-update agent restart itself. Without the gate every blip
+    would spam the chat. Same SHA → silent; new SHA → one message,
+    edited in place.
     """
     try:
         repo = "/opt/bux/repo"
@@ -3384,16 +3424,63 @@ def _announce_online_if_new_sha(bot: "Bot") -> None:
             or "?"
         )
         chats = load_allow()
-        text = f"✓ bux online (sha={sha}, branch={branch})"
+        if not chats:
+            return
+
+        # Snapshot leftover work BEFORE the worker drain has had time to
+        # chew through it, so the "restarting" stage actually represents
+        # the pre-boot backlog.
+        pending_ids = _snapshot_pending_job_ids()
+        ready_text = f"✅ fully ready (sha={sha}, branch={branch})"
+        boot_text = (
+            f"🔄 restarting (sha={sha}, branch={branch})"
+            if pending_ids
+            else ready_text
+        )
+
+        msg_ids: dict[int, int] = {}
         for chat_id in chats:
             try:
-                bot.send(chat_id, text)
+                mid = bot.send_returning_id(chat_id=chat_id, text=boot_text)
             except Exception:
                 LOG.exception("online-announce send failed for chat %s", chat_id)
+                continue
+            if isinstance(mid, int):
+                msg_ids[chat_id] = mid
         # Write only after at least one send attempt, so a transient TG
         # outage doesn't permanently suppress the announcement.
         LAST_ANNOUNCED_SHA.parent.mkdir(parents=True, exist_ok=True)
         LAST_ANNOUNCED_SHA.write_text(sha + "\n")
+
+        if not pending_ids or not msg_ids:
+            return
+
+        def _watch_drain() -> None:
+            # Poll every couple of seconds until the snapshot is gone.
+            # We watch by id, not by lane size: if a NEW user message
+            # lands during the restart window, that doesn't delay the
+            # "ready" flip — we only care about the leftover work.
+            while True:
+                time.sleep(2)
+                with _lanes_lock:
+                    still_alive = any(
+                        j.get("id") in pending_ids
+                        for jobs in _lanes.values()
+                        for j in jobs
+                    )
+                if not still_alive:
+                    break
+            for chat_id, mid in msg_ids.items():
+                try:
+                    bot.edit(chat_id=chat_id, message_id=mid, text=ready_text)
+                except Exception:
+                    LOG.exception("ready-edit failed for chat %s", chat_id)
+
+        threading.Thread(
+            target=_watch_drain,
+            daemon=True,
+            name="boot-drain-watcher",
+        ).start()
     except Exception:
         LOG.exception("announce_online_if_new_sha failed")
 
@@ -3413,14 +3500,22 @@ def main() -> int:
     signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
 
     # Hydrate the on-disk lanes; in_flight rows from a previous crash are
-    # dropped (we can't tell if the agent finished). The bot then starts the
-    # poll loop and lazily spawns lane workers as messages arrive.
+    # dropped (we can't tell if the agent finished). Pending queued rows
+    # survive across restarts.
     _lanes_init()
     bot = Bot(token, setup_token)
     # Idempotent: re-assert the default admin rights the bot needs whenever
     # it boots, so a fresh install (or a settings drift in BotFather) ends
     # up in a known good state without the operator having to remember.
     bot.assert_default_admin_rights()
+    # Resume drain workers for any lane that still has queued work from
+    # before the restart. Otherwise the "🔄 restarting → ✅ fully ready"
+    # status flip in `_announce_online_if_new_sha` would never observe
+    # progress: the snapshot would just sit there with no worker to drain
+    # it until a new user message happened to land in that lane.
+    resumed = _resume_pending_workers(bot._lane_drain)
+    if resumed:
+        LOG.info("resumed drain workers for %d lane(s) with pending jobs", resumed)
     # Announce *before* poll_loop so the user gets the "back online" ping
     # immediately on restart, not whenever the first long-poll completes.
     _announce_online_if_new_sha(bot)
