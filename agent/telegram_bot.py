@@ -860,6 +860,56 @@ def load_allow() -> set[int]:
     return {int(x) for x in ALLOWED_FILE.read_text().split() if x.strip()}
 
 
+def _parse_lane_slug(slug: str) -> LaneKey | None:
+    """Parse `<chat>_main` or `<chat>_<thread>` lane slugs from disk state."""
+    if not slug:
+        return None
+    if slug.endswith("_main"):
+        chat = slug[: -len("_main")]
+        try:
+            return (int(chat), 0)
+        except ValueError:
+            return None
+    try:
+        chat, thread = slug.rsplit("_", 1)
+        return (int(chat), int(thread))
+    except ValueError:
+        return None
+
+
+def _known_lane_keys(chats: set[int], state: dict) -> set[LaneKey]:
+    """Return every Telegram lane we have seen for the allowed chats.
+
+    Telegram's Bot API does not expose forum-topic history, so boot
+    announcements rely on local breadcrumbs: explicit agent bindings, queued
+    jobs, and per-lane session files. Include chat roots too for non-forum use.
+    """
+    lanes: set[LaneKey] = {(chat_id, 0) for chat_id in chats}
+
+    for slug in (state.get("agents") or {}).keys():
+        key = _parse_lane_slug(str(slug))
+        if key and key[0] in chats:
+            lanes.add(key)
+
+    for slug in _load_lanes_from_disk().keys():
+        key = _parse_lane_slug(str(slug))
+        if key and key[0] in chats:
+            lanes.add(key)
+
+    if SESSIONS_DIR.exists():
+        for path in SESSIONS_DIR.iterdir():
+            if not path.is_file():
+                continue
+            name = path.name
+            if name.endswith(".codex"):
+                name = name[: -len(".codex")]
+            key = _parse_lane_slug(name)
+            if key and key[0] in chats:
+                lanes.add(key)
+
+    return lanes
+
+
 def _chmod_root_bux_640(path: Path) -> None:
     """Set `path` to 0o640 root:bux. Raises on failure.
 
@@ -5090,7 +5140,8 @@ def _announce_online_if_new_sha(bot: "Bot") -> None:
     """Two-stage boot announcement, gated by SHA so restart spam is silent.
 
     Stage 1 (immediately at boot): a single "🔄 restarting (sha=…)" message
-    per bound chat. We capture each message_id so we can edit it in place.
+    per known lane/topic. We capture each message_id so we can edit it in
+    place.
 
     Stage 2 (when leftover work has drained): a watcher thread polls until
     every job that was pending at boot is gone from the lane state, then
@@ -5147,15 +5198,24 @@ def _announce_online_if_new_sha(bot: "Bot") -> None:
             else ready_text
         )
 
-        msg_ids: dict[int, int] = {}
-        for chat_id in chats:
+        lanes = _known_lane_keys(chats, bot.state)
+        msg_ids: dict[LaneKey, int] = {}
+        for chat_id, thread_id in sorted(lanes):
             try:
-                mid = bot.send_returning_id(chat_id=chat_id, text=boot_text)
+                mid = bot.send_returning_id(
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    text=boot_text,
+                )
             except Exception:
-                LOG.exception("online-announce send failed for chat %s", chat_id)
+                LOG.exception(
+                    "online-announce send failed for chat=%s thread=%s",
+                    chat_id,
+                    thread_id,
+                )
                 continue
             if isinstance(mid, int):
-                msg_ids[chat_id] = mid
+                msg_ids[(chat_id, thread_id)] = mid
         # Write only after at least one send attempt, so a transient TG
         # outage doesn't permanently suppress the announcement.
         LAST_ANNOUNCED_SHA.parent.mkdir(parents=True, exist_ok=True)
@@ -5179,11 +5239,15 @@ def _announce_online_if_new_sha(bot: "Bot") -> None:
                     )
                 if not still_alive:
                     break
-            for chat_id, mid in msg_ids.items():
+            for (chat_id, thread_id), mid in msg_ids.items():
                 try:
                     bot.edit(chat_id=chat_id, message_id=mid, text=ready_text)
                 except Exception:
-                    LOG.exception("ready-edit failed for chat %s", chat_id)
+                    LOG.exception(
+                        "ready-edit failed for chat=%s thread=%s",
+                        chat_id,
+                        thread_id,
+                    )
 
         threading.Thread(
             target=_watch_drain,
