@@ -877,36 +877,6 @@ def _parse_lane_slug(slug: str) -> LaneKey | None:
         return None
 
 
-def _known_lane_keys(chats: set[int], state: dict) -> set[LaneKey]:
-    """Return every Telegram lane we have seen for the allowed chats.
-
-    Telegram's Bot API does not expose forum-topic history, so boot
-    announcements rely on local breadcrumbs: explicit agent bindings, queued
-    jobs, and per-lane session files. Include chat roots too for non-forum use.
-    """
-    lanes: set[LaneKey] = {(chat_id, 0) for chat_id in chats}
-
-    for slug in (state.get("agents") or {}).keys():
-        key = _parse_lane_slug(str(slug))
-        if key and key[0] in chats:
-            lanes.add(key)
-
-    for slug in _load_lanes_from_disk().keys():
-        key = _parse_lane_slug(str(slug))
-        if key and key[0] in chats:
-            lanes.add(key)
-
-    if SESSIONS_DIR.exists():
-        for path in SESSIONS_DIR.iterdir():
-            if not path.is_file():
-                continue
-            name = path.name
-            if name.endswith(".codex"):
-                name = name[: -len(".codex")]
-            key = _parse_lane_slug(name)
-            if key and key[0] in chats:
-                lanes.add(key)
-
     return lanes
 
 
@@ -1344,6 +1314,25 @@ def _snapshot_pending_job_ids() -> set[str]:
             for j in jobs
             if isinstance(j.get("id"), str)
         }
+
+
+def _snapshot_pending_by_lane() -> dict[LaneKey, set[str]]:
+    """Same snapshot as _snapshot_pending_job_ids, but bucketed by lane.
+
+    Boot announcement uses this to target only the lanes whose work was
+    interrupted by the restart — idle lanes don't need a notification.
+    """
+    out: dict[LaneKey, set[str]] = {}
+    with _lanes_lock:
+        for slug, jobs in _lanes.items():
+            ids = {j.get("id") for j in jobs if isinstance(j.get("id"), str)}
+            if not ids:
+                continue
+            key = _parse_lane_slug(slug)
+            if key is None:
+                continue
+            out.setdefault(key, set()).update(ids)
+    return out
 
 
 def _pop_next_locked(slug: str) -> dict | None:
@@ -5303,26 +5292,23 @@ class Bot:
 
 
 def _announce_online_if_new_sha(bot: "Bot") -> None:
-    """Two-stage boot announcement, gated by SHA so restart spam is silent.
+    """Two-stage boot announcement, scoped to lanes whose work was interrupted.
 
-    Stage 1 (immediately at boot): a single "🔄 restarting (sha=…)" message
-    per known lane/topic. We capture each message_id so we can edit it in
-    place.
+    Stage 1 (immediately at boot): a "🔄 restarting (sha=…)" message in each
+    lane that had pending work when the restart hit. Idle lanes get nothing —
+    a restart is noise to a user whose conversation wasn't mid-task.
 
-    Stage 2 (when leftover work has drained): a watcher thread polls until
-    every job that was pending at boot is gone from the lane state, then
-    edits the same message to "✅ fully ready (sha=…)". This is how the
-    user knows their NEXT message will be processed without queueing
-    behind an old in-flight job.
+    Stage 2 (when that lane's leftover work has drained): a watcher thread
+    polls until every job that was pending at boot is gone from the lane
+    state, then edits the same message to "✅ fully ready (sha=…)" so the
+    user knows their NEXT message will be processed without queueing behind
+    an old in-flight job.
 
-    If there's nothing pending at boot, stage 1 is skipped and we send
-    "✅ ready (sha=…)" directly — no "restarting" stage to confuse.
-
-    Why the SHA gate: bux-tg gets restarted by plenty of things that
-    aren't user-initiated — systemd flaps, long-poll backoff escapes,
-    the post-update agent restart itself. Without the gate every blip
-    would spam the chat. Same SHA → silent; new SHA → one message,
-    edited in place.
+    Why the SHA gate: bux-tg gets restarted by plenty of things that aren't
+    user-initiated — systemd flaps, long-poll backoff escapes, the
+    post-update agent restart itself. Without the gate every blip would
+    spam any busy lane. Same SHA → silent; new SHA → one message per busy
+    lane, edited in place when that lane's work has drained.
     """
     try:
         repo = "/opt/bux/repo"
@@ -5353,24 +5339,30 @@ def _announce_online_if_new_sha(bot: "Bot") -> None:
         if not chats:
             return
 
-        # Snapshot leftover work BEFORE the worker drain has had time to
-        # chew through it, so the "restarting" stage actually represents
-        # the pre-boot backlog.
-        pending_ids = _snapshot_pending_job_ids()
-        ready_text = f"✅ fully ready (sha={sha}, branch={branch})"
-        boot_text = (
-            f"🔄 restarting (sha={sha}, branch={branch})"
-            if pending_ids
-            else ready_text
-        )
+        # Snapshot leftover work per lane BEFORE the worker drain has had
+        # time to chew through it. Empty dict = no lanes were mid-task, so
+        # nobody gets pinged — record the SHA so the next same-SHA flap
+        # also stays silent and return.
+        pending_by_lane = _snapshot_pending_by_lane()
+        LAST_ANNOUNCED_SHA.parent.mkdir(parents=True, exist_ok=True)
+        if not pending_by_lane:
+            LAST_ANNOUNCED_SHA.write_text(sha + "\n")
+            return
 
-        lanes = _known_lane_keys(chats, bot.state)
+        ready_text = f"✅ fully ready (sha={sha}, branch={branch})"
+        boot_text = f"🔄 restarting (sha={sha}, branch={branch})"
+
         msg_ids: dict[LaneKey, int] = {}
-        for chat_id, thread_id in sorted(lanes):
+        all_pending_ids: set[str] = set()
+        for (chat_id, thread_id), ids in sorted(pending_by_lane.items()):
+            # Respect the allow list — a stale lane for a chat that's no
+            # longer bound shouldn't get a message it can't read anyway.
+            if chat_id not in chats:
+                continue
             try:
                 mid = bot.send_returning_id(
                     chat_id=chat_id,
-                    thread_id=thread_id,
+                    thread_id=thread_id or None,
                     text=boot_text,
                 )
             except Exception:
@@ -5382,12 +5374,10 @@ def _announce_online_if_new_sha(bot: "Bot") -> None:
                 continue
             if isinstance(mid, int):
                 msg_ids[(chat_id, thread_id)] = mid
-        # Write only after at least one send attempt, so a transient TG
-        # outage doesn't permanently suppress the announcement.
-        LAST_ANNOUNCED_SHA.parent.mkdir(parents=True, exist_ok=True)
+                all_pending_ids |= ids
         LAST_ANNOUNCED_SHA.write_text(sha + "\n")
 
-        if not pending_ids or not msg_ids:
+        if not msg_ids:
             return
 
         def _watch_drain() -> None:
@@ -5399,7 +5389,7 @@ def _announce_online_if_new_sha(bot: "Bot") -> None:
                 time.sleep(2)
                 with _lanes_lock:
                     still_alive = any(
-                        j.get("id") in pending_ids
+                        j.get("id") in all_pending_ids
                         for jobs in _lanes.values()
                         for j in jobs
                     )
