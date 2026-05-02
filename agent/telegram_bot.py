@@ -2439,16 +2439,29 @@ class StreamingMessage:
         turn has a slightly different vibe (approval / laughter /
         astonishment / doubt) instead of always the same 🤔.
 
-        The first `append()` (or `finalize()`) edits this bubble in
-        place, so the user only ever sees one message per turn.
-        Idempotent: no-op if a message has already been sent.
+        Sent as plain text (no MarkdownV2 wrapping) so TG mobile
+        renders it as the large animated "jumboji" — wrapping the emoji
+        in the expandable-blockquote markup we use for the streaming
+        view downgrades it to inline-sized formatted text with no
+        animation. The first `append()` / `finalize()` edits this
+        message into the formatted body, which TG accepts on edit
+        regardless of how the original was sent. Idempotent: no-op if
+        a message has already been sent.
         """
         if self._message_id is not None:
             return
-        rendered = _render_expandable_blockquote(self._thinking_emoji)
-        if not rendered:
-            return
-        self._send_initial(rendered)
+        self._message_id = self._bot.send_returning_id(
+            chat_id=self._chat_id,
+            text=self._thinking_emoji,
+            thread_id=self._thread_id,
+            markdown=False,
+            pre_rendered=False,
+        )
+        # `_last_emitted` tracks the last RENDERED MDV2 body so we can
+        # short-circuit no-op edits. We didn't send MDV2 here, so leave
+        # it empty — the next _edit() won't be skipped as a no-op.
+        self._last_emitted = ""
+        self._last_edit_at = time.time()
 
     def append(self, chunk: str) -> None:
         """Record a new assistant text block; render & push (debounced)."""
