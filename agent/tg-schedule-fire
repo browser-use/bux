@@ -1,0 +1,133 @@
+#!/opt/bux/venv/bin/python
+"""Fire a scheduled agent turn. Invoked by `at` at the user's chosen time.
+
+Reads the job dir prepared by tg-schedule, optionally creates a fresh
+forum topic via the Telegram bot API, then dispatches the prompt into
+the lane through the bot's run_task path. The lane's claude/codex
+session UUID is resumed as on any normal user message, so the prior
+conversation is fully in context (and the prompt cache stays warm if
+the previous turn was within the cache TTL).
+"""
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+REPO_AGENT = "/opt/bux/repo/agent"
+sys.path.insert(0, REPO_AGENT)
+
+import httpx  # noqa: E402
+
+from telegram_bot import Bot  # noqa: E402
+
+TG_ENV = Path("/etc/bux/tg.env")
+
+
+def _load_dotenv(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not path.is_file():
+        return out
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        out[k.strip()] = v.strip().strip('"').strip("'")
+    return out
+
+
+def _create_forum_topic(token: str, chat_id: int, name: str) -> int:
+    """Returns the new message_thread_id. Bot must be admin in the chat
+    with the can_manage_topics permission for this to succeed."""
+    r = httpx.post(
+        f"https://api.telegram.org/bot{token}/createForumTopic",
+        json={"chat_id": chat_id, "name": name[:128]},
+        timeout=15,
+    )
+    r.raise_for_status()
+    body = r.json()
+    if not body.get("ok"):
+        raise RuntimeError(f"createForumTopic failed: {body}")
+    return int(body["result"]["message_thread_id"])
+
+
+def _send_text(token: str, chat_id: int, thread_id: int, text: str) -> None:
+    """Plain sendMessage. Used for surfacing scheduler errors back to
+    the user when run_task itself can't deliver them (e.g. the topic
+    creation step failed)."""
+    payload: dict = {"chat_id": chat_id, "text": text}
+    if thread_id:
+        payload["message_thread_id"] = thread_id
+    try:
+        httpx.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json=payload,
+            timeout=15,
+        )
+    except Exception:
+        pass
+
+
+def main() -> int:
+    if len(sys.argv) != 2:
+        print("usage: tg-schedule-fire <job-dir>", file=sys.stderr)
+        return 2
+
+    job_dir = Path(sys.argv[1])
+    try:
+        job = json.loads((job_dir / "job.json").read_text())
+        prompt = (job_dir / "prompt").read_text().rstrip("\n")
+    except Exception as e:
+        print(f"tg-schedule-fire: bad job dir {job_dir}: {e}", file=sys.stderr)
+        return 1
+
+    env = _load_dotenv(TG_ENV)
+    token = env.get("TG_BOT_TOKEN") or os.environ.get("TG_BOT_TOKEN", "")
+    setup_token = env.get("TG_SETUP_TOKEN", "") or os.environ.get("TG_SETUP_TOKEN", "")
+    if not token:
+        print("tg-schedule-fire: TG_BOT_TOKEN missing", file=sys.stderr)
+        return 1
+
+    chat_id = int(job["chat_id"])
+    thread_id = int(job.get("thread_id") or 0)
+    fresh = bool(job.get("fresh"))
+
+    if fresh:
+        name = job.get("name") or (
+            "Scheduled "
+            + datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        )
+        try:
+            thread_id = _create_forum_topic(token, chat_id, name)
+        except Exception as e:
+            _send_text(
+                token,
+                chat_id,
+                int(job.get("thread_id") or 0),
+                f"tg-schedule: couldn't create new topic: {e}",
+            )
+            return 1
+
+    sender = {
+        "user_id": "scheduler",
+        "username": "scheduler",
+        "name": "Scheduler",
+    }
+    body = f"[scheduled] {prompt}"
+
+    bot = Bot(token, setup_token)
+    bot.run_task((chat_id, thread_id), body, reply_to=None, sender=sender)
+
+    try:
+        shutil.rmtree(job_dir)
+    except Exception:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
