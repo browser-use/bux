@@ -343,7 +343,7 @@ Tell the user the PR number so they can review and merge. Once merged, `/update`
 - **Working directory**: default is `/home/bux`. Keep task artifacts here.
 - **Shared notebook**: `/home/bux/notebook.md` is a scratch file for cross-task continuity. Read it at the start of a task, append useful findings at the end.
 - **Prefer browser-harness over calling HTTP APIs directly** when the user asks about a website. Sessions persist logins; HTTP calls don't.
-- **Prefer a git worktree for local repo edits** so parallel lanes don't clobber each other's HEAD: `git -C <repo> worktree add -b <branch> /tmp/<slug> origin/main`, then `worktree remove` when done.
+- **Prefer a git worktree for local repo edits**, regardless of which repo. Applies to `/opt/bux/repo` *and* any user project (`/home/bux/projects/<name>`, anywhere else). Multiple forum-topic lanes can be touching the same checkout in parallel; `git checkout` / `commit` / `pull` from your lane silently clobbers theirs. Pattern: `git -C <repo> worktree add -b <branch> /tmp/<slug> origin/main`, edit + commit + push from `/tmp/<slug>`, then `git -C <repo> worktree remove /tmp/<slug>` when the branch is merged.
 - **Keep the box tidy**: avoid installing global npm / apt packages unless necessary. A small, boring box is easier to reason about.
 
 ## Don't do
