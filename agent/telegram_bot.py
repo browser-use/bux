@@ -38,17 +38,24 @@ Flow:
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import grp
 import json
 import logging
 import os
+import pty
 import pwd
 import random
 import re
 import secrets
+import select
+import shlex
 import signal
+import struct
 import subprocess
 import sys
+import termios
 import threading
 import time
 import uuid
@@ -1251,6 +1258,386 @@ def _drop_all_queued(slug: str) -> int:
 def _snapshot_lane(slug: str) -> list[dict]:
     with _lanes_lock:
         return [dict(j) for j in _lanes.get(slug, [])]
+
+
+# ---------------------------------------------------------------------------
+# `/terminal` — interactive shell mode.
+#
+# Owner sends `/terminal` (optionally with an initial command, e.g.
+# `/terminal codex login`). The bot spawns a persistent `bash` as the
+# bux user inside a PTY and streams output back to the lane. From that
+# moment on, every plain-text message in the lane is written to the
+# shell's stdin (newline-appended) — so an interactive login flow
+# (codex / gh device codes, sudo passwords, npx prompts) just works:
+# the URL / prompt lands in TG, the user pastes the answer as a normal
+# message, the bot routes it back to the running shell. `/exit` (or
+# typing `exit` as plain text) ends the session and the lane is back
+# to the bound agent. `/cancel` SIGKILLs the session group as a hard
+# escape hatch.
+#
+# `/terminal` while a session is already active is a no-op so a typo
+# doesn't tear down what the user is working on. Bypasses the lane
+# FIFO: terminal work is meant for the user to do now.
+# ---------------------------------------------------------------------------
+
+# Strip ANSI CSI / OSC sequences so colors / cursor moves don't show up as
+# literal `\x1b[31m` garbage on the phone screen.
+_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07")
+
+# Output buffering: flush after N bytes accumulated OR M seconds of quiet.
+# Phone-screen friendly bubble; large enough that `npm install` doesn't
+# spam ten bubbles per tick.
+_SHELL_FLUSH_BYTES = 2500
+_SHELL_FLUSH_QUIET_SEC = 0.8
+
+_shell_sessions_lock = threading.Lock()
+_shell_sessions: dict[str, "ShellSession"] = {}  # lane_slug → session
+
+
+def _get_shell_session(slug: str) -> "ShellSession | None":
+    with _shell_sessions_lock:
+        sess = _shell_sessions.get(slug)
+        if sess is not None and not sess.alive:
+            _shell_sessions.pop(slug, None)
+            return None
+        return sess
+
+
+class ShellSession:
+    """One owner-driven persistent bash session inside a PTY, scoped to a lane.
+
+    Lifecycle:
+      - start() forks `bash` as bux inside a PTY. If `initial_cmd` is set,
+        it's written to bash's stdin right after the PTY is hooked up so
+        the user can do `/terminal codex login` as a single message.
+      - A reader thread pulls from the master fd, strips ANSI, and posts
+        debounced chunks to TG as monospace bubbles.
+      - send_input(text) writes user-supplied text + "\\n" to the master
+        fd. Plain-text messages in the lane go through this path.
+      - The user types `exit` (or sends Ctrl-D) → bash exits → reader sees
+        EOF → teardown posts a final exit-code bubble. `/exit` and
+        `/cancel` are server-side fast paths: the first sends `exit\\n`,
+        the second SIGKILLs the process group.
+
+    Only one session per lane. `/terminal` while one is alive is a no-op.
+    """
+
+    def __init__(
+        self,
+        bot: "Bot",
+        chat_id: int,
+        thread_id: int,
+        slug: str,
+        initial_cmd: str | None = None,
+        reply_to: int | None = None,
+    ) -> None:
+        self.bot = bot
+        self.chat_id = chat_id
+        self.thread_id = thread_id
+        self.slug = slug
+        self.initial_cmd = initial_cmd
+        self.reply_to = reply_to
+        self.master_fd: int | None = None
+        self.process: subprocess.Popen | None = None
+        self._buffer = bytearray()
+        self._buffer_lock = threading.Lock()
+        self._last_flush = time.time()
+        self._stop = threading.Event()
+        self.alive = False
+        self.started_at = 0.0
+        self._reader_thread: threading.Thread | None = None
+        self._flusher_thread: threading.Thread | None = None
+
+    # -- spawn ---------------------------------------------------------------
+
+    def start(self) -> None:
+        master_fd, slave_fd = pty.openpty()
+        # 80x24 is what most CLIs assume. Some auth flows render goofily
+        # if the columns are too narrow.
+        try:
+            fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+        except Exception:
+            pass
+
+        # Persistent bash as the bux user with login env so `npm`, `codex`,
+        # `gh`, etc. find their config and creds. `sudo -iu bux -- bash -i`
+        # mirrors what the user gets from `sudo -iu bux` on ttyd / ssh.
+        # Force a minimal PS1 so we don't spam the lane with multi-line
+        # color prompts on every command — the bash itself still echoes
+        # input and prints output, which is the part that matters.
+        argv = [
+            "sudo", "-iu", "bux", "--",
+            "bash", "-i",
+        ]
+
+        def _make_session_leader() -> None:
+            # Run in the child between fork() and exec(): start a new
+            # session (so kill() can target the whole group), and make
+            # the slave PTY the controlling terminal so bash gets job
+            # control and doesn't print "cannot set terminal process
+            # group" / "no job control in this shell" on startup.
+            os.setsid()
+            try:
+                fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+            except OSError:
+                pass
+
+        try:
+            proc = subprocess.Popen(
+                argv,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                close_fds=True,
+                preexec_fn=_make_session_leader,
+            )
+        except Exception:
+            os.close(master_fd)
+            os.close(slave_fd)
+            raise
+        # Parent doesn't need the slave end. Closing it here lets the
+        # reader notice EOF on master when the child exits.
+        os.close(slave_fd)
+
+        # Make master non-blocking so the reader thread can poll without
+        # wedging on a child that's waiting for input.
+        flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
+        fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+        self.master_fd = master_fd
+        self.process = proc
+        self.alive = True
+        self.started_at = time.time()
+
+        with _shell_sessions_lock:
+            _shell_sessions[self.slug] = self
+
+        ack_lines = [
+            "💻 *terminal session started*",
+            "_replies go straight to the shell — type `exit` or send /exit to leave, "
+            "/cancel to hard-kill_",
+        ]
+        if self.initial_cmd:
+            ack_lines.append(f"running: `{self.initial_cmd}`")
+        self.bot.send(
+            self.chat_id,
+            "\n".join(ack_lines),
+            reply_to=self.reply_to,
+            thread_id=self.thread_id,
+            markdown=True,
+        )
+
+        self._reader_thread = threading.Thread(
+            target=self._reader,
+            name=f"shell-reader-{self.slug}",
+            daemon=True,
+        )
+        self._flusher_thread = threading.Thread(
+            target=self._flusher,
+            name=f"shell-flusher-{self.slug}",
+            daemon=True,
+        )
+        self._reader_thread.start()
+        self._flusher_thread.start()
+
+        # Seed an initial command if the user typed `/terminal <cmd>`. The
+        # write happens after the threads start so the bash startup output
+        # and the seeded command's output both stream back as one flow.
+        if self.initial_cmd:
+            try:
+                os.write(self.master_fd, (self.initial_cmd + "\n").encode("utf-8", "replace"))
+            except Exception:
+                LOG.exception("seeding initial cmd for shell session %s failed", self.slug)
+
+    # -- input ---------------------------------------------------------------
+
+    def send_input(self, text: str) -> bool:
+        """Write `text` (newline-appended) to the PTY master. Returns False
+        if the session has already exited. The PTY's own line-discipline
+        handles echoing what we write back into the read stream, so we
+        don't echo in user space — that would double-print every line."""
+        if not self.alive or self.master_fd is None:
+            return False
+        payload = (text + "\n").encode("utf-8", "replace")
+        try:
+            os.write(self.master_fd, payload)
+            return True
+        except OSError as e:
+            LOG.warning("shell stdin write failed for %s: %s", self.slug, e)
+            return False
+
+    # -- kill ----------------------------------------------------------------
+
+    def kill(self, reason: str = "cancelled") -> None:
+        """SIGKILL the process group and tear down the session."""
+        if not self.alive:
+            return
+        proc = self.process
+        if proc is not None and proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except Exception:
+                LOG.exception("killpg for shell session %s failed", self.slug)
+        self._stop.set()
+        # Reader will notice EOF on the master fd and finish; the closer
+        # path runs in `_reader` so we don't double-close here.
+
+    # -- reader / flusher ----------------------------------------------------
+
+    def _reader(self) -> None:
+        assert self.master_fd is not None
+        try:
+            while not self._stop.is_set():
+                try:
+                    rlist, _, _ = select.select([self.master_fd], [], [], 0.5)
+                except (ValueError, OSError):
+                    break
+                if not rlist:
+                    continue
+                try:
+                    chunk = os.read(self.master_fd, 4096)
+                except OSError as e:
+                    # EIO when the slave end is gone (child exited).
+                    if e.errno in (errno.EIO,):
+                        break
+                    if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                        continue
+                    LOG.warning("read on shell master failed for %s: %s", self.slug, e)
+                    break
+                if not chunk:
+                    break
+                with self._buffer_lock:
+                    self._buffer.extend(chunk)
+        finally:
+            self._teardown()
+
+    def _flusher(self) -> None:
+        while not self._stop.is_set() and self.alive:
+            time.sleep(0.2)
+            self._maybe_flush(force=False)
+        # Final flush after teardown, in case the reader's last chunk
+        # hadn't yet been pushed.
+        self._maybe_flush(force=True)
+
+    def _maybe_flush(self, force: bool) -> None:
+        with self._buffer_lock:
+            if not self._buffer:
+                return
+            quiet_for = time.time() - self._last_flush
+            big_enough = len(self._buffer) >= _SHELL_FLUSH_BYTES
+            old_enough = quiet_for >= _SHELL_FLUSH_QUIET_SEC
+            if not (force or big_enough or old_enough):
+                return
+            payload = bytes(self._buffer)
+            self._buffer.clear()
+            self._last_flush = time.time()
+
+        text = payload.decode("utf-8", "replace")
+        text = _ANSI_RE.sub("", text)
+        # Compact carriage returns so progress bars don't fill the bubble.
+        text = re.sub(r"\r\n", "\n", text)
+        text = re.sub(r"[^\n]*\r", "", text)
+        text = text.rstrip("\n")
+        if not text:
+            return
+        # Split into chunks that fit a TG message; each goes as its own
+        # monospace bubble. Leaves a margin for the ``` fences. Escape
+        # backslashes / backticks per MDV2 code-block rules — pre_rendered
+        # skips the converter so we have to do it ourselves.
+        for chunk in _split_into_code_bubbles(text, max_chars=3500):
+            escaped = _escape_mdv2_code(chunk)
+            self.bot.send(
+                self.chat_id,
+                f"```\n{escaped}\n```",
+                thread_id=self.thread_id,
+                pre_rendered=True,
+            )
+
+    def _teardown(self) -> None:
+        # Idempotent — both reader EOF and kill() can land here.
+        if not self.alive:
+            return
+        self.alive = False
+        self._stop.set()
+        proc = self.process
+        rc: int | None = None
+        if proc is not None:
+            try:
+                rc = proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                try:
+                    rc = proc.wait(timeout=1)
+                except Exception:
+                    rc = None
+            except Exception:
+                rc = None
+        if self.master_fd is not None:
+            try:
+                os.close(self.master_fd)
+            except Exception:
+                pass
+            self.master_fd = None
+        with _shell_sessions_lock:
+            if _shell_sessions.get(self.slug) is self:
+                _shell_sessions.pop(self.slug, None)
+        # Final flush of whatever the reader had left over.
+        self._maybe_flush(force=True)
+
+        # Map common exit codes to a friendlier emoji.
+        if rc is None:
+            footer = "💻 _terminal closed — lane back to agent_"
+        elif rc == 0:
+            footer = "✅ _terminal closed (exit 0) — lane back to agent_"
+        elif rc < 0:
+            footer = f"🛑 _terminal killed (signal {-rc}) — lane back to agent_"
+        else:
+            footer = f"❌ _terminal closed (exit {rc}) — lane back to agent_"
+        try:
+            self.bot.send(
+                self.chat_id,
+                footer,
+                thread_id=self.thread_id,
+                markdown=True,
+            )
+        except Exception:
+            LOG.exception("shell footer send failed for %s", self.slug)
+
+
+def _split_into_code_bubbles(text: str, max_chars: int) -> list[str]:
+    """Split `text` so each piece, fenced as ```\\n{piece}\\n```, fits TG.
+
+    Prefer breaking at newlines so we don't slice in the middle of a line
+    when a chunk runs long. Never returns an empty bubble.
+    """
+    if not text:
+        return []
+    if len(text) <= max_chars:
+        return [text]
+    out: list[str] = []
+    cur = ""
+    for line in text.split("\n"):
+        # A pathological single-line blob longer than max_chars: hard-slice.
+        while len(line) > max_chars:
+            if cur:
+                out.append(cur)
+                cur = ""
+            out.append(line[:max_chars])
+            line = line[max_chars:]
+        if len(cur) + len(line) + 1 > max_chars:
+            if cur:
+                out.append(cur)
+            cur = line
+        else:
+            cur = (cur + "\n" + line) if cur else line
+    if cur:
+        out.append(cur)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -2805,7 +3192,103 @@ class Bot:
         key = _lane_key(chat_id, thread_id)
         slug = _lane_slug(key)
 
+        owner = _owner_for(chat_id, self.state)
         cmd, arg = _parse_command(text)
+
+        # `/terminal` — owner-only mode switch. Spawns a persistent bash
+        # in this lane; from this point on plain-text messages route to
+        # its stdin. `/terminal <initial cmd>` seeds the first command,
+        # so `/terminal codex login` starts the shell + runs codex login
+        # in one shot. `/terminal` while a session is already alive is a
+        # no-op (the user said so) — protects an active session from a
+        # fat-fingered re-trigger.
+        if cmd == "/terminal":
+            if not _is_owner(sender, owner):
+                self.send(
+                    chat_id,
+                    "❌ `/terminal` is owner-only.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
+            existing = _get_shell_session(slug)
+            if existing is not None:
+                self.send(
+                    chat_id,
+                    "💻 terminal session already running here — replies go to its "
+                    "stdin. Type `exit` (or send /exit) to close it, /cancel to "
+                    "hard-kill.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
+            try:
+                sess = ShellSession(
+                    self,
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    slug=slug,
+                    initial_cmd=arg.strip() or None,
+                    reply_to=mid,
+                )
+                sess.start()
+            except Exception as e:
+                LOG.exception("shell start failed for %s", slug)
+                self.send(
+                    chat_id,
+                    f"❌ failed to start terminal: {e}",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                )
+            return
+
+        # `/exit` — graceful close. Writes `exit\n` to the bash so any
+        # nested process gets a chance to clean up; bash exits, the
+        # reader sees EOF, the teardown footer fires. /cancel remains
+        # the hard-kill path. Outside a session, /exit is a no-op with
+        # a hint.
+        if cmd == "/exit":
+            sess = _get_shell_session(slug)
+            if sess is None:
+                self.send(
+                    chat_id,
+                    "No terminal session here. `/terminal` to start one.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
+            if not _is_owner(sender, owner):
+                self.send(
+                    chat_id,
+                    "❌ `/exit` is owner-only.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
+            sess.send_input("exit")
+            return
+
+        # If a shell session is active in this lane, plain-text messages
+        # are stdin for it (codex login codes, gh auth login codes, `read`
+        # answers, `y/n` prompts, …). Slash commands fall through below
+        # so the user can still `/cancel`, `/queue`, etc.
+        if not text.startswith("/"):
+            sess = _get_shell_session(slug)
+            if sess is not None and _is_owner(sender, owner):
+                if sess.send_input(text):
+                    self.react(chat_id, mid, "✍")
+                else:
+                    self.send(
+                        chat_id,
+                        "❌ terminal session is gone — message not delivered.",
+                        reply_to=mid,
+                        thread_id=thread_id,
+                    )
+                return
         if cmd in ("/start", "/help"):
             self.send(
                 chat_id,
@@ -2813,10 +3296,15 @@ class Bot:
                 "Forum topics each get their own agent session and run in "
                 "parallel — no concurrency cap, only the box's RAM gates it.\n\n"
                 "Commands\n"
+                "/terminal — open an interactive shell here (owner-only); "
+                "replies route to stdin until you `exit` or send /exit. "
+                "/terminal <cmd> seeds the first command, e.g. `/terminal codex login`\n"
+                "/exit — close the active terminal session (graceful)\n"
                 "/agent claude|codex — switch this topic to a different agent\n"
                 "/live — live-view URL of the active browser\n"
                 "/queue — pending tasks in this topic\n"
-                "/cancel — kill the running task + drop everything pending in this topic\n"
+                "/cancel — kill the running task / terminal + drop "
+                "everything pending in this topic\n"
                 "/cancel <id> — cancel one task (running or queued)\n"
                 "/compact — summarize this topic's claude session to free up context\n"
                 "/schedules — list reminders / cron jobs\n"
@@ -3021,7 +3509,12 @@ class Bot:
                         killed_in_flight = True
                     except Exception:
                         LOG.exception("failed to kill in-flight agent for lane %s", slug)
-            if dropped == 0 and not killed_in_flight:
+            killed_shell = False
+            shell_sess = _get_shell_session(slug)
+            if shell_sess is not None:
+                shell_sess.kill("cancelled")
+                killed_shell = True
+            if dropped == 0 and not killed_in_flight and not killed_shell:
                 self.send(
                     chat_id,
                     "Nothing to cancel.",
@@ -3032,6 +3525,8 @@ class Bot:
             parts: list[str] = []
             if killed_in_flight:
                 parts.append("killed running task")
+            if killed_shell:
+                parts.append("killed shell session")
             if dropped > 0:
                 parts.append(f"cancelled {dropped} pending task(s)")
             self.send(

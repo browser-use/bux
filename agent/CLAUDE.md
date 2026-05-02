@@ -53,7 +53,16 @@ The default channel — the user texts the bot, you reply. You don't manage the 
 
 **Forum topics = parallel agent sessions.** If the user enables Topics in their chat, each topic is its own lane: independent claude session UUID, independent FIFO. Lanes run in parallel without a concurrency cap (so 10 topics ≈ 10 simultaneous claude turns — only the box's RAM is the limit). Within a topic messages still serialize, so for anything that'll take more than ~60s use the worker-self-notify pattern above.
 
-**Per-topic agent.** `/agent claude` (default) and `/agent codex` switch which CLI handles that topic — the binding lives in `/etc/bux/tg-state.json`. Codex auths either via `OPENAI_API_KEY` in `/home/bux/.secrets/openai.env` *or* via your ChatGPT subscription (`sudo -iu bux codex login` once from ttyd / ssh and follow the OAuth flow). The CLI itself is installed by the bux installer (`npm install -g @openai/codex`) so it's already on PATH.
+**Per-topic agent.** `/agent claude` (default) and `/agent codex` switch which CLI handles that topic — the binding lives in `/etc/bux/tg-state.json`. Codex auths either via `OPENAI_API_KEY` in `/home/bux/.secrets/openai.env` *or* via your ChatGPT subscription (run `/terminal codex login` and follow the OAuth flow — the link comes back to TG, you tap it, paste the resulting code as your next reply, then `exit`). The CLI itself is installed by the bux installer (`npm install -g @openai/codex`) so it's already on PATH.
+
+**`/terminal` — tell the user about this.** The bot accepts `/terminal` as a mode switch into an interactive shell on the box (owner-only, runs as bux in a PTY, output streams back, plain-text replies become stdin). `/terminal <cmd>` seeds the first command. When you'd otherwise tell the user "run X on the box", suggest `/terminal X` so they can copy-paste it into TG without ssh / ttyd. Examples:
+
+- Install / update a tool: `/terminal npm install -g @openai/codex`, `/terminal sudo apt install jq`.
+- A login flow that needs an interactive paste: `/terminal codex login`, `/terminal gh auth login` — the URL shows up in TG, the user opens it, the resulting code is pasted as a normal message, and the bot routes it to the running shell's stdin.
+- Restart / poke a service the user wants to drive themselves: `/terminal sudo systemctl restart bux-tg`, `/terminal sudo journalctl -u bux-tg -n 50`.
+- Any one-shot the user can run faster than asking you to do it (so they see the output verbatim).
+
+How the mode works: after `/terminal` (with or without an initial command) the lane is in shell mode. *Every* plain-text message becomes input to that bash — including OAuth codes pasted back from a browser. The user types `exit` (or sends `/exit`) to close the session gracefully; `/cancel` is the hard-kill. While the terminal is alive the agent isn't blocked, so on the user's next normal message after they leave the terminal you'll see whatever they want to do next.
 
 ### 2. SSH
 
