@@ -18,7 +18,8 @@ Env (from /etc/bux/tg.env):
 
 State (on disk):
   /etc/bux/tg-allowed.txt        — newline-separated allowed chat_ids (mode 640 root:bux)
-  /etc/bux/tg-state.json         — {offset, agents: {lane_slug: 'claude'|'codex'}}
+  /etc/bux/tg-state.json         — {offset, agents: {lane_slug: 'claude'|'codex'},
+                                    owners: {chat_id: {user_id,name,username,bound_at}}}
   /etc/bux/tg-queue.json         — {lane_slug: [job, …]} pending FIFO
   /home/bux/.bux/sessions/<slug> — per-lane claude/codex session UUID
   /home/bux/workspaces/<slug>/   — per-lane cwd handed to the agent
@@ -350,6 +351,127 @@ def _extract_media(msg: dict) -> tuple[str | None, str, int]:
     return None, "", 0
 
 
+# Telegram message fields that mark a "service" event rather than user
+# content. We drop these silently before any response logic — otherwise
+# spinning up a new forum topic triggers our "unknown attachment" reply.
+_SERVICE_MSG_KEYS = (
+    "forum_topic_created",
+    "forum_topic_edited",
+    "forum_topic_closed",
+    "forum_topic_reopened",
+    "general_forum_topic_hidden",
+    "general_forum_topic_unhidden",
+    "new_chat_members",
+    "left_chat_member",
+    "new_chat_title",
+    "new_chat_photo",
+    "delete_chat_photo",
+    "pinned_message",
+    "message_auto_delete_timer_changed",
+    "video_chat_started",
+    "video_chat_ended",
+    "video_chat_participants_invited",
+    "video_chat_scheduled",
+    "boost_added",
+    "chat_shared",
+    "users_shared",
+    "write_access_allowed",
+    "proximity_alert_triggered",
+)
+
+
+def _extract_sender(msg: dict) -> dict[str, str]:
+    """Pull the sender's identity off a TG update.
+
+    Group chats with multiple humans (after Forum Topics arrived) need
+    per-message attribution: the agent should know whether the latest
+    message came from the box owner or from a guest invited into the
+    group. Returns an empty dict for service messages with no `from`.
+    """
+    src = msg.get("from") or {}
+    user_id = src.get("id")
+    username = (src.get("username") or "").strip()
+    first = (src.get("first_name") or "").strip()
+    last = (src.get("last_name") or "").strip()
+    name = (first + " " + last).strip() or username or (str(user_id) if user_id else "")
+    out: dict[str, str] = {}
+    if user_id:
+        out["user_id"] = str(user_id)
+    if username:
+        out["username"] = username
+    if name:
+        out["name"] = name
+    return out
+
+
+def _sender_label(sender: dict | None) -> str:
+    """Human-readable `Name (@handle)` label, or '' if we have nothing."""
+    if not sender:
+        return ""
+    name = sender.get("name") or ""
+    handle = sender.get("username") or ""
+    if name and handle and handle != name:
+        return f"{name} (@{handle})"
+    return name or (f"@{handle}" if handle else sender.get("user_id") or "")
+
+
+def _prefix_sender(
+    prompt: str,
+    sender: dict | None,
+    owner: dict | None = None,
+) -> str:
+    """Tag the prompt with `[from <Name>]` so the agent sees who's asking.
+
+    Cheap natural-language hint rather than a schema change — the agent
+    just reads the line and behaves accordingly. Skips silently when we
+    have no sender info (service messages, edits, channel posts).
+
+    When we know the chat's owner, append a soft role tag so the agent
+    can tell whether the current sender is the box owner or a guest who
+    joined the group later. No hard authorization gate — just context.
+    """
+    label = _sender_label(sender)
+    if not label:
+        return prompt
+    role = ""
+    if sender and owner and owner.get("user_id"):
+        role = (
+            ", the box owner"
+            if str(sender.get("user_id") or "") == str(owner["user_id"])
+            else ", a guest in this chat (not the box owner)"
+        )
+    return f"[from {label}{role}]\n\n{prompt}"
+
+
+def _owner_for(chat_id: int, state: dict) -> dict | None:
+    """Return the recorded owner for a chat, or None if not yet bound."""
+    owners = state.get("owners") or {}
+    rec = owners.get(str(chat_id))
+    return rec if isinstance(rec, dict) else None
+
+
+def _set_owner_for(chat_id: int, sender: dict, state: dict) -> None:
+    """Record the binder as this chat's owner. First-binder-wins, no overwrite."""
+    owners = state.setdefault("owners", {})
+    if str(chat_id) in owners:
+        return
+    rec: dict = {"bound_at": int(time.time())}
+    for k in ("user_id", "username", "name"):
+        if sender.get(k):
+            rec[k] = sender[k]
+    if rec.get("user_id"):
+        owners[str(chat_id)] = rec
+        save_state(state)
+
+
+def _is_owner(sender: dict | None, owner: dict | None) -> bool:
+    if not sender or not owner:
+        return False
+    sid = str(sender.get("user_id") or "")
+    oid = str(owner.get("user_id") or "")
+    return bool(sid and oid and sid == oid)
+
+
 def load_allow() -> set[int]:
     if not ALLOWED_FILE.exists():
         return set()
@@ -405,10 +527,11 @@ def load_state() -> dict:
             if isinstance(data, dict):
                 data.setdefault("offset", 0)
                 data.setdefault("agents", {})
+                data.setdefault("owners", {})
                 return data
         except Exception:
             pass
-    return {"offset": 0, "agents": {}}
+    return {"offset": 0, "agents": {}, "owners": {}}
 
 
 def save_state(s: dict) -> None:
@@ -1181,7 +1304,12 @@ class Bot:
 
     # ----- Agent dispatch -----
 
-    def _build_env(self, key: LaneKey, agent: str) -> dict[str, str]:
+    def _build_env(
+        self,
+        key: LaneKey,
+        agent: str,
+        sender: dict | None = None,
+    ) -> dict[str, str]:
         """Forwarded env passed to the agent subprocess via `sudo VAR=val …`.
 
         Returns ONLY the keys we explicitly want the agent to see — never
@@ -1197,6 +1325,12 @@ class Bot:
           - OPENAI_* from /home/bux/.secrets/openai.env (codex needs this).
           - TG_CHAT_ID + TG_THREAD_ID so `tg-send` routes back to this
             forum topic when the agent shells out for background work.
+          - TG_USER_ID / TG_USERNAME / TG_FROM_NAME so the agent (and any
+            tool it shells out to) can attribute the current turn to a
+            specific human in a multi-user group chat.
+          - TG_OWNER_ID / TG_OWNER_NAME / TG_IS_OWNER for the soft "first
+            binder is owner, others are guests" model. Authorization stays
+            chat-scoped — these are just attribution hints.
         """
         box_env = _read_kv(BOX_ENV)
         browser_env = _read_kv(BROWSER_ENV)
@@ -1225,6 +1359,20 @@ class Bot:
         env["TG_CHAT_ID"] = str(chat)
         if thread:
             env["TG_THREAD_ID"] = str(thread)
+        if sender:
+            if sender.get("user_id"):
+                env["TG_USER_ID"] = sender["user_id"]
+            if sender.get("username"):
+                env["TG_USERNAME"] = sender["username"]
+            if sender.get("name"):
+                env["TG_FROM_NAME"] = sender["name"]
+        owner = _owner_for(chat, self.state)
+        if owner:
+            if owner.get("user_id"):
+                env["TG_OWNER_ID"] = owner["user_id"]
+            if owner.get("name"):
+                env["TG_OWNER_NAME"] = owner["name"]
+            env["TG_IS_OWNER"] = "true" if _is_owner(sender, owner) else "false"
         # Strip newlines from forwarded values: argv accepts them but downstream
         # tooling (`tg-send`, bash one-liners) tends to break on embedded \n.
         # Tabs are similarly unsafe in `KEY=val` argv positions.
@@ -1237,6 +1385,7 @@ class Bot:
         key: LaneKey,
         prompt: str,
         reply_to: int | None,
+        sender: dict | None = None,
     ) -> None:
         """Dispatch the user's prompt to this lane's agent.
 
@@ -1257,9 +1406,9 @@ class Bot:
         LOG.info("run_task lane=%s agent=%s", _lane_slug(key), agent)
         try:
             if agent == AGENT_CODEX:
-                self._run_codex(key, prompt, reply_to)
+                self._run_codex(key, prompt, reply_to, sender=sender)
             else:
-                self._run_claude(key, prompt, reply_to)
+                self._run_claude(key, prompt, reply_to, sender=sender)
         except Exception as e:
             LOG.exception("run_task lane=%s failed", _lane_slug(key))
             try:
@@ -1278,6 +1427,7 @@ class Bot:
         key: LaneKey,
         prompt: str,
         reply_to: int | None,
+        sender: dict | None = None,
     ) -> None:
         """Stream a claude turn into the lane's TG topic.
 
@@ -1287,8 +1437,9 @@ class Bot:
         dropped — the user only sees the orchestrator's voice.
         """
         chat_id, thread_id = key
-        env = self._build_env(key, AGENT_CLAUDE)
+        env = self._build_env(key, AGENT_CLAUDE, sender=sender)
         sid = _session_uuid_for(key)
+        prompt = _prefix_sender(prompt, sender, _owner_for(chat_id, self.state))
 
         # Claude Code 2.x split create vs. resume: `--session-id <uuid>`
         # creates and errors if the UUID already exists, `--resume <uuid>`
@@ -1474,6 +1625,7 @@ class Bot:
         key: LaneKey,
         prompt: str,
         reply_to: int | None,
+        sender: dict | None = None,
     ) -> None:
         """Stream a codex turn into the lane's TG topic.
 
@@ -1487,8 +1639,9 @@ class Bot:
         across messages — same shape as claude's `--session-id` model.
         """
         chat_id, thread_id = key
-        env = self._build_env(key, AGENT_CODEX)
+        env = self._build_env(key, AGENT_CODEX, sender=sender)
         existing_thread = _codex_thread_id_for(key)
+        prompt = _prefix_sender(prompt, sender, _owner_for(chat_id, self.state))
 
         # Refuse early if codex isn't installed — the user gets a clear
         # install hint instead of a confusing FileNotFoundError.
@@ -1702,12 +1855,21 @@ class Bot:
 
     # ----- Binding flow -----
 
-    def _bind_chat(self, chat_id: int) -> None:
-        """Register chat_id, burn the setup_token, welcome the user."""
+    def _bind_chat(self, chat_id: int, sender: dict | None = None) -> None:
+        """Register chat_id, burn the setup_token, record the owner, welcome."""
         add_allow(chat_id)
         burn_setup_token()
         self.setup_token = ""
-        LOG.info("authorized chat_id=%s", chat_id)
+        if sender and sender.get("user_id"):
+            _set_owner_for(chat_id, sender, self.state)
+            LOG.info(
+                "authorized chat_id=%s owner=%s (id=%s)",
+                chat_id,
+                sender.get("name") or sender.get("username") or "?",
+                sender.get("user_id"),
+            )
+        else:
+            LOG.info("authorized chat_id=%s (no sender info)", chat_id)
         self.send(
             chat_id,
             "✓ Linked.\n\n"
@@ -1851,11 +2013,26 @@ class Bot:
         chat_id = msg["chat"]["id"]
         thread_id_raw = msg.get("message_thread_id")
         thread_id = thread_id_raw if isinstance(thread_id_raw, int) else 0
+
+        # TG service messages (topic created/edited/closed, members joined,
+        # pinned, video chat lifecycle, etc.) carry no user content — drop
+        # silently before any binding or response logic. Without this we
+        # reply "I don't know how to handle that" every time the user spins
+        # up a new forum topic.
+        if any(k in msg for k in _SERVICE_MSG_KEYS):
+            LOG.debug(
+                "dropping service message chat=%s keys=%s",
+                chat_id,
+                [k for k in _SERVICE_MSG_KEYS if k in msg],
+            )
+            return
+
         text = (msg.get("text") or "").strip()
         caption = (msg.get("caption") or "").strip()
         if caption and not text:
             text = caption
         mid = msg.get("message_id")
+        sender = _extract_sender(msg)
         allow = load_allow()
 
         # Binding: first message wins. Topic-id is irrelevant — once the
@@ -1865,8 +2042,14 @@ class Bot:
                 LOG.info("dropping msg from chat_id=%s (already bound)", chat_id)
                 return
             LOG.info("binding chat_id=%s (first-message wins)", chat_id)
-            self._bind_chat(chat_id)
+            self._bind_chat(chat_id, sender=sender)
             return
+
+        # Backfill the owner for chats bound before owner-tracking existed:
+        # first sender we see in an allowed-but-unowned chat becomes the
+        # owner. _set_owner_for no-ops if a record already exists.
+        if sender.get("user_id") and not _owner_for(chat_id, self.state):
+            _set_owner_for(chat_id, sender, self.state)
 
         # Voice / audio / video_note: download from TG, transcribe with Whisper,
         # then fall through to the normal text-message pipeline as if the user
@@ -1923,10 +2106,24 @@ class Bot:
             )
             return
         if cmd == "/whoami":
+            who_label = _sender_label(sender) or "(unknown)"
+            who_id = sender.get("user_id") or "?"
+            owner = _owner_for(chat_id, self.state)
+            if owner:
+                role = "owner" if _is_owner(sender, owner) else "guest"
+                owner_line = (
+                    f"role: {role}\n"
+                    f"owner: {_sender_label(owner) or '(unknown)'} "
+                    f"(id `{owner.get('user_id', '?')}`)"
+                )
+            else:
+                owner_line = "role: (no owner recorded for this chat)"
             self.send(
                 chat_id,
                 f"chat_id: {chat_id}\nthread_id: {thread_id}\nlane: `{slug}`\n"
-                f"agent: `{_agent_for(key, self.state)}`",
+                f"agent: `{_agent_for(key, self.state)}`\n"
+                f"you: {who_label} (id `{who_id}`)\n"
+                f"{owner_line}",
                 reply_to=mid,
                 thread_id=thread_id,
                 markdown=True,
@@ -1996,6 +2193,7 @@ class Bot:
             "prompt": final_prompt,
             "queued_at": time.time(),
             "status": "queued",
+            "sender": sender,
         }
         self.react(chat_id, mid, EMOJI_WORKING)
         depth = _enqueue(slug, job, self._lane_drain)
@@ -2288,12 +2486,14 @@ class Bot:
                         _finish_locked(slug, job_id)
                     continue
                 key: LaneKey = (chat_id, thread_id if isinstance(thread_id, int) else 0)
+                sender = job.get("sender") if isinstance(job.get("sender"), dict) else None
                 try:
                     self.typing(chat_id, thread_id=key[1])
                     self.run_task(
                         key,
                         prompt,
                         reply_to=mid if isinstance(mid, int) else None,
+                        sender=sender,
                     )
                 except Exception:
                     LOG.exception("lane %s job %s failed", slug, job_id)
