@@ -2774,6 +2774,7 @@ class Bot:
                 "/queue — pending tasks in this topic\n"
                 "/cancel — kill the running task + drop everything pending in this topic\n"
                 "/cancel <id> — cancel one task (running or queued)\n"
+                "/compact — summarize this topic's claude session to free up context\n"
                 "/schedules — list reminders / cron jobs\n"
                 "/login — auth status / connect a service (e.g. /login gh)\n"
                 "/logout — disconnect a service (e.g. /logout gh)\n"
@@ -2834,6 +2835,29 @@ class Bot:
         if cmd == "/logout":
             self._cmd_logout(chat_id, mid, thread_id, arg)
             return
+        if cmd == "/compact":
+            # Forward to claude as a slash command. `claude -p "/compact"`
+            # interprets it natively (verified via the `slash_commands`
+            # list in claude's init event), summarizes the session, and
+            # writes the compacted state back to the session file so
+            # subsequent `--resume` turns start from the summary.
+            #
+            # codex doesn't have an equivalent — bail with a clear note
+            # rather than forwarding "/compact" verbatim.
+            if _agent_for(key, self.state) != AGENT_CLAUDE:
+                self.send(
+                    chat_id,
+                    "/compact only works on a `claude` lane. "
+                    "Switch with `/agent claude` first.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
+            # Rewrite the prompt and let the rest of handle() enqueue it
+            # like a normal turn — the streaming bubble will surface
+            # whatever summary claude emits.
+            text = "/compact"
 
         # Attachment + caption combo: download synchronously (small file) and
         # inject a path reference into the prompt so the agent can read it.
