@@ -99,6 +99,37 @@ def load_env() -> dict[str, str]:
 	return out
 
 
+def _read_tg_bot_username() -> str | None:
+	"""Read TG_BOT_USERNAME from /etc/bux/tg.env if present.
+
+	The file is root:bux 0640; box-agent runs as bux which is in the bux
+	group, so the read works without sudo. Returns None when bux-tg
+	isn't set up yet (no tg.env), or when the file exists but doesn't
+	carry TG_BOT_USERNAME (older installs that pre-date this field —
+	the user can re-Set up Telegram to populate it).
+
+	Surfaced in the hello payload so the cloud can backfill its
+	tg_bot_username column for boxes provisioned before
+	install_telegram() started persisting it server-side.
+	"""
+	if not TG_ENV.exists():
+		return None
+	try:
+		for line in TG_ENV.read_text().splitlines():
+			line = line.strip()
+			if not line or line.startswith('#') or '=' not in line:
+				continue
+			k, v = line.split('=', 1)
+			if k.strip() == 'TG_BOT_USERNAME':
+				val = v.strip().strip('"').strip("'")
+				return val or None
+	except Exception:
+		# Permission flake / partial write during a concurrent install —
+		# treat as "no handle yet" and the next reconnect will retry.
+		LOG.exception('failed to read %s', TG_ENV)
+	return None
+
+
 # --- Claude auth ------------------------------------------------------------
 #
 # The user does the OAuth flow themselves inside the ttyd web terminal
@@ -582,6 +613,13 @@ class Agent:
 				'agent_version': '0.4.0',
 				'agent_sha': _get_agent_sha(),
 				'agent_branch': _get_agent_branch(),
+				# Backfill the cloud's tg_bot_username column for boxes
+				# provisioned before we started persisting the handle in
+				# install_telegram(). Cloud only writes the row if it's
+				# currently empty — destroy / re-up are still the
+				# authoritative clear paths. None when bux-tg isn't set
+				# up yet (no /etc/bux/tg.env on this box).
+				'tg_bot_username': _read_tg_bot_username(),
 			})
 
 			hb_task = asyncio.create_task(self._heartbeat_loop())
