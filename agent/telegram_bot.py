@@ -2842,6 +2842,10 @@ class Bot:
             # writes the compacted state back to the session file so
             # subsequent `--resume` turns start from the summary.
             #
+            # `/compact <instructions>` is supported by claude's own
+            # implementation: trailing text becomes guidance for what to
+            # focus on when summarizing. We pass it through verbatim.
+            #
             # codex doesn't have an equivalent — bail with a clear note
             # rather than forwarding "/compact" verbatim.
             if _agent_for(key, self.state) != AGENT_CLAUDE:
@@ -2856,8 +2860,10 @@ class Bot:
                 return
             # Rewrite the prompt and let the rest of handle() enqueue it
             # like a normal turn — the streaming bubble will surface
-            # whatever summary claude emits.
-            text = "/compact"
+            # whatever summary claude emits. Preserve the trailing arg
+            # so `/compact focus on the bug fixes` reaches claude with
+            # its instructions intact.
+            text = "/compact" + (" " + arg if arg else "")
 
         # Attachment + caption combo: download synchronously (small file) and
         # inject a path reference into the prompt so the agent can read it.
