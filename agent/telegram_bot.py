@@ -30,7 +30,7 @@ Flow:
      other-chat messages drop silently.
   3. Once allowed, each message is keyed to a lane (chat_id, thread_id) and
      enqueued. A worker drains that lane, dispatching each job to the lane's
-     bound agent (claude default; `/agent codex` flips it).
+     bound agent (claude default; `/codex` flips it).
   4. Stream-json events from claude come back as TG message bubbles in the
      lane's topic, with a per-turn random "thinking" emoji in the placeholder
      bubble and 🎉/💔 reactions on the user's message at end-of-turn.
@@ -183,14 +183,15 @@ DEFAULT_AGENT = AGENT_CLAUDE
 # in the `/` autocomplete popup. Descriptions are short — TG clips them.
 BOT_COMMANDS: list[tuple[str, str]] = [
     ("help", "show all commands"),
-    ("terminal", "open an interactive shell (e.g. /terminal codex login)"),
+    ("terminal", "open an interactive shell (e.g. /terminal gh auth login)"),
     ("exit", "close the active terminal session"),
     ("interrupt", "send Ctrl-C to the active terminal session"),
+    ("enter", "send Enter to the active terminal session"),
     ("eof", "send Ctrl-D to the active terminal session"),
     ("compact", "summarize this topic's session to free up context"),
     ("agent", "switch this topic's agent (claude|codex)"),
-    ("claude", "switch this topic to Claude"),
-    ("codex", "switch this topic to Codex"),
+    ("claude", "switch/login/logout Claude"),
+    ("codex", "switch/login/logout Codex"),
     ("live", "live-view URL of the active browser"),
     ("queue", "pending tasks in this topic"),
     ("cancel", "kill the running task + drop pending"),
@@ -1289,7 +1290,7 @@ def _snapshot_lane(slug: str) -> list[dict]:
 # `/terminal` — interactive shell mode.
 #
 # Owner sends `/terminal` (optionally with an initial command, e.g.
-# `/terminal codex login`). The bot spawns a persistent `bash` as the
+# `/terminal gh auth login`). The bot spawns a persistent `bash` as the
 # bux user inside a PTY and streams output back to the lane. From that
 # moment on, every plain-text message in the lane is written to the
 # shell's stdin (newline-appended) — so an interactive login flow
@@ -1308,6 +1309,7 @@ def _snapshot_lane(slug: str) -> list[dict]:
 # Strip ANSI CSI / OSC sequences so colors / cursor moves don't show up as
 # literal `\x1b[31m` garbage on the phone screen.
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07")
+_URL_RE = re.compile(r"https?://[^\s<>()]+")
 
 # Output buffering: flush after N bytes accumulated OR M seconds of quiet.
 # Phone-screen friendly bubble; large enough that `npm install` doesn't
@@ -1334,7 +1336,7 @@ class ShellSession:
     Lifecycle:
       - start() forks `bash` as bux inside a PTY. If `initial_cmd` is set,
         it's written to bash's stdin right after the PTY is hooked up so
-        the user can do `/terminal codex login` as a single message.
+        the user can do `/terminal gh auth login` as a single message.
       - A reader thread pulls from the master fd, strips ANSI, and posts
         debounced chunks to TG as monospace bubbles.
       - send_input(text) writes user-supplied text + "\\n" to the master
@@ -1355,6 +1357,7 @@ class ShellSession:
         slug: str,
         initial_cmd: str | None = None,
         reply_to: int | None = None,
+        auto_enter_after_input_sec: float | None = None,
     ) -> None:
         self.bot = bot
         self.chat_id = chat_id
@@ -1362,6 +1365,7 @@ class ShellSession:
         self.slug = slug
         self.initial_cmd = initial_cmd
         self.reply_to = reply_to
+        self.auto_enter_after_input_sec = auto_enter_after_input_sec
         self.master_fd: int | None = None
         self.process: subprocess.Popen | None = None
         self._buffer = bytearray()
@@ -1372,6 +1376,7 @@ class ShellSession:
         self.started_at = 0.0
         self._reader_thread: threading.Thread | None = None
         self._flusher_thread: threading.Thread | None = None
+        self._announced_urls: set[str] = set()
 
     # -- spawn ---------------------------------------------------------------
 
@@ -1440,7 +1445,7 @@ class ShellSession:
         ack_lines = [
             "💻 *terminal session started*",
             "_replies go straight to the shell — /interrupt sends Ctrl-C, "
-            "/exit asks bash to close, /cancel hard-kills_",
+            "/enter sends a blank Enter, /exit asks bash to close, /cancel hard-kills_",
         ]
         if self.initial_cmd:
             ack_lines.append(f"running: `{self.initial_cmd}`")
@@ -1486,10 +1491,21 @@ class ShellSession:
         payload = (text + "\n").encode("utf-8", "replace")
         try:
             os.write(self.master_fd, payload)
+            if self.auto_enter_after_input_sec is not None:
+                self._schedule_auto_enter()
             return True
         except OSError as e:
             LOG.warning("shell stdin write failed for %s: %s", self.slug, e)
             return False
+
+    def _schedule_auto_enter(self) -> None:
+        def _send() -> None:
+            if self.alive:
+                self.send_bytes(b"\n")
+
+        timer = threading.Timer(self.auto_enter_after_input_sec, _send)
+        timer.daemon = True
+        timer.start()
 
     def send_bytes(self, payload: bytes) -> bool:
         """Write raw bytes to the PTY master. Used for terminal control
@@ -1579,6 +1595,19 @@ class ShellSession:
         text = text.rstrip("\n")
         if not text:
             return
+        # Code blocks preserve terminal formatting, but Telegram may not make
+        # URLs inside them tappable. Surface each new URL once as a plain
+        # message so auth links from Claude/GitHub/etc. are easy to open.
+        for match in _URL_RE.finditer(text):
+            url = match.group(0).rstrip(".,;:")
+            if url in self._announced_urls:
+                continue
+            self._announced_urls.add(url)
+            self.bot.send(
+                self.chat_id,
+                f"Open:\n{url}",
+                thread_id=self.thread_id,
+            )
         # Split into chunks that fit a TG message; each goes as its own
         # monospace bubble. Leaves a margin for the ``` fences. Escape
         # backslashes / backticks per MDV2 code-block rules — pre_rendered
@@ -1857,6 +1886,115 @@ class _GhProvider:
         return True, "logged out"
 
 
+class _CodexProvider:
+    """Codex auth via `codex login --device-auth`.
+
+    The regular browser login path is awkward on headless boxes because the
+    browser opens on the remote machine. Device auth prints a stable URL and
+    one-time code that the Telegram bot can relay to the owner.
+    """
+
+    name = "codex"
+    label = "Codex"
+    DEVICE_URL = "https://auth.openai.com/codex/device"
+    _CODE_RE = re.compile(r"\b[A-Z0-9]{4,}(?:-[A-Z0-9]{4,})+\b")
+
+    def check(self) -> tuple[bool, str]:
+        try:
+            r = subprocess.run(
+                ["sudo", "-iu", "bux", "codex", "login", "status"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            out = _ANSI_RE.sub("", (r.stdout + r.stderr)).strip()
+            if r.returncode == 0 and "logged in" in out.lower():
+                return True, out or "logged in"
+            if "command not found" in out.lower():
+                return False, "codex CLI not installed"
+            return False, out or "not logged in"
+        except FileNotFoundError:
+            return False, "codex CLI not installed"
+        except subprocess.TimeoutExpired:
+            return False, "codex login status timed out"
+
+    def login(self, on_progress) -> tuple[bool, str]:
+        try:
+            proc = subprocess.Popen(
+                ["sudo", "-iu", "bux", "codex", "login", "--device-auth"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+        except FileNotFoundError:
+            return False, "codex CLI not installed on this box"
+
+        code = ""
+        url = self.DEVICE_URL
+        announced = False
+        expect_code = False
+        lines: list[str] = []
+        assert proc.stdout is not None
+        try:
+            for raw in proc.stdout:
+                line = _ANSI_RE.sub("", raw).strip()
+                if not line:
+                    continue
+                lines.append(line)
+                for tok in line.split():
+                    if tok.startswith("https://"):
+                        url = tok.rstrip(".")
+                        break
+                low = line.lower()
+                match = self._CODE_RE.search(line)
+                if match:
+                    code = match.group(0)
+                elif expect_code:
+                    compact = line.replace(" ", "")
+                    if re.fullmatch(r"[A-Z0-9-]{6,}", compact):
+                        code = compact
+                expect_code = "one-time code" in low or "enter this code" in low
+                if not announced and code:
+                    on_progress(
+                        "Open this Codex device-auth link:\n"
+                        f"{url}\n\n"
+                        "Enter this one-time code:\n"
+                        f"`{code}`\n\n"
+                        "Only enter this code on the OpenAI auth page above. "
+                        "I'll let you know once Codex authorizes."
+                    )
+                    announced = True
+        except Exception:
+            LOG.exception("codex login: stdout read failed")
+
+        rc = proc.wait()
+        if rc != 0:
+            tail = "\n".join(lines[-4:]).strip()
+            if tail:
+                return False, f"codex auth failed (rc={rc}): {tail}"
+            return False, f"codex auth failed (rc={rc})"
+        return True, "connected"
+
+    def logout(self) -> tuple[bool, str]:
+        try:
+            r = subprocess.run(
+                ["sudo", "-iu", "bux", "codex", "logout"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if r.returncode != 0:
+                out = _ANSI_RE.sub("", (r.stdout + r.stderr)).strip()
+                return False, out or f"codex logout failed (rc={r.returncode})"
+        except Exception as e:
+            LOG.exception("codex logout failed")
+            return False, str(e)
+        return True, "logged out"
+
+
 def _set_box_env_var(key: str, value: str) -> None:
     """Append/replace KEY=VALUE in /etc/bux/env, then restart consumers
     so the new env is in their environment.
@@ -1928,7 +2066,9 @@ def _unset_box_env_var(key: str) -> None:
         LOG.exception("failed to restart box-agent after env unset")
 
 
-AUTH_PROVIDERS: dict[str, _GhProvider] = {
+CODEX_AUTH_PROVIDER = _CodexProvider()
+
+AUTH_PROVIDERS: dict[str, object] = {
     "gh": _GhProvider(),
     # Future: 'vercel': _VercelProvider(), 'npm': _NpmProvider(), etc.
 }
@@ -2739,8 +2879,8 @@ class Bot:
                 chat_id,
                 "❌ codex CLI not installed on this box. Install with `npm install -g "
                 "@openai/codex`, then sign in either way:\n"
-                "• ChatGPT subscription: run `codex login` once as the bux user "
-                "(`sudo -iu bux codex login` from ttyd or ssh) and follow the OAuth flow.\n"
+                "• ChatGPT subscription: send `/codex login` here, or run "
+                "`codex login --device-auth` as the bux user from a terminal.\n"
                 "• API key: drop `OPENAI_API_KEY=...` into `/home/bux/.secrets/openai.env`.\n\n"
                 "Pick one — if both are set, codex silently uses the API key "
                 "for billing (openai/codex#20099).\n\n"
@@ -3264,7 +3404,7 @@ class Bot:
         # `/terminal` — owner-only mode switch. Spawns a persistent bash
         # in this lane; from this point on plain-text messages route to
         # its stdin. `/terminal <initial cmd>` seeds the first command,
-        # so `/terminal codex login` starts the shell + runs codex login
+        # so `/terminal gh auth login` starts the shell + runs gh auth login
         # in one shot. `/terminal` while a session is already alive is a
         # no-op (the user said so) — protects an active session from a
         # fat-fingered re-trigger.
@@ -3283,8 +3423,8 @@ class Bot:
                 self.send(
                     chat_id,
                     "💻 terminal session already running here — replies go to its "
-                    "stdin. Use /interrupt for Ctrl-C, /exit to ask bash to close, "
-                    "or /cancel to hard-kill.",
+                    "stdin. Use /interrupt for Ctrl-C, /enter for a blank Enter, "
+                    "/exit to ask bash to close, or /cancel to hard-kill.",
                     reply_to=mid,
                     thread_id=thread_id,
                     markdown=True,
@@ -3373,6 +3513,40 @@ class Bot:
                 )
             return
 
+        # `/enter` — send a bare newline to the PTY. Telegram cannot send an
+        # empty text message, but some auth flows ask the user to press Enter
+        # after a browser step.
+        if cmd in ("/enter", "/return"):
+            sess = _get_shell_session(slug)
+            if sess is None:
+                self.send(
+                    chat_id,
+                    "No terminal session here. `/terminal` to start one.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
+            if not _is_owner(sender, owner):
+                self.send(
+                    chat_id,
+                    "❌ `/enter` is owner-only.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
+            if sess.send_bytes(b"\n"):
+                self.react(chat_id, mid, "✍")
+            else:
+                self.send(
+                    chat_id,
+                    "❌ terminal session is gone — Enter not delivered.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                )
+            return
+
         # `/eof` — send Ctrl-D to the PTY. Useful for programs waiting on
         # stdin EOF; if bash is at an empty prompt it exits the session.
         if cmd in ("/eof", "/ctrld", "/d"):
@@ -3432,12 +3606,17 @@ class Bot:
                 "Commands\n"
                 "/terminal — open an interactive shell here (owner-only); "
                 "replies route to stdin until you `exit` or send /exit. "
-                "/terminal <cmd> seeds the first command, e.g. `/terminal codex login`\n"
+                "/terminal <cmd> seeds the first command, e.g. `/terminal gh auth login`\n"
                 "/interrupt — send Ctrl-C to the active terminal session\n"
+                "/enter — send Enter to the active terminal session\n"
                 "/eof — send Ctrl-D to the active terminal session\n"
                 "/exit — ask bash to close the active terminal session\n"
                 "/codex — switch this topic to Codex\n"
+                "/codex login — sign in Codex with device auth\n"
+                "/codex logout — sign out Codex\n"
                 "/claude — switch this topic to Claude\n"
+                "/claude login — sign in Claude through a terminal flow\n"
+                "/claude logout — sign out Claude\n"
                 "/agent claude|codex — switch this topic to a different agent\n"
                 "/live — live-view URL of the active browser\n"
                 "/queue — pending tasks in this topic\n"
@@ -3494,9 +3673,27 @@ class Bot:
             self._cmd_agent(key, chat_id, mid, thread_id, arg)
             return
         if cmd == "/codex":
+            action = arg.strip().lower()
+            if action in ("login", "auth"):
+                self._start_login_provider(
+                    "codex", CODEX_AUTH_PROVIDER, chat_id, mid, thread_id
+                )
+                return
+            if action in ("logout", "disconnect"):
+                self._cmd_provider_logout(
+                    "codex", CODEX_AUTH_PROVIDER, chat_id, mid, thread_id, sender, owner
+                )
+                return
             self._cmd_agent(key, chat_id, mid, thread_id, AGENT_CODEX)
             return
         if cmd == "/claude":
+            action = arg.strip().lower()
+            if action in ("login", "auth"):
+                self._cmd_claude_login(chat_id, mid, thread_id, slug, sender, owner)
+                return
+            if action in ("logout", "disconnect"):
+                self._cmd_claude_logout(chat_id, mid, thread_id, sender, owner)
+                return
             self._cmd_agent(key, chat_id, mid, thread_id, AGENT_CLAUDE)
             return
         if cmd == "/version":
@@ -4138,6 +4335,7 @@ class Bot:
                 lines.append(f"{icon} `{pname}` — {status}")
             lines.append("")
             lines.append("Use `/login <name>` to connect (e.g. `/login gh`).")
+            lines.append("Codex: `/codex login`. Claude: `/claude login`.")
             self.send(
                 chat_id,
                 "\n".join(lines),
@@ -4157,6 +4355,16 @@ class Bot:
                 markdown=True,
             )
             return
+        self._start_login_provider(name, prov, chat_id, reply_to, thread_id)
+
+    def _start_login_provider(
+        self,
+        name: str,
+        prov,
+        chat_id: int,
+        reply_to: int | None,
+        thread_id: int,
+    ) -> None:
         # If already connected, short-circuit. Saves the user a redundant
         # device-code dance and prevents accidentally rotating their token.
         connected, status = prov.check()
@@ -4171,7 +4379,7 @@ class Bot:
             return
 
         def _on_progress(text: str) -> None:
-            self.send(chat_id, text, reply_to=reply_to, thread_id=thread_id)
+            self.send(chat_id, text, reply_to=reply_to, thread_id=thread_id, markdown=True)
 
         def _runner() -> None:
             self.send(
@@ -4202,6 +4410,148 @@ class Bot:
             )
 
         threading.Thread(target=_runner, name=f"bux-login-{name}", daemon=True).start()
+
+    def _cmd_claude_login(
+        self,
+        chat_id: int,
+        reply_to: int | None,
+        thread_id: int,
+        slug: str,
+        sender: dict,
+        owner: dict | None,
+    ) -> None:
+        if not _is_owner(sender, owner):
+            self.send(
+                chat_id,
+                "❌ `/claude login` is owner-only.",
+                reply_to=reply_to,
+                thread_id=thread_id,
+                markdown=True,
+            )
+            return
+        existing = _get_shell_session(slug)
+        if existing is not None:
+            self.send(
+                chat_id,
+                "💻 terminal session already running here. Paste into it, or use "
+                "/interrupt, /exit, or /cancel first.",
+                reply_to=reply_to,
+                thread_id=thread_id,
+                markdown=True,
+            )
+            return
+        try:
+            sess = ShellSession(
+                self,
+                chat_id=chat_id,
+                thread_id=thread_id,
+                slug=slug,
+                initial_cmd="claude auth login",
+                reply_to=reply_to,
+                auto_enter_after_input_sec=2.0,
+            )
+            sess.start()
+        except Exception as e:
+            LOG.exception("claude login shell start failed for %s", slug)
+            self.send(
+                chat_id,
+                f"❌ failed to start Claude login terminal: {e}",
+                reply_to=reply_to,
+                thread_id=thread_id,
+            )
+
+    def _cmd_provider_logout(
+        self,
+        name: str,
+        prov,
+        chat_id: int,
+        reply_to: int | None,
+        thread_id: int,
+        sender: dict,
+        owner: dict | None,
+    ) -> None:
+        if not _is_owner(sender, owner):
+            self.send(
+                chat_id,
+                f"❌ `/{name} logout` is owner-only.",
+                reply_to=reply_to,
+                thread_id=thread_id,
+                markdown=True,
+            )
+            return
+        try:
+            ok, msg = prov.logout()
+        except Exception as e:
+            LOG.exception("%s logout failed", name)
+            self.send(
+                chat_id,
+                f"❌ `{name}` logout failed: {e}",
+                reply_to=reply_to,
+                thread_id=thread_id,
+                markdown=True,
+            )
+            return
+        icon = "✓" if ok else "❌"
+        self.send(
+            chat_id,
+            f"{icon} `{name}` {msg}",
+            reply_to=reply_to,
+            thread_id=thread_id,
+            markdown=True,
+        )
+
+    def _cmd_claude_logout(
+        self,
+        chat_id: int,
+        reply_to: int | None,
+        thread_id: int,
+        sender: dict,
+        owner: dict | None,
+    ) -> None:
+        if not _is_owner(sender, owner):
+            self.send(
+                chat_id,
+                "❌ `/claude logout` is owner-only.",
+                reply_to=reply_to,
+                thread_id=thread_id,
+                markdown=True,
+            )
+            return
+        try:
+            r = subprocess.run(
+                ["sudo", "-iu", "bux", "claude", "auth", "logout"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+        except Exception as e:
+            LOG.exception("claude logout failed")
+            self.send(
+                chat_id,
+                f"❌ `claude` logout failed: {e}",
+                reply_to=reply_to,
+                thread_id=thread_id,
+                markdown=True,
+            )
+            return
+        out = _ANSI_RE.sub("", (r.stdout + r.stderr)).strip()
+        if r.returncode == 0:
+            self.send(
+                chat_id,
+                "✓ `claude` logged out" + (f" ({out})" if out else ""),
+                reply_to=reply_to,
+                thread_id=thread_id,
+                markdown=True,
+            )
+        else:
+            self.send(
+                chat_id,
+                f"❌ `claude` logout failed: {out or f'rc={r.returncode}'}",
+                reply_to=reply_to,
+                thread_id=thread_id,
+                markdown=True,
+            )
 
     def _cmd_logout(
         self,
