@@ -372,19 +372,34 @@ def _humanize_duration_ms(ms: int) -> str:
 
 
 def _format_final_footer(usage: dict | None, duration_ms: int | None) -> str:
-    """Build the raw `🪙 X tokens · ⏱ Ys` line that goes at the bottom of
-    the collapsed-steps blockquote. Returns "" if neither piece is
-    available. Body is intentionally NOT MDV2-escaped — the caller passes
-    it through `_render_expandable_blockquote`, which escapes lines."""
+    """Build the raw stats line that goes at the bottom of the
+    collapsed-steps blockquote. Returns "" if no data is available.
+    Body is intentionally NOT MDV2-escaped — the caller passes it
+    through `_render_expandable_blockquote`, which escapes lines.
+
+    Format: `📥 in · 📤 out · 💾 cache-read · ✨ cache-write · ⏱ Ys`.
+    The earlier rolled-up `🪙 X tokens` was misleading — claude makes
+    multiple model invocations per turn and each re-reads the full
+    cached prompt, so the sum was easily 5–10× the active context.
+    Splitting by category makes the real cost legible: 📥/📤 are what
+    this turn newly billed at full rate, 💾/✨ are cache traffic.
+    Each emoji's slot is omitted when the underlying count is zero so
+    quiet turns don't carry a row of zero-counts.
+    """
     parts: list[str] = []
     if isinstance(usage, dict):
-        # Sum every int field in `usage` — input, output, cache_creation,
-        # cache_read — to give a single "this turn touched X tokens"
-        # number. Claude may add new int fields here over time; summing
-        # everything int-shaped keeps us forward-compatible.
-        total = sum(v for v in usage.values() if isinstance(v, int))
-        if total > 0:
-            parts.append(f"🪙 {_humanize_tokens(total)} tokens")
+        input_t = usage.get("input_tokens")
+        output_t = usage.get("output_tokens")
+        cache_read = usage.get("cache_read_input_tokens")
+        cache_create = usage.get("cache_creation_input_tokens")
+        if isinstance(input_t, int) and input_t > 0:
+            parts.append(f"📥 {_humanize_tokens(input_t)}")
+        if isinstance(output_t, int) and output_t > 0:
+            parts.append(f"📤 {_humanize_tokens(output_t)}")
+        if isinstance(cache_read, int) and cache_read > 0:
+            parts.append(f"💾 {_humanize_tokens(cache_read)}")
+        if isinstance(cache_create, int) and cache_create > 0:
+            parts.append(f"✨ {_humanize_tokens(cache_create)}")
     if isinstance(duration_ms, int) and duration_ms > 0:
         parts.append(f"⏱ {_humanize_duration_ms(duration_ms)}")
     return " · ".join(parts)
