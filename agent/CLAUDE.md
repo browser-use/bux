@@ -32,10 +32,10 @@ Two patterns to keep the lane responsive:
 
 1. **In-process delegation** (sub-tasks under ~60s): spawn a sub-agent via the `Agent` tool, with `run_in_background: true` when the work is independent. Brief it like a colleague: file paths, line numbers, what you've tried, what success looks like, what to return. Run multiple sub-agents in parallel when independent.
 
-2. **OS-level backgrounding (worker-self-notify)** for tasks that genuinely take minutes: detach a fresh `claude -p` and pipe its output to `tg-send`, then return immediately so the user can keep texting. The `tg-send` helper inherits `TG_THREAD_ID` from your env, so the result lands in the **same forum topic** the user asked from, not the chat root:
+2. **OS-level backgrounding (worker-self-notify)** for tasks that genuinely take minutes: detach a fresh `claude -p` and pipe its output to `tg-send`, then return immediately so the user can keep texting. The `tg-send` helper inherits `TG_THREAD_ID` from your env, so the result lands in the **same forum topic** the user asked from, not the chat root. Pass `--dangerously-skip-permissions` so the backgrounded agent doesn't stall on approval prompts:
 
    ```bash
-   nohup bash -c 'claude -p "deep-research X and summarize" | tg-send' >/dev/null 2>&1 &
+   nohup bash -c 'claude --dangerously-skip-permissions -p "deep-research X and summarize" | tg-send' >/dev/null 2>&1 &
    ```
 
    Tell the user what you kicked off (one short line) and return. They keep texting; the background worker pings back when done. This is the only way to give the user the "main agent stays available while sub-agents run" experience — you literally have to fork-and-detach because your own `claude -p` process exits when this turn ends.
@@ -241,21 +241,21 @@ echo 'tg-send "Reminder: take your meds"' | at now + 5 minutes
 
 `at` runs the body as a shell script when the timer fires, so the body needs to *call* tg-send (not be piped *to* it). To list pending: `atq`. To cancel: `atrm <jobid>`.
 
-For things that need claude itself to do work at fire time, wrap a `claude -p` call and pipe its output:
+For things that need claude itself to do work at fire time, wrap a `claude -p` call and pipe its output. Pass `--dangerously-skip-permissions` so the inner agent doesn't stall on approval prompts (no one's there to answer them; the prompt surfaces in TG as `Sent (pending your approval)`):
 
 ```bash
-echo 'claude -p "summarize my unread email" | tg-send' | at 9am
+echo 'claude --dangerously-skip-permissions -p "summarize my unread email" | tg-send' | at 9am
 ```
 
 (The outer `echo … | at …` is what schedules the job. Inside the job, `claude -p` produces output that gets piped to `tg-send`.)
 
 ### Recurring schedules (`cron`)
 
-Add to bux's crontab via `crontab -e`. Standard 5-field format. Always pipe to `tg-send` so the user actually sees the result.
+Add to bux's crontab via `crontab -e`. Standard 5-field format. Pipe to `tg-send` so the user sees the result, and pass `--dangerously-skip-permissions` (same reason as `at`).
 
 ```cron
 # Every weekday at 8 UTC, summarize unread email and ping the user
-0 8 * * 1-5  claude -p "summarize my unread email in 5 bullets" | tg-send
+0 8 * * 1-5  claude --dangerously-skip-permissions -p "summarize my unread email in 5 bullets" | tg-send
 ```
 
 Avoid spamming — daily reminders are usually fine, sub-hourly probably isn't unless the user explicitly asked.
@@ -300,24 +300,24 @@ That re-runs the setup script which: `git pull`s, re-applies systemd units / cro
 
 ### Propose changes back to the project
 
-If you find a bug or want to add a feature, you can PR upstream. The `gh` CLI is preinstalled. Suggested flow:
+If you find a bug or want to add a feature, you can PR upstream. The `gh` CLI is preinstalled. Prefer a worktree over editing `/opt/bux/repo` directly — sibling lanes may be mid-branch in the shared checkout, and a `git checkout` from your lane will yank the rug. Suggested flow:
 
 ```bash
-cd /opt/bux/repo
-git checkout -b fix-<short-description>
-# edit agent/<file>.py
-git add -A
-git commit -m "fix: <short message>"
-gh pr create --title "..." --body "..."
+git -C /opt/bux/repo fetch origin
+git -C /opt/bux/repo worktree add -b fix-<short-description> /tmp/bux-<short> origin/main
+cd /tmp/bux-<short>
+# edit, commit, gh pr create
+git -C /opt/bux/repo worktree remove /tmp/bux-<short>   # when merged
 ```
 
-Then tell the user the PR number so they can review and merge. Once merged, `/update` (or sudo bootstrap.sh) pulls the merged change onto this box.
+Tell the user the PR number so they can review and merge. Once merged, `/update` (or sudo bootstrap.sh) pulls the change onto this box.
 
 ## Conventions on this box
 
 - **Working directory**: default is `/home/bux`. Keep task artifacts here.
 - **Shared notebook**: `/home/bux/notebook.md` is a scratch file for cross-task continuity. Read it at the start of a task, append useful findings at the end.
 - **Prefer browser-harness over calling HTTP APIs directly** when the user asks about a website. Sessions persist logins; HTTP calls don't.
+- **Prefer a git worktree for local repo edits** so parallel lanes don't clobber each other's HEAD: `git -C <repo> worktree add -b <branch> /tmp/<slug> origin/main`, then `worktree remove` when done.
 - **Keep the box tidy**: avoid installing global npm / apt packages unless necessary. A small, boring box is easier to reason about.
 
 ## Don't do
