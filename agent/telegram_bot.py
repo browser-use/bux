@@ -261,13 +261,28 @@ def _render_expandable_blockquote(text: str) -> str:
 _STEP_SEPARATOR = "\n---------------\n"
 
 
-def _render_collapsed_steps(parts: list[str], total: int, max_body: int) -> str:
-    """Render `parts` as one expandable blockquote with a step-count header.
+def _build_header(total: int, shown: int, sub_agents: int) -> str:
+    """Compose the first (collapsed-visible) line of the blockquote.
 
-    The first line is `📝 N steps`, where N is `total` — the count of all
-    blocks the agent has emitted so far for this view, even if some have
-    been trimmed to fit. When trimming kicks in we extend the header to
-    `📝 N steps (last K shown)` so the count remains honest.
+    `📝 N steps` always. When trimming kicks in we extend with
+    `(last K shown)` so the count remains honest about what's actually
+    rendered. When sub-agents have been spawned we append
+    ` · 🤖 +M sub-agents`. The indicator is omitted entirely when
+    sub_agents == 0 so quiet turns stay quiet.
+    """
+    if shown < total:
+        head = f"📝 {total} steps (last {shown} shown)"
+    else:
+        head = f"📝 {total} step" + ("s" if total != 1 else "")
+    if sub_agents > 0:
+        head += f" · 🤖 +{sub_agents} sub-agent" + ("s" if sub_agents != 1 else "")
+    return head
+
+
+def _render_collapsed_steps(
+    parts: list[str], total: int, max_body: int, sub_agents: int = 0
+) -> str:
+    """Render `parts` as one expandable blockquote with a step-count header.
 
     Returns "" for empty input. Trims OLDEST blocks until the rendered
     body fits under `max_body`; keeps at least the most recent one so
@@ -277,34 +292,32 @@ def _render_collapsed_steps(parts: list[str], total: int, max_body: int) -> str:
         return ""
     work = list(parts)
     while True:
-        if len(work) < total:
-            header = f"📝 {total} steps (last {len(work)} shown)"
-        else:
-            header = f"📝 {total} step" + ("s" if total != 1 else "")
-        body = header + "\n" + _STEP_SEPARATOR.join(work)
+        body = _build_header(total, len(work), sub_agents) + "\n" + _STEP_SEPARATOR.join(work)
         out = _render_expandable_blockquote(body)
         if len(out) <= max_body or len(work) <= 1:
             return out
         work = work[1:]
 
 
-def _render_streaming_view(blocks: list[str], max_body: int) -> str:
+def _render_streaming_view(blocks: list[str], max_body: int, sub_agents: int = 0) -> str:
     """Render every assistant text block as one collapsed blockquote.
 
     Used while the agent is still emitting — keeps the bubble compact on
-    a chatty turn. The collapsed first line shows `📝 N steps` so the
-    user sees progress without expanding. Surviving blocks are separated
-    by a `---------------` divider when expanded.
+    a chatty turn. The collapsed first line shows `📝 N steps` (plus a
+    `🤖 +M sub-agents` suffix when applicable) so the user sees progress
+    without expanding. Surviving blocks are separated by a
+    `---------------` divider when expanded.
     """
     parts = [b.strip() for b in blocks if b and b.strip()]
     if not parts:
         return ""
-    return _render_collapsed_steps(parts, len(parts), max_body)
+    return _render_collapsed_steps(parts, len(parts), max_body, sub_agents=sub_agents)
 
 
-def _render_final_view(blocks: list[str], max_body: int) -> str:
+def _render_final_view(blocks: list[str], max_body: int, sub_agents: int = 0) -> str:
     """Render the final-turn view: collapsed thinking trace ON TOP with a
-    step-count header, final answer prominent BELOW.
+    step-count header (plus `🤖 +M sub-agents` when applicable), final
+    answer prominent BELOW.
 
     Heuristic: the last text block claude emitted is the answer; anything
     before it was thinking/narration. If there's only one block, no
@@ -320,7 +333,7 @@ def _render_final_view(blocks: list[str], max_body: int) -> str:
         return final_md
     # Reserve space for the final answer + the join's "\n\n".
     steps_max = max(max_body - len(final_md) - 2, 200)
-    steps_md = _render_collapsed_steps(steps, len(steps), steps_max)
+    steps_md = _render_collapsed_steps(steps, len(steps), steps_max, sub_agents=sub_agents)
     if not steps_md:
         return final_md
     return steps_md + "\n\n" + final_md
@@ -1429,6 +1442,35 @@ class StreamingMessage:
         # when nothing has changed (avoids "message is not modified" 400s).
         self._last_emitted = ""
         self._last_edit_at = 0.0
+        # Distinct parent_tool_use_ids seen for this turn → sub-agent count
+        # in the header. Set so we only count each sub-agent once even
+        # though it emits many events.
+        self._sub_agent_ids: set[str] = set()
+
+    def note_sub_agent(self, parent_tool_use_id: str) -> None:
+        """Record a sub-agent event. If this is a new parent_tool_use_id
+        the count grows and we force a rerender (debounced) so the
+        `🤖 +N sub-agents` indicator appears in the header. No-op for
+        ids we've already counted, so the chatty stream of sub-agent
+        events doesn't beat the rate-limiter."""
+        if not parent_tool_use_id or parent_tool_use_id in self._sub_agent_ids:
+            return
+        self._sub_agent_ids.add(parent_tool_use_id)
+        self._rerender_streaming()
+
+    def _rerender_streaming(self) -> None:
+        """Re-emit the streaming view. Used when the header changes for
+        a reason other than a new text block (e.g. a sub-agent showed
+        up). Honors the debounce; the next normal append / finalize
+        will catch up if we skip here."""
+        if self._message_id is None or time.time() - self._last_edit_at < self._DEBOUNCE_SEC:
+            return
+        rendered = _render_streaming_view(
+            self._blocks, self._MAX_BODY, sub_agents=len(self._sub_agent_ids)
+        )
+        if not rendered:
+            return
+        self._edit(rendered)
 
     def start(self) -> None:
         """Send a `🤔` placeholder bubble immediately, before any text
@@ -1453,7 +1495,9 @@ class StreamingMessage:
         if not chunk:
             return
         self._blocks.append(chunk)
-        rendered = _render_streaming_view(self._blocks, self._MAX_BODY)
+        rendered = _render_streaming_view(
+            self._blocks, self._MAX_BODY, sub_agents=len(self._sub_agent_ids)
+        )
         if not rendered:
             return
         if self._message_id is None:
@@ -1472,7 +1516,9 @@ class StreamingMessage:
         """
         if not self._blocks:
             return
-        rendered = _render_final_view(self._blocks, self._MAX_BODY)
+        rendered = _render_final_view(
+            self._blocks, self._MAX_BODY, sub_agents=len(self._sub_agent_ids)
+        )
         if not rendered:
             return
         if self._message_id is None:
@@ -1943,9 +1989,17 @@ class Bot:
                     except Exception:
                         continue
                     et = ev.get("type")
-                    # Only forward parent-turn assistant events. Sub-agent
-                    # internals carry parent_tool_use_id and stay hidden.
-                    if et == "assistant" and not ev.get("parent_tool_use_id"):
+                    parent_id = ev.get("parent_tool_use_id")
+                    # Sub-agent internals don't show their text in the
+                    # bubble, but we count distinct parent_tool_use_ids so
+                    # the header can show `🤖 +N sub-agents`. Anything
+                    # beyond `assistant` carrying that id (tool_result,
+                    # user, system) still represents the sub-agent doing
+                    # something, so we count those too.
+                    if parent_id:
+                        stream_msg.note_sub_agent(parent_id)
+                        continue
+                    if et == "assistant":
                         content = (ev.get("message") or {}).get("content") or []
                         for block in content:
                             if not (isinstance(block, dict) and block.get("type") == "text"):
