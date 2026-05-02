@@ -195,7 +195,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("queue", "pending tasks in this topic"),
     ("cancel", "kill the running task + drop pending"),
     ("schedules", "list reminders / cron jobs"),
-    ("login", "auth status / connect a service (e.g. /login gh)"),
+    ("login", "auth status / connect a service (github/claude/codex)"),
     ("logout", "disconnect a service (e.g. /logout gh)"),
     ("invite", "mint a token to authorize a second chat"),
     ("whoami", "your TG identity + this lane's agent"),
@@ -1425,6 +1425,8 @@ class ShellSession:
         initial_cmd: str | None = None,
         reply_to: int | None = None,
         auto_enter_after_input_sec: float | None = None,
+        close_on_success_patterns: tuple[str, ...] = (),
+        success_message: str | None = None,
     ) -> None:
         self.bot = bot
         self.chat_id = chat_id
@@ -1433,6 +1435,8 @@ class ShellSession:
         self.initial_cmd = initial_cmd
         self.reply_to = reply_to
         self.auto_enter_after_input_sec = auto_enter_after_input_sec
+        self.close_on_success_patterns = tuple(p.lower() for p in close_on_success_patterns)
+        self.success_message = success_message
         self.master_fd: int | None = None
         self.process: subprocess.Popen | None = None
         self._buffer = bytearray()
@@ -1444,6 +1448,7 @@ class ShellSession:
         self._reader_thread: threading.Thread | None = None
         self._flusher_thread: threading.Thread | None = None
         self._announced_urls: set[str] = set()
+        self._success_close_started = False
 
     # -- spawn ---------------------------------------------------------------
 
@@ -1691,8 +1696,9 @@ class ShellSession:
                 continue
             self.bot.send(
                 self.chat_id,
-                f"Open:\n{url}",
+                url,
                 thread_id=self.thread_id,
+                reply_markup=_url_reply_markup(url),
             )
         # Split into chunks that fit a TG message; each goes as its own
         # monospace bubble. Leaves a margin for the ``` fences. Escape
@@ -1706,6 +1712,27 @@ class ShellSession:
                 thread_id=self.thread_id,
                 pre_rendered=True,
             )
+        self._maybe_close_after_success(text)
+
+    def _maybe_close_after_success(self, text: str) -> None:
+        if self._success_close_started or not self.close_on_success_patterns:
+            return
+        low = text.lower()
+        if not any(p in low for p in self.close_on_success_patterns):
+            return
+        self._success_close_started = True
+        if self.success_message:
+            self.bot.send(
+                self.chat_id,
+                self.success_message,
+                thread_id=self.thread_id,
+                markdown=True,
+            )
+        if self.master_fd is not None:
+            try:
+                os.write(self.master_fd, b"exit\n")
+            except OSError:
+                self.kill(reason="login-success")
 
     def _teardown(self) -> None:
         # Idempotent — both reader EOF and kill() can land here.
@@ -2170,6 +2197,15 @@ def _codex_login_reply_markup(url: str, code: str) -> dict:
     }
 
 
+def _url_reply_markup(url: str) -> dict:
+    return {
+        "inline_keyboard": [
+            [{"text": "Open", "url": url}],
+            [{"text": "Copy link", "copy_text": {"text": url}}],
+        ]
+    }
+
+
 def _is_codex_auth_error(text: str) -> bool:
     low = (text or "").lower()
     return (
@@ -2178,8 +2214,63 @@ def _is_codex_auth_error(text: str) -> bool:
         or ("not logged in" in low and "codex login" in low)
     )
 
+
+def _is_claude_auth_error(text: str) -> bool:
+    low = (text or "").lower()
+    return (
+        "not logged in" in low
+        or "please run" in low and "claude" in low and "login" in low
+        or "claude auth login" in low
+    )
+
+
+def _normalize_login_provider_name(name: str) -> str:
+    name = name.strip().lower()
+    aliases = {
+        "github": "gh",
+        "git": "gh",
+        "openai": "codex",
+        "claude-code": "claude",
+    }
+    return aliases.get(name, name)
+
+
+def _claude_login_status() -> tuple[bool, str]:
+    try:
+        r = subprocess.run(
+            ["sudo", "-iu", "bux", "claude", "auth", "status"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except FileNotFoundError:
+        return False, "claude CLI not installed"
+    except subprocess.TimeoutExpired:
+        return False, "claude auth status timed out"
+    out = _ANSI_RE.sub("", (r.stdout + r.stderr)).strip()
+    try:
+        data = json.loads(out)
+    except Exception:
+        data = None
+    if r.returncode == 0 and isinstance(data, dict) and data.get("loggedIn") is True:
+        email = data.get("email")
+        method = data.get("authMethod")
+        detail = "logged in"
+        if email:
+            detail += f" as {email}"
+        if method:
+            detail += f" ({method})"
+        return True, detail
+    if r.returncode == 0 and "logged" in out.lower():
+        return True, out
+    if "command not found" in out.lower():
+        return False, "claude CLI not installed"
+    return False, out or "not logged in"
+
 AUTH_PROVIDERS: dict[str, object] = {
     "gh": _GhProvider(),
+    "codex": CODEX_AUTH_PROVIDER,
     # Future: 'vercel': _VercelProvider(), 'npm': _NpmProvider(), etc.
 }
 
@@ -2964,6 +3055,23 @@ class Bot:
                     out = (fb.stdout or "").strip()
                     if not out:
                         out = (fb.stderr or "").strip() or f"(no output; rc={fb.returncode})"
+                    if _is_claude_auth_error(out):
+                        self.send(
+                            chat_id,
+                            "Claude is not logged in. Starting `/login claude` now.",
+                            reply_to=reply_to,
+                            thread_id=thread_id,
+                            markdown=True,
+                        )
+                        self._cmd_claude_login(
+                            chat_id,
+                            reply_to,
+                            thread_id,
+                            slug,
+                            sender or {},
+                            _owner_for(chat_id, self.state),
+                        )
+                        return
                     self.send(
                         chat_id,
                         out,
@@ -3793,8 +3901,8 @@ class Bot:
                 "/cancel <id> — cancel one task (running or queued)\n"
                 "/compact — summarize this topic's claude session to free up context\n"
                 "/schedules — list reminders / cron jobs\n"
-                "/login — auth status / connect a service (e.g. /login gh)\n"
-                "/logout — disconnect a service (e.g. /logout gh)\n"
+                "/login — auth status / connect a service (e.g. /login github, /login claude, /login codex)\n"
+                "/logout — disconnect a service (e.g. /logout github, /logout claude, /logout codex)\n"
                 "/version — show the bux agent version\n"
                 "/update — pull latest code + restart (or /update <branch>)",
                 reply_to=mid,
@@ -3871,10 +3979,10 @@ class Bot:
             self._cmd_update(chat_id, mid, thread_id, arg)
             return
         if cmd == "/login":
-            self._cmd_login(chat_id, mid, thread_id, arg)
+            self._cmd_login(chat_id, mid, thread_id, arg, slug=slug, sender=sender, owner=owner)
             return
         if cmd == "/logout":
-            self._cmd_logout(chat_id, mid, thread_id, arg)
+            self._cmd_logout(chat_id, mid, thread_id, arg, sender=sender, owner=owner)
             return
         if cmd == "/compact":
             # Forward to claude as a slash command. `claude -p "/compact"`
@@ -4490,6 +4598,9 @@ class Bot:
         reply_to: int | None,
         thread_id: int,
         arg: str,
+        slug: str | None = None,
+        sender: dict | None = None,
+        owner: dict | None = None,
     ) -> None:
         """`/login` — list providers + status. `/login <name>` — start flow.
 
@@ -4499,7 +4610,7 @@ class Bot:
         send progress messages from the worker thread, all routed back
         into the same forum topic via thread_id.
         """
-        name = arg.strip().lower()
+        name = _normalize_login_provider_name(arg)
         if not name:
             # List status of every registered provider.
             lines = ["*Auth status:*"]
@@ -4507,9 +4618,11 @@ class Bot:
                 connected, status = prov.check()
                 icon = "✓" if connected else "·"
                 lines.append(f"{icon} `{pname}` — {status}")
+            connected, status = _claude_login_status()
+            icon = "✓" if connected else "·"
+            lines.append(f"{icon} `claude` — {status}")
             lines.append("")
-            lines.append("Use `/login <name>` to connect (e.g. `/login gh`).")
-            lines.append("Codex: `/codex login`. Claude: `/claude login`.")
+            lines.append("Use `/login <service>` to connect, e.g. `/login github`, `/login claude`, or `/login codex`.")
             self.send(
                 chat_id,
                 "\n".join(lines),
@@ -4518,9 +4631,21 @@ class Bot:
                 markdown=True,
             )
             return
+        if name == "claude":
+            if slug is None or sender is None:
+                self.send(
+                    chat_id,
+                    "❌ `/login claude` is only available from Telegram.",
+                    reply_to=reply_to,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
+            self._cmd_claude_login(chat_id, reply_to, thread_id, slug, sender, owner)
+            return
         prov = AUTH_PROVIDERS.get(name)
         if prov is None:
-            known = ", ".join(AUTH_PROVIDERS.keys()) or "(none)"
+            known = ", ".join([*AUTH_PROVIDERS.keys(), "claude"]) or "(none)"
             self.send(
                 chat_id,
                 f"Unknown provider `{name}`. Known: {known}.",
@@ -4634,6 +4759,15 @@ class Bot:
                 initial_cmd="claude auth login",
                 reply_to=reply_to,
                 auto_enter_after_input_sec=2.0,
+                close_on_success_patterns=(
+                    "login successful",
+                    "successfully logged in",
+                    "authenticated",
+                ),
+                success_message=(
+                    "✓ Claude login successful. Terminal closed; agent is ready. "
+                    "Send `hi` to start."
+                ),
             )
             sess.start()
         except Exception as e:
@@ -4744,17 +4878,22 @@ class Bot:
         reply_to: int | None,
         thread_id: int,
         arg: str,
+        sender: dict | None = None,
+        owner: dict | None = None,
     ) -> None:
         """`/logout` — list providers + status. `/logout <name>` — disconnect."""
-        name = arg.strip().lower()
+        name = _normalize_login_provider_name(arg)
         if not name:
             # Same listing as /login (helps the user see what's currently
             # logged in without remembering which command they want).
             self._cmd_login(chat_id, reply_to, thread_id, "")
             return
+        if name == "claude":
+            self._cmd_claude_logout(chat_id, reply_to, thread_id, sender or {}, owner)
+            return
         prov = AUTH_PROVIDERS.get(name)
         if prov is None:
-            known = ", ".join(AUTH_PROVIDERS.keys()) or "(none)"
+            known = ", ".join([*AUTH_PROVIDERS.keys(), "claude"]) or "(none)"
             self.send(
                 chat_id,
                 f"Unknown provider `{name}`. Known: {known}.",
