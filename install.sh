@@ -462,6 +462,14 @@ curl -fsS -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
 TGSEND
 chmod 755 /usr/local/bin/tg-send
 
+# --- tg-approve: bridge claude/codex permission prompts to TG --------------
+# Hook script invoked by claude (PreToolUse) / codex (PermissionRequest).
+# Posts a "[Allow] [Deny]" inline-keyboard message in the same lane and
+# blocks until the user taps. Bot side handles the callback_query and
+# writes the decision into /tmp/tg-approvals/<id>.json which this script
+# polls. Source-controlled as agent/tg-approve.py for readability.
+install -m 0755 "$REPO_DIR/agent/tg-approve.py" /usr/local/bin/tg-approve
+
 # --- pre-seed ~/.claude.json so first `claude` run skips dialogs -----------
 if [ ! -f /home/bux/.claude.json ]; then
 	sudo -u bux -H bash -c 'cat > /home/bux/.claude.json' <<'JSON'
