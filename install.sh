@@ -268,7 +268,12 @@ if [ ! -d /opt/bux/venv ]; then
 	sudo -u bux python3 -m venv /opt/bux/venv
 fi
 sudo -u bux /opt/bux/venv/bin/pip install --quiet --upgrade pip
-sudo -u bux /opt/bux/venv/bin/pip install --quiet -r "$REPO_DIR/agent/requirements.txt"
+# First-install baseline. Bootstrap.sh later does the canonical pin-locked
+# install via `-r requirements.txt` against the bux-owned repo path; this
+# line just gets the agent runnable on a fresh box. (We can't `-r` the
+# checkout from here because it may live under /home/runner/... in CI,
+# which mode 750 prevents the bux user from reading.)
+sudo -u bux /opt/bux/venv/bin/pip install --quiet websockets httpx composio
 
 # --- browser-harness-js skill ---------------------------------------------
 if [ ! -d /home/bux/.claude/skills/cdp ]; then
