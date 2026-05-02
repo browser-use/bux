@@ -88,6 +88,51 @@ REPLY_MAX = 3500  # TG's hard cap is 4096; keep headroom for reply trailers.
 # returns ok but the subsequent download URL 404s past that. Bail early.
 TG_MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
 
+# Telegram delivers chat-lifecycle events (topic created, member joined,
+# title changed, …) as regular Message updates with one of these payload
+# fields set and no text/caption. They carry no user intent, so we drop
+# them silently — otherwise creating a forum topic always bounces a
+# "don't know how to handle that" reply at the user.
+_SERVICE_MESSAGE_FIELDS = frozenset({
+    "forum_topic_created",
+    "forum_topic_edited",
+    "forum_topic_closed",
+    "forum_topic_reopened",
+    "general_forum_topic_hidden",
+    "general_forum_topic_unhidden",
+    "new_chat_members",
+    "left_chat_member",
+    "new_chat_title",
+    "new_chat_photo",
+    "delete_chat_photo",
+    "group_chat_created",
+    "supergroup_chat_created",
+    "channel_chat_created",
+    "message_auto_delete_timer_changed",
+    "migrate_to_chat_id",
+    "migrate_from_chat_id",
+    "pinned_message",
+    "users_shared",
+    "chat_shared",
+    "write_access_allowed",
+    "proximity_alert_triggered",
+    "boost_added",
+    "chat_background_set",
+    "video_chat_scheduled",
+    "video_chat_started",
+    "video_chat_ended",
+    "video_chat_participants_invited",
+    "giveaway_created",
+    "giveaway",
+    "giveaway_winners",
+    "giveaway_completed",
+    "web_app_data",
+    "successful_payment",
+    "refunded_payment",
+    "connected_website",
+    "passport_data",
+})
+
 # Reaction emojis on the user's message. Telegram's free-tier reaction
 # allowlist excludes ⏳/✅/⚠️/❌ — these are verified-allowed picks.
 EMOJI_WORKING = "🤔"
@@ -2011,6 +2056,11 @@ class Bot:
 
     def handle(self, msg: dict) -> None:
         chat_id = msg["chat"]["id"]
+        # Skip chat-lifecycle service messages (topic created, member joined,
+        # title changed, …). They have no user intent and shouldn't bounce a
+        # reply or auto-bind an unbound chat.
+        if any(k in msg for k in _SERVICE_MESSAGE_FIELDS):
+            return
         thread_id_raw = msg.get("message_thread_id")
         thread_id = thread_id_raw if isinstance(thread_id_raw, int) else 0
 
