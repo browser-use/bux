@@ -108,7 +108,8 @@ else
   # token to /var/log/bux/install.log or the user-data console log).
   ( set +x; sudo -u bux -H claude mcp add --transport http composio \
     https://api.browser-use.com/cloud/composio/mcp \
-    --header "Authorization: Bearer $BUX_BOX_TOKEN" >/dev/null )
+    --header "Authorization: Bearer $BUX_BOX_TOKEN" >/dev/null ) || \
+    echo "bootstrap: WARN failed to register cloud Composio MCP server; continuing bootstrap" >&2
   # Verify the registration actually wrote a usable entry. A silent
   # failure here means the user doesn't get cloud integrations until
   # their next /update — this fail-loud check turns that into a
