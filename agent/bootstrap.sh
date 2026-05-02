@@ -72,6 +72,55 @@ if [ -d "$HARNESS_DIR/.git" ]; then
   fi
 fi
 
+# --- Cloud Composio MCP server (cloud-side proxy) -------------------------
+# Why MCP at all: cloud holds the platform's Composio API key plus every
+# integration the user OAuth'd via cloud.browser-use.com. Rather than
+# duplicating that ceremony on each box (Composio key, per-toolkit auth
+# configs, OAuth callbacks, refresh-token storage), we point Claude Code
+# at a cloud-hosted MCP endpoint that proxies tool calls through with the
+# box's project_id as the Composio entity_id. Net effect: any toolkit the
+# user has connected on cloud (Gmail, Calendar, Slack, …) is automatically
+# available to the box agent as native tools — zero per-box setup.
+#
+# Token rotation: BUX_BOX_TOKEN gets baked into ~/.claude.json by
+# `claude mcp add` at registration time. If the cloud rotates the token,
+# the next /update re-runs this section, which removes + re-adds the MCP
+# server with the fresh token. Manual rotation: re-run bootstrap.sh.
+#
+# To disable: as the bux user, `claude mcp remove composio`. The next
+# /update will re-add it unless this section is removed too.
+if [ -f /etc/bux/env ]; then
+  # shellcheck disable=SC1091
+  . /etc/bux/env || true
+fi
+if [ -z "${BUX_BOX_TOKEN:-}" ]; then
+  echo "bootstrap: BUX_BOX_TOKEN not set; skipping cloud Composio MCP registration" >&2
+elif ! command -v claude >/dev/null 2>&1; then
+  echo "bootstrap: claude CLI not on PATH; skipping cloud Composio MCP registration" >&2
+else
+  # Idempotent: remove any prior entry (ignore failure if it didn't exist),
+  # then re-add against the current token. -H so HOME resolves to /home/bux
+  # and the registration lands in bux's ~/.claude.json, not root's.
+  sudo -u bux -H claude mcp remove composio >/dev/null 2>&1 || true
+  # Subshell with `set +x` so the bearer token never lands in trace output
+  # (currently bootstrap is set -euo pipefail without -x, but if anyone
+  # turns on tracing for debugging they shouldn't accidentally leak the
+  # token to /var/log/bux/install.log or the user-data console log).
+  ( set +x; sudo -u bux -H claude mcp add --transport http composio \
+    https://api.browser-use.com/cloud/composio/mcp \
+    --header "Authorization: Bearer $BUX_BOX_TOKEN" >/dev/null ) || \
+    echo "bootstrap: WARN failed to register cloud Composio MCP server; continuing bootstrap" >&2
+  # Verify the registration actually wrote a usable entry. A silent
+  # failure here means the user doesn't get cloud integrations until
+  # their next /update — this fail-loud check turns that into a
+  # bootstrap-time error we'll see in install.log instead.
+  if ! sudo -u bux -H claude mcp list 2>/dev/null | grep -q '^composio'; then
+    echo "bootstrap: WARN composio MCP registration didn't take" >&2
+  else
+    echo "bootstrap: registered cloud Composio MCP server"
+  fi
+fi
+
 # --- login banner: live browser URL on each ssh login ---------------------
 if ! grep -q 'BU_BROWSER_LIVE_URL' /home/bux/.profile 2>/dev/null; then
   cat >> /home/bux/.profile <<'PROFILE'
