@@ -314,15 +314,59 @@ def _render_streaming_view(blocks: list[str], max_body: int, sub_agents: int = 0
     return _render_collapsed_steps(parts, len(parts), max_body, sub_agents=sub_agents)
 
 
-def _render_final_view(blocks: list[str], max_body: int, sub_agents: int = 0) -> str:
+def _humanize_tokens(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}k"
+    return str(n)
+
+
+def _humanize_duration_ms(ms: int) -> str:
+    s = ms / 1000
+    if s < 60:
+        return f"{s:.1f}s"
+    m = s / 60
+    if m < 60:
+        return f"{m:.1f}m"
+    return f"{m / 60:.1f}h"
+
+
+def _format_final_footer(usage: dict | None, duration_ms: int | None) -> str:
+    """Build the `🪙 X tokens · ⏱ Ys` line that goes under the final
+    answer. Returns "" if neither piece is available so the caller can
+    skip the join. Output is already MDV2-escaped."""
+    parts: list[str] = []
+    if isinstance(usage, dict):
+        # Sum every int field in `usage` — input, output, cache_creation,
+        # cache_read — to give a single "this turn touched X tokens"
+        # number. Claude may add new int fields here over time; summing
+        # everything int-shaped keeps us forward-compatible.
+        total = sum(v for v in usage.values() if isinstance(v, int))
+        if total > 0:
+            parts.append(f"🪙 {_humanize_tokens(total)} tokens")
+    if isinstance(duration_ms, int) and duration_ms > 0:
+        parts.append(f"⏱ {_humanize_duration_ms(duration_ms)}")
+    if not parts:
+        return ""
+    return _escape_mdv2_plain(" · ".join(parts))
+
+
+def _render_final_view(
+    blocks: list[str],
+    max_body: int,
+    sub_agents: int = 0,
+    usage: dict | None = None,
+    duration_ms: int | None = None,
+) -> str:
     """Render the final-turn view: collapsed thinking trace ON TOP with a
     step-count header (plus `🤖 +M sub-agents` when applicable), final
-    answer prominent BELOW.
+    answer in the middle, and a `🪙 X tokens · ⏱ Ys` footer at the bottom
+    when the turn actually had thinking steps.
 
     Heuristic: the last text block claude emitted is the answer; anything
-    before it was thinking/narration. If there's only one block, no
-    blockquote — just the answer. The collapsed-steps count reflects
-    only the thinking blocks, not the answer.
+    before it was thinking/narration. If there's only one block (a
+    one-shot reply), no blockquote and no footer — just the answer.
     """
     parts = [b.strip() for b in blocks if b and b.strip()]
     if not parts:
@@ -330,13 +374,20 @@ def _render_final_view(blocks: list[str], max_body: int, sub_agents: int = 0) ->
     final_md = _to_tg_markdown_v2(parts[-1])
     steps = parts[:-1]
     if not steps:
+        # One-shot turn: skip the footer entirely. The user asked for
+        # tokens/duration only when "there were some thinking steps so
+        # it took a little bit longer."
         return final_md
-    # Reserve space for the final answer + the join's "\n\n".
-    steps_max = max(max_body - len(final_md) - 2, 200)
+    footer = _format_final_footer(usage, duration_ms)
+    # Reserve space for the final answer, the join's "\n\n", and the
+    # footer + its leading "\n\n" (if present).
+    footer_reserve = (len(footer) + 2) if footer else 0
+    steps_max = max(max_body - len(final_md) - 2 - footer_reserve, 200)
     steps_md = _render_collapsed_steps(steps, len(steps), steps_max, sub_agents=sub_agents)
-    if not steps_md:
-        return final_md
-    return steps_md + "\n\n" + final_md
+    body = steps_md + "\n\n" + final_md if steps_md else final_md
+    if footer:
+        body = body + "\n\n" + footer
+    return body
 
 
 def _chunk_for_telegram(text: str, max_len: int) -> list[str]:
@@ -1507,17 +1558,27 @@ class StreamingMessage:
             return
         self._edit(rendered)
 
-    def finalize(self) -> None:
+    def finalize(
+        self,
+        usage: dict | None = None,
+        duration_ms: int | None = None,
+    ) -> None:
         """Flip to the final view and force an edit, ignoring the debounce.
 
         Called once per turn on claude's `result` event. The last block
         is lifted out of the blockquote as the prominent answer; earlier
-        blocks stay folded underneath.
+        blocks stay folded underneath. When `usage` / `duration_ms` are
+        provided AND the turn actually had thinking steps, a footer line
+        with `🪙 X tokens · ⏱ Ys` is appended below the answer.
         """
         if not self._blocks:
             return
         rendered = _render_final_view(
-            self._blocks, self._MAX_BODY, sub_agents=len(self._sub_agent_ids)
+            self._blocks,
+            self._MAX_BODY,
+            sub_agents=len(self._sub_agent_ids),
+            usage=usage,
+            duration_ms=duration_ms,
         )
         if not rendered:
             return
@@ -2014,7 +2075,13 @@ class Bot:
                     elif et == "result":
                         # Turn complete; flip to the final view (last block
                         # prominent, earlier blocks collapsed underneath).
-                        stream_msg.finalize()
+                        # Pull token usage + duration from the result so
+                        # the footer can show `🪙 X tokens · ⏱ Ys`.
+                        usage = ev.get("usage") if isinstance(ev.get("usage"), dict) else None
+                        duration_ms = ev.get("duration_ms")
+                        if not isinstance(duration_ms, int):
+                            duration_ms = None
+                        stream_msg.finalize(usage=usage, duration_ms=duration_ms)
                         break
             except Exception:
                 LOG.exception("stream-json loop failed; falling back to plain run")
