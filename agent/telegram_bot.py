@@ -258,7 +258,7 @@ def _render_expandable_blockquote(text: str) -> str:
     return "\n".join(out)
 
 
-_STEP_SEPARATOR = "\n\n-------\n\n"
+_STEP_SEPARATOR = "\n---------------\n"
 
 
 def _render_streaming_view(blocks: list[str]) -> str:
@@ -2598,10 +2598,9 @@ class Bot:
         if depth > 1:
             self.send(
                 chat_id,
-                f"🧠 queued (#{depth}) — id `{job['id']}`",
+                f"🧠 queued (#{depth})",
                 reply_to=mid,
                 thread_id=thread_id,
-                markdown=True,
             )
 
     def _cmd_queue(self, slug: str, chat_id: int, reply_to: int | None, thread_id: int) -> None:
