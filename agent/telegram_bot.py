@@ -987,6 +987,20 @@ def _lanes_init() -> None:
         _save_lanes_to_disk_locked()
 
 
+def _spawn_lane_worker_locked(slug: str, run_drain) -> None:
+    """Caller holds _lanes_lock. Idempotent: no-op if a worker exists."""
+    if slug in _lane_workers:
+        return
+    t = threading.Thread(
+        target=run_drain,
+        args=(slug,),
+        name=f"lane-{slug}",
+        daemon=True,
+    )
+    _lane_workers[slug] = t
+    t.start()
+
+
 def _enqueue(slug: str, job: dict, run_drain) -> int:
     """Push job onto its lane's queue. Returns new lane depth.
     Spawns a worker if the lane has none alive (caller passes the drain fn)."""
@@ -994,16 +1008,27 @@ def _enqueue(slug: str, job: dict, run_drain) -> int:
         _lanes.setdefault(slug, []).append(job)
         _save_lanes_to_disk_locked()
         depth = len(_lanes[slug])
-        if slug not in _lane_workers:
-            t = threading.Thread(
-                target=run_drain,
-                args=(slug,),
-                name=f"lane-{slug}",
-                daemon=True,
-            )
-            _lane_workers[slug] = t
-            t.start()
+        _spawn_lane_worker_locked(slug, run_drain)
     return depth
+
+
+def _resume_pending_workers(run_drain) -> int:
+    """Spawn drain threads for every lane that already has queued work.
+
+    Called once at boot, after `_lanes_init()` rehydrates from disk. Without
+    this, leftover queued jobs from a previous run sit dormant until the
+    next user message lands in that exact lane — and that message ends up
+    queued BEHIND the resumed job, surfacing as "I sent something but the
+    bot says queued for ~1 min after every restart."
+
+    Returns the number of lanes for which a worker was spawned (purely so
+    the caller can log it).
+    """
+    with _lanes_lock:
+        slugs = [slug for slug, jobs in _lanes.items() if jobs]
+        for slug in slugs:
+            _spawn_lane_worker_locked(slug, run_drain)
+    return len(slugs)
 
 
 def _pop_next_locked(slug: str) -> dict | None:
@@ -3378,10 +3403,16 @@ def main() -> int:
     signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
 
     # Hydrate the on-disk lanes; in_flight rows from a previous crash are
-    # dropped (we can't tell if the agent finished). The bot then starts the
-    # poll loop and lazily spawns lane workers as messages arrive.
+    # dropped (we can't tell if the agent finished). Pending queued rows
+    # survive across restarts.
     _lanes_init()
     bot = Bot(token, setup_token)
+    # Resume drain workers for any lane that still has queued jobs from a
+    # previous run, so leftover work picks up immediately instead of
+    # stalling behind the next user message in that lane.
+    resumed = _resume_pending_workers(bot._lane_drain)
+    if resumed:
+        LOG.info("resumed drain workers for %d lane(s) with pending jobs", resumed)
     # Announce *before* poll_loop so the user gets the "back online" ping
     # immediately on restart, not whenever the first long-poll completes.
     _announce_online_if_new_sha(bot)
