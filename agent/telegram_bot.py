@@ -1431,7 +1431,7 @@ class StreamingMessage:
         self._last_edit_at = 0.0
 
     def start(self) -> None:
-        """Send a `...` placeholder bubble immediately, before any text
+        """Send a `🤔` placeholder bubble immediately, before any text
         has arrived. Replaces the EMOJI_WORKING reaction as the visible
         "the bot is working on this" signal — a real bubble in the chat
         is harder to miss than a reaction emoji on the user's message.
@@ -1442,7 +1442,7 @@ class StreamingMessage:
         """
         if self._message_id is not None:
             return
-        rendered = _render_expandable_blockquote("...")
+        rendered = _render_expandable_blockquote("🤔")
         if not rendered:
             return
         self._send_initial(rendered)
