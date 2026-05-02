@@ -1310,6 +1310,7 @@ def _snapshot_lane(slug: str) -> list[dict]:
 # literal `\x1b[31m` garbage on the phone screen.
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07")
 _URL_RE = re.compile(r"https?://[^\s<>()]+")
+_DEVICE_CODE_RE = re.compile(r"\b(?:[A-Z0-9]{4,}(?:-[A-Z0-9]{4,})+|[A-Z0-9]{6,12})\b")
 
 # Output buffering: flush after N bytes accumulated OR M seconds of quiet.
 # Phone-screen friendly bubble; large enough that `npm install` doesn't
@@ -1598,11 +1599,30 @@ class ShellSession:
         # Code blocks preserve terminal formatting, but Telegram may not make
         # URLs inside them tappable. Surface each new URL once as a plain
         # message so auth links from Claude/GitHub/etc. are easy to open.
+        codex_code = ""
+        codex_match = _DEVICE_CODE_RE.search(text)
+        if codex_match:
+            codex_code = codex_match.group(0)
         for match in _URL_RE.finditer(text):
             url = match.group(0).rstrip(".,;:")
             if url in self._announced_urls:
                 continue
             self._announced_urls.add(url)
+            if "auth.openai.com/codex/device" in url and codex_code:
+                self.bot.send(
+                    self.chat_id,
+                    "Open this Codex device-auth link:\n"
+                    f"{url}\n\n"
+                    "Enter this one-time code:\n"
+                    f"`{codex_code}`\n\n"
+                    "If OpenAI asks you to enable this sign-in method in "
+                    "security settings, enable it there, then press "
+                    "*Retry after enabling* below to restart the flow.",
+                    thread_id=self.thread_id,
+                    markdown=True,
+                    reply_markup=_codex_login_reply_markup(url, codex_code),
+                )
+                continue
             self.bot.send(
                 self.chat_id,
                 f"Open:\n{url}",
@@ -1897,7 +1917,7 @@ class _CodexProvider:
     name = "codex"
     label = "Codex"
     DEVICE_URL = "https://auth.openai.com/codex/device"
-    _CODE_RE = re.compile(r"\b[A-Z0-9]{4,}(?:-[A-Z0-9]{4,})+\b")
+    _CODE_RE = _DEVICE_CODE_RE
 
     def check(self) -> tuple[bool, str]:
         try:
@@ -1949,7 +1969,7 @@ class _CodexProvider:
                         break
                 low = line.lower()
                 match = self._CODE_RE.search(line)
-                if match:
+                if match and ("code" in low or "-" in match.group(0)):
                     code = match.group(0)
                 elif expect_code:
                     compact = line.replace(" ", "")
@@ -1963,7 +1983,12 @@ class _CodexProvider:
                         "Enter this one-time code:\n"
                         f"`{code}`\n\n"
                         "Only enter this code on the OpenAI auth page above. "
-                        "I'll let you know once Codex authorizes."
+                        "If OpenAI asks you to enable this sign-in method in "
+                        "security settings, enable it there, then press "
+                        "*Retry after enabling* below to restart the flow. "
+                        "I'll let you know once Codex authorizes.",
+                        url,
+                        code,
                     )
                     announced = True
         except Exception:
@@ -2067,6 +2092,25 @@ def _unset_box_env_var(key: str) -> None:
 
 
 CODEX_AUTH_PROVIDER = _CodexProvider()
+
+
+def _codex_login_reply_markup(url: str, code: str) -> dict:
+    return {
+        "inline_keyboard": [
+            [{"text": "Open auth page", "url": url}],
+            [{"text": "Copy code", "copy_text": {"text": code}}],
+            [{"text": "Retry after enabling", "callback_data": "codex_login_retry"}],
+        ]
+    }
+
+
+def _is_codex_auth_error(text: str) -> bool:
+    low = (text or "").lower()
+    return (
+        ("401 unauthorized" in low and "api.openai.com/v1/responses" in low)
+        or ("http error: 401" in low and "responses_websocket" in low)
+        or ("not logged in" in low and "codex login" in low)
+    )
 
 AUTH_PROVIDERS: dict[str, object] = {
     "gh": _GhProvider(),
@@ -2319,6 +2363,7 @@ class Bot:
         thread_id: int | None = None,
         markdown: bool = False,
         pre_rendered: bool = False,
+        reply_markup: dict | None = None,
     ) -> None:
         """Send a message into a chat (and optional forum topic).
 
@@ -2342,6 +2387,7 @@ class Bot:
         self.send_returning_id(
             chat_id=chat_id, text=text, reply_to=reply_to,
             thread_id=thread_id, markdown=markdown, pre_rendered=pre_rendered,
+            reply_markup=reply_markup,
         )
 
     def send_returning_id(
@@ -2352,6 +2398,7 @@ class Bot:
         thread_id: int | None = None,
         markdown: bool = False,
         pre_rendered: bool = False,
+        reply_markup: dict | None = None,
     ) -> int | None:
         """Same as send() but returns the message_id of the FIRST chunk.
 
@@ -2380,6 +2427,7 @@ class Bot:
                     text=rendered,
                     message_thread_id=thread_id or None,
                     parse_mode="MarkdownV2",
+                    reply_markup=reply_markup,
                 )
                 if resp.get("ok") is False and resp.get("error_code") == 400:
                     LOG.info("MarkdownV2 rejected, falling back to plain text")
@@ -2388,14 +2436,32 @@ class Bot:
                         chat_id=chat_id,
                         text=chunk,
                         message_thread_id=thread_id or None,
+                        reply_markup=reply_markup,
                     )
+                    if resp.get("ok") is False and reply_markup:
+                        LOG.info("plain sendMessage with reply_markup rejected, retrying without markup")
+                        resp = self.call(
+                            "sendMessage",
+                            chat_id=chat_id,
+                            text=chunk,
+                            message_thread_id=thread_id or None,
+                        )
             else:
                 resp = self.call(
                     "sendMessage",
                     chat_id=chat_id,
                     text=chunk,
                     message_thread_id=thread_id or None,
+                    reply_markup=reply_markup,
                 )
+                if resp.get("ok") is False and reply_markup:
+                    LOG.info("sendMessage with reply_markup rejected, retrying without markup")
+                    resp = self.call(
+                        "sendMessage",
+                        chat_id=chat_id,
+                        text=chunk,
+                        message_thread_id=thread_id or None,
+                    )
             if first_id is None and resp.get("ok"):
                 mid = (resp.get("result") or {}).get("message_id")
                 if isinstance(mid, int):
@@ -3083,6 +3149,23 @@ class Bot:
                 except Exception:
                     pass
                 self.react(chat_id, reply_to, EMOJI_ERROR)
+                if _is_codex_auth_error(err):
+                    self.send(
+                        chat_id,
+                        "Codex auth failed with a 401. Starting `/codex login` now.",
+                        reply_to=reply_to,
+                        thread_id=thread_id,
+                        markdown=True,
+                    )
+                    self._start_login_provider(
+                        "codex",
+                        CODEX_AUTH_PROVIDER,
+                        chat_id,
+                        reply_to,
+                        thread_id,
+                        force=True,
+                    )
+                    return
                 self.send(
                     chat_id,
                     err or "(codex returned no output)",
@@ -4364,11 +4447,12 @@ class Bot:
         chat_id: int,
         reply_to: int | None,
         thread_id: int,
+        force: bool = False,
     ) -> None:
         # If already connected, short-circuit. Saves the user a redundant
         # device-code dance and prevents accidentally rotating their token.
         connected, status = prov.check()
-        if connected:
+        if connected and not force:
             self.send(
                 chat_id,
                 f"✓ `{name}` already connected ({status}). Use `/logout {name}` to disconnect first.",
@@ -4378,8 +4462,18 @@ class Bot:
             )
             return
 
-        def _on_progress(text: str) -> None:
-            self.send(chat_id, text, reply_to=reply_to, thread_id=thread_id, markdown=True)
+        def _on_progress(text: str, url: str | None = None, code: str | None = None) -> None:
+            reply_markup = None
+            if name == "codex" and url and code:
+                reply_markup = _codex_login_reply_markup(url, code)
+            self.send(
+                chat_id,
+                text,
+                reply_to=reply_to,
+                thread_id=thread_id,
+                markdown=True,
+                reply_markup=reply_markup,
+            )
 
         def _runner() -> None:
             self.send(
@@ -4688,6 +4782,37 @@ class Bot:
         else gets an alert toast and no state file write.
         """
         try:
+            data = cb.get("data") or ""
+            if data == "codex_login_retry":
+                msg = cb.get("message") or {}
+                chat = msg.get("chat") or {}
+                chat_id = chat.get("id")
+                if not chat_id:
+                    return
+                sender = cb.get("from") or {}
+                owner = _owner_for(chat_id, self.state)
+                if owner and not _is_owner({"user_id": sender.get("id")}, owner):
+                    self.call(
+                        "answerCallbackQuery",
+                        callback_query_id=cb["id"],
+                        text="Only the box owner can retry Codex login.",
+                        show_alert=True,
+                    )
+                    return
+                self.call(
+                    "answerCallbackQuery",
+                    callback_query_id=cb["id"],
+                    text="Retrying Codex login...",
+                )
+                self._start_login_provider(
+                    "codex",
+                    CODEX_AUTH_PROVIDER,
+                    chat_id,
+                    msg.get("message_id"),
+                    int(msg.get("message_thread_id") or 0),
+                    force=True,
+                )
+                return
             parts = (cb.get("data") or "").split(":")
             if len(parts) != 3 or parts[0] != "tga":
                 return
