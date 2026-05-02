@@ -1,3 +1,4 @@
 websockets==15.0.1
 httpx==0.28.1
 pyte==0.8.2
+composio==0.12.0

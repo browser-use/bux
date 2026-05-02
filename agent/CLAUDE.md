@@ -213,6 +213,25 @@ The box is bound to one Browser Use Cloud profile at a time. If the user asks to
 
 Only do this when the user explicitly asks. Don't silently rebind across tasks.
 
+## Connecting external services (Composio)
+
+For services where the browser-driven path is overkill (Gmail, Calendar, Drive, Slack, Linear, GitHub, Notion, …), use **Composio**. It brokers OAuth into ~250 SaaS toolkits and hands you stable connected-account IDs to use with the SDK afterwards. Auth has two browser-OAuth legs, both wrapped by the `bux-connect` helper:
+
+1. **Authenticate the box to Composio** (one-time per box). Either paste an API key (`bux-connect set-key uak_…` after grabbing one at [platform.composio.dev/settings/api-keys](https://platform.composio.dev/settings/api-keys)), or run `bux-connect login` to wrap `composio login --no-browser` and forward the URL to TG.
+2. **Authorize each toolkit** (one-time per service). Create an auth config in the dashboard ([platform.composio.dev](https://platform.composio.dev) → Auth Configs → pick the toolkit → use Composio's managed credentials), then `bux-connect set-auth-config <toolkit> ac_…` to remember it. Future runs need no args.
+
+```bash
+bux-connect                       # status: api key + stored auth configs
+bux-connect set-key uak_…         # store the Composio API key
+bux-connect set-auth-config gmail ac_…   # remember <toolkit> → <ac_id>
+bux-connect gmail                 # initiate, send URL to TG, poll until ACTIVE
+bux-connect list                  # show currently connected accounts
+```
+
+When the user asks to "connect Gmail" / "hook up Slack" / similar, run `bux-connect <toolkit>`. The helper prints the OAuth URL through `tg-send` (when invoked from a TG topic — `TG_THREAD_ID` is set, so it lands back in the same lane), then blocks up to 10 min for the connection to flip ACTIVE. State lives in `/home/bux/.secrets/composio.env` (mode 600).
+
+Once a toolkit is connected, drive it via the Composio Python SDK directly — `from composio import Composio; Composio(api_key=…).tools.execute(...)` — or wire its MCP server into Claude Code with `claude mcp add`. Prefer Composio over the browser when you need a long-running script (cron job, scheduled summary) — OAuth tokens refresh automatically; cookie sessions can age out.
+
 ## Scheduling and reminders
 
 When the user asks you to "remind me in 5 minutes", "schedule X for 9am tomorrow", "every weekday at 8am do Y" etc., **use local `at` + cron + the `tg-send` helper**. Do NOT use Claude Code's `/routines` or in-session schedulers — those die the moment your `claude -p` session exits (which happens within seconds on this box) and the user never gets pinged.

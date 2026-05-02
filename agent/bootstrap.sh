@@ -72,6 +72,14 @@ if [ -d "$HARNESS_DIR/.git" ]; then
   fi
 fi
 
+# --- bux-connect symlink (idempotent re-assert on /update) ----------------
+# install.sh creates this on first install; bootstrap.sh re-asserts so
+# existing boxes pick it up on the next /update without re-running install.
+# The .secrets dir holds /home/bux/.secrets/composio.env which bux-connect
+# reads/writes (mode 600).
+install -d -o bux -g bux -m 0700 /home/bux/.secrets
+ln -sf /opt/bux/agent/bux_connect.py /usr/local/bin/bux-connect
+
 # --- login banner: live browser URL on each ssh login ---------------------
 if ! grep -q 'BU_BROWSER_LIVE_URL' /home/bux/.profile 2>/dev/null; then
   cat >> /home/bux/.profile <<'PROFILE'

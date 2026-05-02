@@ -268,7 +268,7 @@ if [ ! -d /opt/bux/venv ]; then
 	sudo -u bux python3 -m venv /opt/bux/venv
 fi
 sudo -u bux /opt/bux/venv/bin/pip install --quiet --upgrade pip
-sudo -u bux /opt/bux/venv/bin/pip install --quiet websockets httpx
+sudo -u bux /opt/bux/venv/bin/pip install --quiet -r "$REPO_DIR/agent/requirements.txt"
 
 # --- browser-harness-js skill ---------------------------------------------
 if [ ! -d /home/bux/.claude/skills/cdp ]; then
@@ -469,6 +469,13 @@ curl -fsS -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
   > /dev/null
 TGSEND
 chmod 755 /usr/local/bin/tg-send
+
+# --- bux-connect: gh-login-style wrapper for Composio service connections -
+# A symlink so `git pull` propagates without re-running install.sh, same
+# pattern as the systemd units. The script's shebang points at the venv
+# python, which has the `composio` SDK installed via requirements.txt.
+install -d -o bux -g bux -m 0700 /home/bux/.secrets
+ln -sf /opt/bux/agent/bux_connect.py /usr/local/bin/bux-connect
 
 # --- pre-seed ~/.claude.json so first `claude` run skips dialogs -----------
 if [ ! -f /home/bux/.claude.json ]; then
