@@ -392,9 +392,11 @@ if [ "$installed_sha" != "$TTYD_SHA256" ]; then
 fi
 
 # --- drop agent files ------------------------------------------------------
+# /opt/bux/agent → /opt/bux/repo/agent (symlinked at the top of this script),
+# so browser_keeper.py / telegram_bot.py don't need to be copied — the
+# systemd units below execute them straight from the symlinked path. Only
+# CLAUDE.md gets installed (different destination — bux's home dir).
 say 'installing bux agent files'
-install -o bux -g bux -m 0644 "$REPO_DIR/agent/browser_keeper.py" /opt/bux/browser_keeper.py
-install -o bux -g bux -m 0644 "$REPO_DIR/agent/telegram_bot.py"   /opt/bux/telegram_bot.py
 install -o bux -g bux -m 0644 "$REPO_DIR/agent/CLAUDE.md"         /home/bux/CLAUDE.md
 
 # --- tg-send: shell helper to push a message to the bound TG chat ---------
@@ -593,7 +595,7 @@ User=bux
 Group=bux
 EnvironmentFile=/etc/bux/env
 WorkingDirectory=/opt/bux
-ExecStart=/opt/bux/venv/bin/python /opt/bux/browser_keeper.py
+ExecStart=/opt/bux/venv/bin/python /opt/bux/agent/browser_keeper.py
 Restart=always
 RestartSec=10
 StandardOutput=append:/var/log/bux/keeper.log
@@ -632,7 +634,7 @@ User=root
 Group=root
 EnvironmentFile=-/etc/bux/tg.env
 WorkingDirectory=/opt/bux
-ExecStart=/opt/bux/venv/bin/python /opt/bux/telegram_bot.py
+ExecStart=/opt/bux/venv/bin/python /opt/bux/agent/telegram_bot.py
 Restart=always
 RestartSec=5
 StandardOutput=append:/var/log/bux/tg.log
