@@ -90,6 +90,7 @@ apt-get install -y -qq \
 	unzip ca-certificates jq gnupg \
 	ripgrep fd-find python3-dev make gcc g++ pkg-config libssl-dev zlib1g-dev \
 	htop tmux vim less wget zip tree \
+	qrencode \
 	at
 
 # Enable atd so `at now + 5min` actually runs queued jobs. We deliberately
@@ -652,11 +653,28 @@ EOF
 	bot_username=$(curl -fsSL "https://api.telegram.org/bot${TG_BOT_TOKEN}/getMe" | jq -r '.result.username' 2>/dev/null || echo '')
 	printf '\n%sTelegram bot is live.%s\n' "$c_bold" "$c_reset"
 	if [ -n "$bot_username" ] && [ "$bot_username" != 'null' ]; then
-		printf '  Open https://t.me/%s and send any message to bind your account.\n' "$bot_username"
+		# Forum-first onboarding: deeplink opens Telegram's "select or create a
+		# group" picker AND pre-prompts the user to grant the admin rights we
+		# need (manage topics + pin messages). With admin status the bot reads
+		# all messages in the group regardless of the BotFather privacy toggle,
+		# so users don't have to fiddle with /setprivacy. Forum topics become
+		# parallel agent lanes once the user enables Topics on the group.
+		forum_url="https://t.me/${bot_username}?startgroup=true&admin=can_manage_topics+can_pin_messages"
+		printf '\n  Recommended: add me to a group (then enable Topics for parallel lanes).\n'
+		printf '  %sScan the QR or open:%s\n\n' "$c_bold" "$c_reset"
+		printf '  %s\n\n' "$forum_url"
+		if command -v qrencode >/dev/null 2>&1; then
+			qrencode -t ANSIUTF8 -m 1 "$forum_url"
+			printf '\n'
+		fi
+		printf '  In Telegram: tap "Create New Group" in the picker → name it → tap "Allow"\n'
+		printf '  on the admin-rights prompt. Send any message in any topic to bind.\n\n'
+		printf '%s  Advanced — DM only (no group, no parallel lanes):%s\n' "$c_dim" "$c_reset"
+		printf '%s    https://t.me/%s%s\n' "$c_dim" "$bot_username" "$c_reset"
 	else
-		printf '  Open the bot in Telegram and send any message to bind your account.\n'
+		printf '  Open the bot in Telegram and send any message in any chat to bind.\n'
 	fi
-	printf '  (The first message wins — nobody else can bind after that.)\n'
+	printf '  (The first chat wins — nobody else can bind after that.)\n'
 fi
 
 # --- start everything ------------------------------------------------------

@@ -2219,6 +2219,42 @@ class Bot:
 
     # ----- Binding flow -----
 
+    def assert_default_admin_rights(self) -> None:
+        """Assert the default admin rights for `?startgroup=…` deeplinks.
+
+        Run on every startup so the BotFather-side default stays in sync with
+        code. With these rights pre-prompted at install, the bot ends up as
+        admin in any group it's added to, which bypasses the BotFather privacy
+        toggle (no `/setprivacy → Disable` manual step) and lets the bot
+        manage forum topics + pin its own welcome.
+
+        Minimum-viable rights only — no member moderation, no chat-info edit,
+        no member promotion. Telegram requires `can_manage_chat: true` for the
+        actor to be considered an admin at all.
+        """
+        rights = {
+            "is_anonymous": False,
+            "can_manage_chat": True,
+            "can_delete_messages": False,
+            "can_manage_video_chats": False,
+            "can_restrict_members": False,
+            "can_promote_members": False,
+            "can_change_info": False,
+            "can_invite_users": False,
+            "can_pin_messages": True,
+            "can_manage_topics": True,
+        }
+        res = self.call(
+            "setMyDefaultAdministratorRights",
+            rights=rights,
+            for_channels=False,
+        )
+        if res.get("ok"):
+            granted = ",".join(k for k, v in rights.items() if v is True)
+            LOG.info("default admin rights asserted: %s", granted)
+        else:
+            LOG.warning("setMyDefaultAdministratorRights failed: %s", res)
+
     def _bind_chat(self, chat_id: int, sender: dict | None = None) -> None:
         """Register chat_id, burn the setup_token, record the owner, welcome."""
         add_allow(chat_id)
@@ -3371,6 +3407,10 @@ def main() -> int:
     # poll loop and lazily spawns lane workers as messages arrive.
     _lanes_init()
     bot = Bot(token, setup_token)
+    # Idempotent: re-assert the default admin rights the bot needs whenever
+    # it boots, so a fresh install (or a settings drift in BotFather) ends
+    # up in a known good state without the operator having to remember.
+    bot.assert_default_admin_rights()
     # Announce *before* poll_loop so the user gets the "back online" ping
     # immediately on restart, not whenever the first long-poll completes.
     _announce_online_if_new_sha(bot)
