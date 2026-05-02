@@ -479,7 +479,7 @@ def _format_final_footer(
     Body is intentionally NOT MDV2-escaped — the caller passes it
     through `_render_expandable_blockquote`, which escapes lines.
 
-    Format: `🪙 total N · 📥 cached/input A/B · 📤 output D ...`.
+    Format: `📥 cached/input A/B · 📤 output D · 🛠 tools · ⏱ duration`.
     Claude and Codex report input differently: Claude's input_tokens is
     uncached input only; Codex's input_tokens is total input with
     cached_input_tokens as a subset. Normalize before rendering.
@@ -503,11 +503,6 @@ def _format_final_footer(
                 for n in (input_t, cache_read, cache_create):
                     if isinstance(n, int) and n > 0:
                         total_input += n
-        total_all = total_input
-        if isinstance(output_t, int) and output_t > 0:
-            total_all += output_t
-        if total_all > 0:
-            parts.append(f"🪙 total {_humanize_tokens(total_all)}")
         if isinstance(total_input, int) and total_input > 0:
             if isinstance(cache_read, int) and cache_read > 0:
                 parts.append(f"📥 cached/input {_humanize_cached_input(cache_read, total_input)}")
