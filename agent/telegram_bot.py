@@ -261,59 +261,69 @@ def _render_expandable_blockquote(text: str) -> str:
 _STEP_SEPARATOR = "\n---------------\n"
 
 
-def _render_streaming_view(blocks: list[str]) -> str:
+def _render_collapsed_steps(parts: list[str], total: int, max_body: int) -> str:
+    """Render `parts` as one expandable blockquote with a step-count header.
+
+    The first line is `📝 N steps`, where N is `total` — the count of all
+    blocks the agent has emitted so far for this view, even if some have
+    been trimmed to fit. When trimming kicks in we extend the header to
+    `📝 N steps (last K shown)` so the count remains honest.
+
+    Returns "" for empty input. Trims OLDEST blocks until the rendered
+    body fits under `max_body`; keeps at least the most recent one so
+    something always renders.
+    """
+    if not parts:
+        return ""
+    work = list(parts)
+    while True:
+        if len(work) < total:
+            header = f"📝 {total} steps (last {len(work)} shown)"
+        else:
+            header = f"📝 {total} step" + ("s" if total != 1 else "")
+        body = header + "\n" + _STEP_SEPARATOR.join(work)
+        out = _render_expandable_blockquote(body)
+        if len(out) <= max_body or len(work) <= 1:
+            return out
+        work = work[1:]
+
+
+def _render_streaming_view(blocks: list[str], max_body: int) -> str:
     """Render every assistant text block as one collapsed blockquote.
 
     Used while the agent is still emitting — keeps the bubble compact on
-    a chatty turn. User taps to expand if they want to see live progress.
-    Empty / whitespace-only blocks are dropped; surviving blocks are
-    separated by a `-------` divider line so individual steps are
-    visually distinct inside the collapsed bubble.
+    a chatty turn. The collapsed first line shows `📝 N steps` so the
+    user sees progress without expanding. Surviving blocks are separated
+    by a `---------------` divider when expanded.
     """
     parts = [b.strip() for b in blocks if b and b.strip()]
     if not parts:
         return ""
-    return _render_expandable_blockquote(_STEP_SEPARATOR.join(parts))
+    return _render_collapsed_steps(parts, len(parts), max_body)
 
 
-def _render_final_view(blocks: list[str]) -> str:
-    """Render the final-turn view: collapsed thinking trace ON TOP, final
-    answer prominent BELOW it.
+def _render_final_view(blocks: list[str], max_body: int) -> str:
+    """Render the final-turn view: collapsed thinking trace ON TOP with a
+    step-count header, final answer prominent BELOW.
 
     Heuristic: the last text block claude emitted is the answer; anything
     before it was thinking/narration. If there's only one block, no
-    blockquote — just the answer. Steps inside the blockquote are
-    separated by `-------` divider lines.
+    blockquote — just the answer. The collapsed-steps count reflects
+    only the thinking blocks, not the answer.
     """
     parts = [b.strip() for b in blocks if b and b.strip()]
     if not parts:
         return ""
     final_md = _to_tg_markdown_v2(parts[-1])
-    steps_md = _render_expandable_blockquote(_STEP_SEPARATOR.join(parts[:-1]))
+    steps = parts[:-1]
+    if not steps:
+        return final_md
+    # Reserve space for the final answer + the join's "\n\n".
+    steps_max = max(max_body - len(final_md) - 2, 200)
+    steps_md = _render_collapsed_steps(steps, len(steps), steps_max)
     if not steps_md:
         return final_md
     return steps_md + "\n\n" + final_md
-
-
-def _fit_under(render_fn, blocks: list[str], max_body: int) -> str:
-    """Render `blocks` via `render_fn`; if the result exceeds `max_body`,
-    drop the OLDEST block and retry. A "…earlier steps trimmed" marker is
-    prepended so the user knows content is hidden. Always preserves the
-    final block (claude's answer) — only intermediate narration is
-    dropped.
-    """
-    work = list(blocks)
-    trimmed = False
-    while True:
-        body = ([f"…earlier steps trimmed ({len(blocks) - len(work)})"] if trimmed else []) + work
-        out = render_fn(body)
-        if len(out) <= max_body:
-            return out
-        # Refuse to drop the final block — it's the user's answer.
-        if len(work) <= 1:
-            return out
-        work = work[1:]
-        trimmed = True
 
 
 def _chunk_for_telegram(text: str, max_len: int) -> list[str]:
@@ -1425,7 +1435,7 @@ class StreamingMessage:
         if not chunk:
             return
         self._blocks.append(chunk)
-        rendered = _fit_under(_render_streaming_view, self._blocks, self._MAX_BODY)
+        rendered = _render_streaming_view(self._blocks, self._MAX_BODY)
         if not rendered:
             return
         if self._message_id is None:
@@ -1444,7 +1454,7 @@ class StreamingMessage:
         """
         if not self._blocks:
             return
-        rendered = _fit_under(_render_final_view, self._blocks, self._MAX_BODY)
+        rendered = _render_final_view(self._blocks, self._MAX_BODY)
         if not rendered:
             return
         if self._message_id is None:
