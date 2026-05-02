@@ -258,36 +258,41 @@ def _render_expandable_blockquote(text: str) -> str:
     return "\n".join(out)
 
 
+_STEP_SEPARATOR = "\n\n-------\n\n"
+
+
 def _render_streaming_view(blocks: list[str]) -> str:
     """Render every assistant text block as one collapsed blockquote.
 
     Used while the agent is still emitting — keeps the bubble compact on
     a chatty turn. User taps to expand if they want to see live progress.
-    Empty / whitespace-only blocks are dropped.
+    Empty / whitespace-only blocks are dropped; surviving blocks are
+    separated by a `-------` divider line so individual steps are
+    visually distinct inside the collapsed bubble.
     """
     parts = [b.strip() for b in blocks if b and b.strip()]
     if not parts:
         return ""
-    return _render_expandable_blockquote("\n\n".join(parts))
+    return _render_expandable_blockquote(_STEP_SEPARATOR.join(parts))
 
 
 def _render_final_view(blocks: list[str]) -> str:
-    """Render the final-turn view: last block prominent, earlier blocks
-    folded into the collapsed blockquote underneath.
+    """Render the final-turn view: collapsed thinking trace ON TOP, final
+    answer prominent BELOW it.
 
     Heuristic: the last text block claude emitted is the answer; anything
     before it was thinking/narration. If there's only one block, no
-    blockquote — just the answer. If the last block is empty, fall back
-    to streaming view.
+    blockquote — just the answer. Steps inside the blockquote are
+    separated by `-------` divider lines.
     """
     parts = [b.strip() for b in blocks if b and b.strip()]
     if not parts:
         return ""
     final_md = _to_tg_markdown_v2(parts[-1])
-    steps_md = _render_expandable_blockquote("\n\n".join(parts[:-1]))
+    steps_md = _render_expandable_blockquote(_STEP_SEPARATOR.join(parts[:-1]))
     if not steps_md:
         return final_md
-    return final_md + "\n\n" + steps_md
+    return steps_md + "\n\n" + final_md
 
 
 def _fit_under(render_fn, blocks: list[str], max_body: int) -> str:
