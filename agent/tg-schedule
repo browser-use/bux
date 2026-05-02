@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# tg-schedule <when> [--fresh] [--name NAME] <prompt>
+#
+# Schedule a future agent turn that resumes the current topic's session
+# (default), or spawn a fresh forum topic with a clean session (--fresh).
+#
+# <when> is at(1) syntax: "+5 minutes", "+1 hour", "tomorrow 09:00",
+# "9am", "noon", "2026-05-03 09:00".
+#
+# Default mode reuses the current chat + thread (TG_CHAT_ID / TG_THREAD_ID
+# from the bot env). When the at-job fires, the bot dispatches the prompt
+# into that lane, claude/codex resumes the lane's session UUID, and the
+# whole prior conversation is in context — prompt-cache hits the same as
+# a normal user message.
+#
+# --fresh: createForumTopic on the bound supergroup, then run the prompt
+# in a brand-new lane with an empty session. Use only when the user has
+# explicitly asked for a clean slate.
+#
+# Note: scheduled fires don't pass through the bot's lane queue, so they
+# don't show up in /queue. They do serialize against in-progress turns at
+# the agent level (claude --resume cooperates via per-uuid transcript
+# state), but a tight collision with an active user message in the same
+# lane can still race; if you see corrupted resume behavior, slow the
+# cadence or stop using --fresh-cycling on the same lane.
+
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'USAGE'
+Usage: tg-schedule <when> [--fresh] [--name NAME] <prompt>
+
+  <when>   at(1) time spec: "+5 minutes", "tomorrow 09:00", "9am", etc.
+  --fresh  spawn a new forum topic with a clean session
+  --name   topic name in --fresh mode (default: "Scheduled <date>")
+
+Examples:
+  tg-schedule "+5 minutes" "remind me to take my meds"
+  tg-schedule "+1 hour" "check the deploy and report"
+  tg-schedule "tomorrow 09:00" --fresh --name "Standup" "summarize yesterday"
+USAGE
+  exit 2
+}
+
+if [ "$#" -lt 2 ]; then usage; fi
+
+when="$1"; shift
+fresh=0
+topic_name=""
+prompt=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --fresh)
+      fresh=1
+      shift
+      ;;
+    --name)
+      [ "$#" -ge 2 ] || usage
+      topic_name="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      ;;
+    --)
+      shift
+      prompt="${prompt:+$prompt }$*"
+      break
+      ;;
+    *)
+      prompt="${prompt:+$prompt }$1"
+      shift
+      ;;
+  esac
+done
+
+[ -n "$prompt" ] || usage
+
+# Default-target lane = the lane this command was invoked from. The bot
+# exports TG_CHAT_ID / TG_THREAD_ID for every agent turn, so calling
+# tg-schedule from a claude / codex / /terminal turn picks up the right
+# lane automatically. Fall back to the first allowed chat at the chat
+# root.
+src_chat_id="${TG_CHAT_ID:-}"
+src_thread_id="${TG_THREAD_ID:-0}"
+if [ -z "$src_chat_id" ]; then
+  src_chat_id="$(awk 'NF{print; exit}' /etc/bux/tg-allowed.txt 2>/dev/null || true)"
+fi
+[ -n "$src_chat_id" ] || {
+  echo "tg-schedule: no chat_id (set TG_CHAT_ID, or run after /start)" >&2
+  exit 1
+}
+
+# Stash prompt + metadata in a job dir owned by bux, mode 700. The fire
+# helper reads them at execution time and removes the dir when done.
+job_dir="$(mktemp -d -t tg-schedule.XXXXXX)"
+chmod 700 "$job_dir"
+printf '%s\n' "$prompt" > "$job_dir/prompt"
+
+fresh_json='false'
+[ "$fresh" -eq 1 ] && fresh_json='true'
+name_json='""'
+if [ -n "$topic_name" ]; then
+  if command -v jq >/dev/null 2>&1; then
+    name_json="$(printf '%s' "$topic_name" | jq -Rs .)"
+  else
+    # crude fallback: strip quotes/backslashes so we can drop into JSON
+    safe="${topic_name//\\/}"
+    safe="${safe//\"/}"
+    name_json="\"$safe\""
+  fi
+fi
+cat > "$job_dir/job.json" <<JSON
+{"chat_id": $src_chat_id, "thread_id": $src_thread_id, "fresh": $fresh_json, "name": $name_json}
+JSON
+
+# Build the at-job body. atd preserves uid, so the fire script runs as
+# the same user that scheduled it (typically bux).
+at_out="$(printf 'exec /usr/local/bin/tg-schedule-fire %q\n' "$job_dir" | at "$when" 2>&1)"
+job_id="$(printf '%s\n' "$at_out" | awk '/^job /{print $2; exit}')"
+if [ -z "$job_id" ]; then
+  echo "tg-schedule: at(1) refused the schedule:" >&2
+  printf '%s\n' "$at_out" >&2
+  rm -rf "$job_dir"
+  exit 1
+fi
+
+# Friendly confirmation. atd reports the absolute fire time on stderr,
+# already in local-time form — surface it back so the user can sanity-
+# check the parse.
+fire_at="$(printf '%s\n' "$at_out" | awk -F' at ' '/^job /{print $2}')"
+mode_label='same topic'
+[ "$fresh" -eq 1 ] && mode_label='new topic'
+echo "tg-schedule: queued job $job_id ($mode_label) — fires at ${fire_at:-$when}"

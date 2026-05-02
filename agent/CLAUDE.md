@@ -292,11 +292,55 @@ Add to bux's crontab via `crontab -e`. Standard 5-field format. Pipe to `tg-send
 
 Avoid spamming — daily reminders are usually fine, sub-hourly probably isn't unless the user explicitly asked.
 
+### `tg-schedule` — schedule a future *agent turn* (not just a message)
+
+`tg-send` notifies the user. `tg-schedule` does the next level up: it queues an `at(1)` job that, at fire time, dispatches a prompt into a TG lane as if the user had typed it. The bot resumes the lane's claude/codex session UUID, so the prompt cache stays warm and *the entire prior conversation is in context*.
+
+```bash
+tg-schedule "+5 minutes" "remind me to take my meds"
+tg-schedule "+1 hour"    "check the deploy and report"
+tg-schedule "tomorrow 09:00" --fresh --name "Standup" "summarize yesterday"
+```
+
+**Two modes:**
+
+1. **Default (resume same topic)** — the scheduled fire lands in the topic you scheduled it from. The lane's session UUID is `--resume`d on the agent side, so prior turns stay in context. This is what you want 99% of the time. *The user should have to ask explicitly to get fresh.*
+2. **`--fresh`** — `createForumTopic` on the bound supergroup, then run the prompt in a brand-new lane with an empty session. Use only when the user explicitly says "start clean" / "new topic for this" / context would actively confuse the model. Requires the bound chat to be a forum.
+
+**Self-pacing pattern (24/7 monitor / always-on agent):** the resumed agent can call `tg-schedule` itself to set its own next fire. That replicates Claude Code's `/loop` dynamic mode using only local timers — and it works for both claude and codex lanes (the bot dispatches each lane to its bound CLI).
+
+```bash
+# inside an agent turn that's been pinged to "monitor X"
+tg-schedule "+10 minutes" "still pending? check again — same rules as before"
+```
+
+**Pause-for-human-input is free.** If the agent hits a login wall / 2FA, it sends the live URL via `tg-send` and stops. The user logs in, replies "done" — that reply is just another lane message, resumes the same session UUID, agent continues with full context. No special "paused" state.
+
+**Limitations to be honest about:**
+
+- Scheduled fires *don't* show up in `/queue` (they bypass the bot's lane FIFO). They do appear in `atq`.
+- A scheduled fire that lands during an active user turn in the same lane can race on the session JSONL. In practice unusual; if it bites, slow the cadence.
+- Cache TTL is 5 min (1 h with extended cache). Pings >5 min apart pay the prefix again — functionally fine, just costlier.
+- Transcripts grow unboundedly across weeks of pings. Both CLIs auto-compact when the context window fills, but durable state should live in `/home/bux/notebook.md` or a project file, not in the transcript.
+
 ### When the user "schedules" a task in TG
 
-1. Pick the right tool: `at` for one-shot, `cron` for recurring.
-2. Wrap the work so it ends with `tg-send "<result>"`. The user must hear back.
-3. Confirm **what** and **when** (in UTC) so they can tell if you misparsed "5pm Pacific".
+1. Pick the right tool:
+   - `tg-schedule` — they want the **agent** to do work and reply (multi-step, needs reasoning, pauses for input).
+   - `at` + `tg-send` — they want a one-shot **message** at a time (a reminder string, a static query result).
+   - `cron` + `tg-send` — recurring static work (daily summary at 8am).
+2. For tg-schedule, default to *same topic* (resume context). Only pass `--fresh` if the user explicitly says so.
+3. Confirm **what** and **when** in PT (the user-facing default; `at` reports the absolute fire time, just translate it).
+
+### Compaction (Claude vs Codex)
+
+- **Claude Code** auto-compacts when the context window approaches its limit (default ~95%, override via `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`). On `--resume`, prior compaction summaries persist. Manual `/compact` exists with an optional focus hint (`/compact focus on the API changes`). The model itself can't self-trigger compaction — it's user- or threshold-driven only.
+- **Codex** auto-compacts at `effective_window − 13_000` tokens (about 167K on a 200K-window model). Manual `/compact` exists. After a compaction, `codex exec resume` re-reads up to 5 recently edited files (~50K-token budget) so file context survives. The model can't self-trigger compaction either.
+- For long-running self-pinging agents: don't rely on transcript memory across many compactions. Anything durable belongs on disk (notebook.md, a project file, auto-memory) where the next resume can read it fresh.
+
+### Codex system prompt
+
+The bot runs both CLIs with `cwd=/home/bux`. Claude reads `~/CLAUDE.md`; Codex reads `~/AGENTS.md`. The installer symlinks `AGENTS.md → CLAUDE.md`, so both agents share the same operating manual. If you edit one, you've edited both.
 
 ## You can update yourself
 

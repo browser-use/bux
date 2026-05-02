@@ -398,6 +398,12 @@ fi
 # CLAUDE.md gets installed (different destination — bux's home dir).
 say 'installing bux agent files'
 install -o bux -g bux -m 0644 "$REPO_DIR/agent/CLAUDE.md"         /home/bux/CLAUDE.md
+# Codex reads AGENTS.md (its own convention) from cwd and up. The bot
+# runs codex with cwd=/home/bux, so a symlink here gives codex the same
+# system prompt as claude — keeping the two agents behaviorally aligned
+# without a second copy to keep in sync.
+ln -sfn /home/bux/CLAUDE.md /home/bux/AGENTS.md
+chown -h bux:bux /home/bux/AGENTS.md
 
 # --- tg-send: shell helper to push a message to the bound TG chat ---------
 # Used by `at` / cron jobs (and claude from a shell) so scheduled work can
@@ -471,6 +477,16 @@ chmod 755 /usr/local/bin/tg-send
 # writes the decision into /tmp/tg-approvals/<id>.json which this script
 # polls. Source-controlled as agent/tg-approve.py for readability.
 install -m 0755 "$REPO_DIR/agent/tg-approve.py" /usr/local/bin/tg-approve
+
+# --- tg-schedule: schedule a future agent turn ----------------------------
+# `tg-schedule <when> [--fresh] [--name N] <prompt>` queues an at(1) job
+# that, at fire time, dispatches the prompt into the bound chat's lane.
+# Default mode resumes the topic the user invoked from (cache-friendly,
+# full prior context). --fresh creates a brand-new forum topic with a
+# clean session — only spend that on tasks where context would actively
+# get in the way.
+install -m 0755 "$REPO_DIR/agent/tg-schedule"      /usr/local/bin/tg-schedule
+install -m 0755 "$REPO_DIR/agent/tg-schedule-fire" /usr/local/bin/tg-schedule-fire
 
 # --- pre-seed ~/.claude.json so first `claude` run skips dialogs -----------
 if [ ! -f /home/bux/.claude.json ]; then
