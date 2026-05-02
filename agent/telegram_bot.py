@@ -185,8 +185,12 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("help", "show all commands"),
     ("terminal", "open an interactive shell (e.g. /terminal codex login)"),
     ("exit", "close the active terminal session"),
+    ("interrupt", "send Ctrl-C to the active terminal session"),
+    ("eof", "send Ctrl-D to the active terminal session"),
     ("compact", "summarize this topic's session to free up context"),
     ("agent", "switch this topic's agent (claude|codex)"),
+    ("claude", "switch this topic to Claude"),
+    ("codex", "switch this topic to Codex"),
     ("live", "live-view URL of the active browser"),
     ("queue", "pending tasks in this topic"),
     ("cancel", "kill the running task + drop pending"),
@@ -1292,9 +1296,9 @@ def _snapshot_lane(slug: str) -> list[dict]:
 # (codex / gh device codes, sudo passwords, npx prompts) just works:
 # the URL / prompt lands in TG, the user pastes the answer as a normal
 # message, the bot routes it back to the running shell. `/exit` (or
-# typing `exit` as plain text) ends the session and the lane is back
-# to the bound agent. `/cancel` SIGKILLs the session group as a hard
-# escape hatch.
+# typing `exit` as plain text) ends the session once bash receives it.
+# `/interrupt` sends Ctrl-C to the foreground process, `/eof` sends Ctrl-D,
+# and `/cancel` SIGKILLs the session group as the hard escape hatch.
 #
 # `/terminal` while a session is already active is a no-op so a typo
 # doesn't tear down what the user is working on. Bypasses the lane
@@ -1336,9 +1340,9 @@ class ShellSession:
       - send_input(text) writes user-supplied text + "\\n" to the master
         fd. Plain-text messages in the lane go through this path.
       - The user types `exit` (or sends Ctrl-D) → bash exits → reader sees
-        EOF → teardown posts a final exit-code bubble. `/exit` and
-        `/cancel` are server-side fast paths: the first sends `exit\\n`,
-        the second SIGKILLs the process group.
+        EOF → teardown posts a final exit-code bubble. `/exit`,
+        `/interrupt`, `/eof`, and `/cancel` are server-side fast paths:
+        graceful shell exit, Ctrl-C, Ctrl-D, and SIGKILL respectively.
 
     Only one session per lane. `/terminal` while one is alive is a no-op.
     """
@@ -1435,8 +1439,8 @@ class ShellSession:
 
         ack_lines = [
             "💻 *terminal session started*",
-            "_replies go straight to the shell — type `exit` or send /exit to leave, "
-            "/cancel to hard-kill_",
+            "_replies go straight to the shell — /interrupt sends Ctrl-C, "
+            "/exit asks bash to close, /cancel hard-kills_",
         ]
         if self.initial_cmd:
             ack_lines.append(f"running: `{self.initial_cmd}`")
@@ -1485,6 +1489,18 @@ class ShellSession:
             return True
         except OSError as e:
             LOG.warning("shell stdin write failed for %s: %s", self.slug, e)
+            return False
+
+    def send_bytes(self, payload: bytes) -> bool:
+        """Write raw bytes to the PTY master. Used for terminal control
+        characters like Ctrl-C and Ctrl-D."""
+        if not self.alive or self.master_fd is None:
+            return False
+        try:
+            os.write(self.master_fd, payload)
+            return True
+        except OSError as e:
+            LOG.warning("shell control write failed for %s: %s", self.slug, e)
             return False
 
     # -- kill ----------------------------------------------------------------
@@ -2728,7 +2744,7 @@ class Bot:
                 "• API key: drop `OPENAI_API_KEY=...` into `/home/bux/.secrets/openai.env`.\n\n"
                 "Pick one — if both are set, codex silently uses the API key "
                 "for billing (openai/codex#20099).\n\n"
-                "Or `/agent claude` to switch back.",
+                "Or `/claude` to switch back.",
                 reply_to=reply_to,
                 thread_id=thread_id,
                 markdown=True,
@@ -3032,7 +3048,7 @@ class Bot:
             "silently dropped — even if someone discovers the bot handle.\n\n"
             "Text me anything and I'll run it on your bux. Want parallel work? "
             "Turn on Topics in this chat and each topic becomes a separate "
-            "agent session. `/agent codex` per-topic to switch from claude.",
+            "agent session. Use `/codex` per-topic to switch from claude.",
         )
 
     # ----- Attachments -----
@@ -3267,8 +3283,8 @@ class Bot:
                 self.send(
                     chat_id,
                     "💻 terminal session already running here — replies go to its "
-                    "stdin. Type `exit` (or send /exit) to close it, /cancel to "
-                    "hard-kill.",
+                    "stdin. Use /interrupt for Ctrl-C, /exit to ask bash to close, "
+                    "or /cancel to hard-kill.",
                     reply_to=mid,
                     thread_id=thread_id,
                     markdown=True,
@@ -3322,6 +3338,74 @@ class Bot:
             sess.send_input("exit")
             return
 
+        # `/interrupt` — send Ctrl-C to the foreground process in the active
+        # PTY. This is the right escape hatch for auth flows or interactive
+        # commands that swallowed `/exit` as ordinary input; it keeps the
+        # terminal session alive so the user can continue at the shell prompt.
+        if cmd in ("/interrupt", "/ctrlc", "/c"):
+            sess = _get_shell_session(slug)
+            if sess is None:
+                self.send(
+                    chat_id,
+                    "No terminal session here. `/terminal` to start one.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
+            if not _is_owner(sender, owner):
+                self.send(
+                    chat_id,
+                    "❌ `/interrupt` is owner-only.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
+            if sess.send_bytes(b"\x03"):
+                self.react(chat_id, mid, "✍")
+            else:
+                self.send(
+                    chat_id,
+                    "❌ terminal session is gone — Ctrl-C not delivered.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                )
+            return
+
+        # `/eof` — send Ctrl-D to the PTY. Useful for programs waiting on
+        # stdin EOF; if bash is at an empty prompt it exits the session.
+        if cmd in ("/eof", "/ctrld", "/d"):
+            sess = _get_shell_session(slug)
+            if sess is None:
+                self.send(
+                    chat_id,
+                    "No terminal session here. `/terminal` to start one.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
+            if not _is_owner(sender, owner):
+                self.send(
+                    chat_id,
+                    "❌ `/eof` is owner-only.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
+            if sess.send_bytes(b"\x04"):
+                self.react(chat_id, mid, "✍")
+            else:
+                self.send(
+                    chat_id,
+                    "❌ terminal session is gone — Ctrl-D not delivered.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                )
+            return
+
         # If a shell session is active in this lane, plain-text messages
         # are stdin for it (codex login codes, gh auth login codes, `read`
         # answers, `y/n` prompts, …). Slash commands fall through below
@@ -3349,7 +3433,11 @@ class Bot:
                 "/terminal — open an interactive shell here (owner-only); "
                 "replies route to stdin until you `exit` or send /exit. "
                 "/terminal <cmd> seeds the first command, e.g. `/terminal codex login`\n"
-                "/exit — close the active terminal session (graceful)\n"
+                "/interrupt — send Ctrl-C to the active terminal session\n"
+                "/eof — send Ctrl-D to the active terminal session\n"
+                "/exit — ask bash to close the active terminal session\n"
+                "/codex — switch this topic to Codex\n"
+                "/claude — switch this topic to Claude\n"
                 "/agent claude|codex — switch this topic to a different agent\n"
                 "/live — live-view URL of the active browser\n"
                 "/queue — pending tasks in this topic\n"
@@ -3405,6 +3493,12 @@ class Bot:
         if cmd == "/agent":
             self._cmd_agent(key, chat_id, mid, thread_id, arg)
             return
+        if cmd == "/codex":
+            self._cmd_agent(key, chat_id, mid, thread_id, AGENT_CODEX)
+            return
+        if cmd == "/claude":
+            self._cmd_agent(key, chat_id, mid, thread_id, AGENT_CLAUDE)
+            return
         if cmd == "/version":
             self._cmd_version(chat_id, mid, thread_id)
             return
@@ -3434,7 +3528,7 @@ class Bot:
                 self.send(
                     chat_id,
                     "/compact only works on a `claude` lane. "
-                    "Switch with `/agent claude` first.",
+                    "Switch with `/claude` first.",
                     reply_to=mid,
                     thread_id=thread_id,
                     markdown=True,
@@ -3731,7 +3825,8 @@ class Bot:
         if not arg:
             self.send(
                 chat_id,
-                f"This topic is using `{current}`.\n\n`/agent claude` or `/agent codex` to switch.",
+                f"This topic is using `{current}`.\n\nUse `/claude` or `/codex` "
+                "to switch.",
                 reply_to=reply_to,
                 thread_id=thread_id,
                 markdown=True,
