@@ -605,67 +605,16 @@ PROFILE
 fi
 
 # --- systemd units ---------------------------------------------------------
-cat > /etc/systemd/system/bux-browser-keeper.service <<'UNIT'
-[Unit]
-Description=bux browser-keeper (long-lived Browser Use Cloud browser)
-After=network-online.target
-Wants=network-online.target
-ConditionPathExists=/etc/bux/env
-
-[Service]
-Type=simple
-User=bux
-Group=bux
-EnvironmentFile=/etc/bux/env
-WorkingDirectory=/opt/bux
-ExecStart=/opt/bux/venv/bin/python /opt/bux/agent/browser_keeper.py
-Restart=always
-RestartSec=10
-StandardOutput=append:/var/log/bux/keeper.log
-StandardError=append:/var/log/bux/keeper.log
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-
-cat > /etc/systemd/system/bux-ttyd.service <<'UNIT'
-[Unit]
-Description=bux ttyd web terminal (localhost only)
-After=network-online.target
-
-[Service]
-Type=simple
-User=bux
-Group=bux
-ExecStart=/usr/local/bin/ttyd -i lo -p 7681 -W /usr/bin/claude
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-
-cat > /etc/systemd/system/bux-tg.service <<'UNIT'
-[Unit]
-Description=bux Telegram bot
-After=network-online.target
-ConditionPathExists=/etc/bux/tg.env
-
-[Service]
-Type=simple
-User=root
-Group=root
-EnvironmentFile=-/etc/bux/tg.env
-WorkingDirectory=/opt/bux
-ExecStart=/opt/bux/venv/bin/python /opt/bux/agent/telegram_bot.py
-Restart=always
-RestartSec=5
-StandardOutput=append:/var/log/bux/tg.log
-StandardError=append:/var/log/bux/tg.log
-
-[Install]
-WantedBy=multi-user.target
-UNIT
+# The unit files live in agent/*.service and we symlink them into
+# /etc/systemd/system. Same approach bootstrap.sh uses (see
+# agent/bootstrap.sh:182), so post-install updates via `git pull` keep
+# the deployed units in sync without re-running install. Previously
+# install.sh wrote them via heredoc and bootstrap.sh immediately
+# replaced those with symlinks — pure dead code that had also drifted
+# from the source-of-truth repo files.
+for unit in bux-browser-keeper.service bux-ttyd.service bux-tg.service; do
+	ln -sfn "$REPO_DIR/agent/$unit" "/etc/systemd/system/$unit"
+done
 
 systemctl daemon-reload
 systemctl enable bux-browser-keeper.service bux-ttyd.service >/dev/null
