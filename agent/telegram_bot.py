@@ -350,6 +350,54 @@ def _extract_media(msg: dict) -> tuple[str | None, str, int]:
     return None, "", 0
 
 
+def _extract_sender(msg: dict) -> dict[str, str]:
+    """Pull the sender's identity off a TG update.
+
+    Group chats with multiple humans (after Forum Topics arrived) need
+    per-message attribution: the agent should know whether the latest
+    message came from the box owner or from a guest invited into the
+    group. Returns an empty dict for service messages with no `from`.
+    """
+    src = msg.get("from") or {}
+    user_id = src.get("id")
+    username = (src.get("username") or "").strip()
+    first = (src.get("first_name") or "").strip()
+    last = (src.get("last_name") or "").strip()
+    name = (first + " " + last).strip() or username or (str(user_id) if user_id else "")
+    out: dict[str, str] = {}
+    if user_id:
+        out["user_id"] = str(user_id)
+    if username:
+        out["username"] = username
+    if name:
+        out["name"] = name
+    return out
+
+
+def _sender_label(sender: dict | None) -> str:
+    """Human-readable `Name (@handle)` label, or '' if we have nothing."""
+    if not sender:
+        return ""
+    name = sender.get("name") or ""
+    handle = sender.get("username") or ""
+    if name and handle and handle != name:
+        return f"{name} (@{handle})"
+    return name or (f"@{handle}" if handle else sender.get("user_id") or "")
+
+
+def _prefix_sender(prompt: str, sender: dict | None) -> str:
+    """Tag the prompt with `[from <Name>]` so the agent sees who's asking.
+
+    Cheap natural-language hint rather than a schema change — the agent
+    just reads the line and behaves accordingly. Skips silently when we
+    have no sender info (service messages, edits, channel posts).
+    """
+    label = _sender_label(sender)
+    if not label:
+        return prompt
+    return f"[from {label}]\n\n{prompt}"
+
+
 def load_allow() -> set[int]:
     if not ALLOWED_FILE.exists():
         return set()
@@ -1181,7 +1229,12 @@ class Bot:
 
     # ----- Agent dispatch -----
 
-    def _build_env(self, key: LaneKey, agent: str) -> dict[str, str]:
+    def _build_env(
+        self,
+        key: LaneKey,
+        agent: str,
+        sender: dict | None = None,
+    ) -> dict[str, str]:
         """Forwarded env passed to the agent subprocess via `sudo VAR=val …`.
 
         Returns ONLY the keys we explicitly want the agent to see — never
@@ -1197,6 +1250,9 @@ class Bot:
           - OPENAI_* from /home/bux/.secrets/openai.env (codex needs this).
           - TG_CHAT_ID + TG_THREAD_ID so `tg-send` routes back to this
             forum topic when the agent shells out for background work.
+          - TG_USER_ID / TG_USERNAME / TG_FROM_NAME so the agent (and any
+            tool it shells out to) can attribute the current turn to a
+            specific human in a multi-user group chat.
         """
         box_env = _read_kv(BOX_ENV)
         browser_env = _read_kv(BROWSER_ENV)
@@ -1225,6 +1281,13 @@ class Bot:
         env["TG_CHAT_ID"] = str(chat)
         if thread:
             env["TG_THREAD_ID"] = str(thread)
+        if sender:
+            if sender.get("user_id"):
+                env["TG_USER_ID"] = sender["user_id"]
+            if sender.get("username"):
+                env["TG_USERNAME"] = sender["username"]
+            if sender.get("name"):
+                env["TG_FROM_NAME"] = sender["name"]
         # Strip newlines from forwarded values: argv accepts them but downstream
         # tooling (`tg-send`, bash one-liners) tends to break on embedded \n.
         # Tabs are similarly unsafe in `KEY=val` argv positions.
@@ -1237,6 +1300,7 @@ class Bot:
         key: LaneKey,
         prompt: str,
         reply_to: int | None,
+        sender: dict | None = None,
     ) -> None:
         """Dispatch the user's prompt to this lane's agent.
 
@@ -1257,9 +1321,9 @@ class Bot:
         LOG.info("run_task lane=%s agent=%s", _lane_slug(key), agent)
         try:
             if agent == AGENT_CODEX:
-                self._run_codex(key, prompt, reply_to)
+                self._run_codex(key, prompt, reply_to, sender=sender)
             else:
-                self._run_claude(key, prompt, reply_to)
+                self._run_claude(key, prompt, reply_to, sender=sender)
         except Exception as e:
             LOG.exception("run_task lane=%s failed", _lane_slug(key))
             try:
@@ -1278,6 +1342,7 @@ class Bot:
         key: LaneKey,
         prompt: str,
         reply_to: int | None,
+        sender: dict | None = None,
     ) -> None:
         """Stream a claude turn into the lane's TG topic.
 
@@ -1287,8 +1352,9 @@ class Bot:
         dropped — the user only sees the orchestrator's voice.
         """
         chat_id, thread_id = key
-        env = self._build_env(key, AGENT_CLAUDE)
+        env = self._build_env(key, AGENT_CLAUDE, sender=sender)
         sid = _session_uuid_for(key)
+        prompt = _prefix_sender(prompt, sender)
 
         # Claude Code 2.x split create vs. resume: `--session-id <uuid>`
         # creates and errors if the UUID already exists, `--resume <uuid>`
@@ -1474,6 +1540,7 @@ class Bot:
         key: LaneKey,
         prompt: str,
         reply_to: int | None,
+        sender: dict | None = None,
     ) -> None:
         """Stream a codex turn into the lane's TG topic.
 
@@ -1487,8 +1554,9 @@ class Bot:
         across messages — same shape as claude's `--session-id` model.
         """
         chat_id, thread_id = key
-        env = self._build_env(key, AGENT_CODEX)
+        env = self._build_env(key, AGENT_CODEX, sender=sender)
         existing_thread = _codex_thread_id_for(key)
+        prompt = _prefix_sender(prompt, sender)
 
         # Refuse early if codex isn't installed — the user gets a clear
         # install hint instead of a confusing FileNotFoundError.
@@ -1856,6 +1924,7 @@ class Bot:
         if caption and not text:
             text = caption
         mid = msg.get("message_id")
+        sender = _extract_sender(msg)
         allow = load_allow()
 
         # Binding: first message wins. Topic-id is irrelevant — once the
@@ -1923,10 +1992,13 @@ class Bot:
             )
             return
         if cmd == "/whoami":
+            who_label = _sender_label(sender) or "(unknown)"
+            who_id = sender.get("user_id") or "?"
             self.send(
                 chat_id,
                 f"chat_id: {chat_id}\nthread_id: {thread_id}\nlane: `{slug}`\n"
-                f"agent: `{_agent_for(key, self.state)}`",
+                f"agent: `{_agent_for(key, self.state)}`\n"
+                f"you: {who_label} (id `{who_id}`)",
                 reply_to=mid,
                 thread_id=thread_id,
                 markdown=True,
@@ -1996,6 +2068,7 @@ class Bot:
             "prompt": final_prompt,
             "queued_at": time.time(),
             "status": "queued",
+            "sender": sender,
         }
         self.react(chat_id, mid, EMOJI_WORKING)
         depth = _enqueue(slug, job, self._lane_drain)
@@ -2288,12 +2361,14 @@ class Bot:
                         _finish_locked(slug, job_id)
                     continue
                 key: LaneKey = (chat_id, thread_id if isinstance(thread_id, int) else 0)
+                sender = job.get("sender") if isinstance(job.get("sender"), dict) else None
                 try:
                     self.typing(chat_id, thread_id=key[1])
                     self.run_task(
                         key,
                         prompt,
                         reply_to=mid if isinstance(mid, int) else None,
+                        sender=sender,
                     )
                 except Exception:
                     LOG.exception("lane %s job %s failed", slug, job_id)
