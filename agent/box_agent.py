@@ -525,10 +525,15 @@ class Agent:
 		self._shells: dict[str, ShellSession] = {}
 		# Claude-login state machine (driven by `claude_login_*` cmds from cloud).
 		# A single in-flight login attempt at a time; new claude_login_start kills
-		# any prior one. See _claude_login_start.
+		# any prior one. See _claude_login_start. The monotonic `_attempt`
+		# counter disambiguates pty file descriptors across retries: kernels
+		# recycle fd numbers immediately after close, so an auto-Enter timer
+		# scheduled for attempt N must check the counter (not just the fd
+		# value) before writing to avoid bleeding into attempt N+1's pty.
 		self._claude_login_pid: int | None = None
 		self._claude_login_fd: int | None = None
 		self._claude_login_task: asyncio.Task | None = None
+		self._claude_login_attempt: int = 0
 		# Strong refs for fire-and-forget tasks (run_task dispatches). The
 		# event loop only weak-refs tasks from asyncio.create_task; without
 		# this set the GC can collect them mid-run and drop the output.
@@ -1454,6 +1459,7 @@ class Agent:
 			LOG.exception('claude_login: TIOCSWINSZ failed (URL may wrap)')
 
 		LOG.info('claude_login: pty forked pid=%s fd=%s', pid, fd)
+		self._claude_login_attempt += 1
 		self._claude_login_pid = pid
 		self._claude_login_fd = fd
 		self._claude_login_task = asyncio.create_task(self._claude_login_read_loop(pid, fd))
@@ -1559,18 +1565,31 @@ class Agent:
 		# "Press Enter to continue" prompt clears itself. Mirrors
 		# auto_enter_after_input_sec=2.0 on the OSS Telegram path,
 		# which is what makes that flow reach "login successful".
-		asyncio.create_task(self._claude_login_auto_enter(fd))
+		# Pin the attempt id so a stale timer from a prior attempt
+		# can't write into a recycled fd belonging to a fresh pty.
+		asyncio.create_task(
+			self._claude_login_auto_enter(fd, self._claude_login_attempt)
+		)
 		await self._send({'type': 'ack', 'cmd': 'claude_login_code', 'ok': True})
 
-	async def _claude_login_auto_enter(self, fd: int) -> None:
+	async def _claude_login_auto_enter(self, fd: int, attempt: int) -> None:
 		"""Send a blank `\\n` to the pty after a short delay.
 
 		Best-effort: if the user races us by canceling, or the pty has
 		already exited, the write will fail silently and that's fine.
+
+		The `attempt` arg is the monotonic counter captured when we
+		scheduled this timer; checking it here means a stale timer from
+		attempt N can't fire if attempt N+1 happens to receive the same
+		fd from `pty.fork` (kernels reuse closed fd numbers eagerly).
 		"""
 		await asyncio.sleep(self._CLAUDE_LOGIN_AUTO_ENTER_SEC)
-		# Only fire if this is still the active pty for the current
-		# attempt (cleanup or a fresh start would clear _claude_login_fd).
+		if self._claude_login_attempt != attempt:
+			return
+		# Belt-and-braces: also check fd identity. A cancellation between
+		# scheduling and firing would have cleared _claude_login_fd to
+		# None, so a fd-value compare against `fd` (an int) safely
+		# returns False.
 		if self._claude_login_fd != fd:
 			return
 		try:
