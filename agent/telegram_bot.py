@@ -77,6 +77,14 @@ QUEUE_FILE = Path("/etc/bux/tg-queue.json")
 # update-driven restarts (different SHA) announce themselves once.
 LAST_ANNOUNCED_SHA = Path("/var/lib/bux/last-announced.sha")
 
+# One-shot file written by /update before it kicks off bootstrap.sh. The next
+# time the bot starts, _announce_online_if_new_sha reads this and unconditionally
+# pings the listed lane(s) with a "back online" confirmation — even if the SHA
+# didn't change and even if the lane was idle. The user explicitly asked for the
+# restart, so they get a confirmation.  Format: one "<chat_id>\t<thread_id>" per
+# line (thread_id may be empty). Consumed (deleted) after read.
+UPDATE_REQUEST_LANES = Path("/var/lib/bux/update-request.lanes")
+
 # Per-lane session-uuid root. Bot creates lazily as bux-owned.
 SESSIONS_DIR = Path("/home/bux/.bux/sessions")
 # Pre-lane "global" session, written by the legacy bot. We migrate this into
@@ -4690,6 +4698,15 @@ class Bot:
                 thread_id=thread_id,
                 markdown=True,
             )
+            # Mark this lane as having requested the restart, so the post-boot
+            # announce sends it a "back online" confirmation even if the lane
+            # is idle (the default announce only pings lanes with pending work).
+            try:
+                UPDATE_REQUEST_LANES.parent.mkdir(parents=True, exist_ok=True)
+                with UPDATE_REQUEST_LANES.open("a") as f:
+                    f.write(f"{chat_id}\t{thread_id or ''}\n")
+            except Exception:
+                LOG.exception("failed to record update-request lane")
             # bux-tg.service runs as root so this is direct — no sudo needed.
             # Fire-and-forget; the restart kills us before we'd wait.
             subprocess.Popen(
@@ -5277,24 +5294,56 @@ class Bot:
         )
 
 
+def _consume_update_request_lanes() -> set["LaneKey"]:
+    """Read + delete the one-shot file written by /update. Lanes listed here get
+    a "back online" confirmation regardless of SHA delta or pending work."""
+    try:
+        text = UPDATE_REQUEST_LANES.read_text()
+    except FileNotFoundError:
+        return set()
+    try:
+        UPDATE_REQUEST_LANES.unlink()
+    except FileNotFoundError:
+        pass
+    out: set[LaneKey] = set()
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        chat_str, _, thread_str = line.partition("\t")
+        try:
+            chat_id = int(chat_str)
+        except ValueError:
+            continue
+        try:
+            thread_id = int(thread_str) if thread_str else 0
+        except ValueError:
+            thread_id = 0
+        out.add((chat_id, thread_id))
+    return out
+
+
 def _announce_online_if_new_sha(bot: "Bot") -> None:
-    """Two-stage boot announcement, scoped to lanes whose work was interrupted.
+    """Boot announcement, scoped to lanes that care about the restart.
 
-    Stage 1 (immediately at boot): a "🔄 restarting (sha=…)" message in each
-    lane that had pending work when the restart hit. Idle lanes get nothing —
-    a restart is noise to a user whose conversation wasn't mid-task.
+    Two paths:
 
-    Stage 2 (when that lane's leftover work has drained): a watcher thread
-    polls until every job that was pending at boot is gone from the lane
-    state, then edits the same message to "✅ fully ready (sha=…)" so the
-    user knows their NEXT message will be processed without queueing behind
-    an old in-flight job.
+    Two-stage (busy lanes, gated on SHA change): a "🔄 restarting (sha=…)"
+    message in each lane that had pending work when the restart hit, edited
+    in place to "✅ fully ready (sha=…)" once that lane's leftover work has
+    drained. Idle lanes get nothing — a restart is noise to a user whose
+    conversation wasn't mid-task.
 
-    Why the SHA gate: bux-tg gets restarted by plenty of things that aren't
-    user-initiated — systemd flaps, long-poll backoff escapes, the
-    post-update agent restart itself. Without the gate every blip would
-    spam any busy lane. Same SHA → silent; new SHA → one message per busy
-    lane, edited in place when that lane's work has drained.
+    One-shot (user-requested updates, no SHA gate): the lane that ran /update
+    gets a "✅ back online" confirmation unconditionally — even on idle lanes
+    and even when the SHA didn't change (e.g. /update with no new commits).
+    They explicitly asked for the restart, so they get a confirmation.
+
+    Why the SHA gate on the two-stage path: bux-tg gets restarted by plenty
+    of things that aren't user-initiated — systemd flaps, long-poll backoff
+    escapes, the post-update agent restart itself. Without the gate every
+    blip would spam any busy lane. Same SHA → silent; new SHA → one message
+    per busy lane, edited in place when that lane's work has drained.
     """
     try:
         repo = "/opt/bux/repo"
@@ -5310,7 +5359,9 @@ def _announce_online_if_new_sha(bot: "Bot") -> None:
             last = LAST_ANNOUNCED_SHA.read_text().strip()
         except FileNotFoundError:
             last = ""
-        if sha == last:
+        sha_changed = sha != last
+        requesters = _consume_update_request_lanes()
+        if not sha_changed and not requesters:
             return
         branch = (
             subprocess.run(
@@ -5326,41 +5377,63 @@ def _announce_online_if_new_sha(bot: "Bot") -> None:
             return
 
         # Snapshot leftover work per lane BEFORE the worker drain has had
-        # time to chew through it. Empty dict = no lanes were mid-task, so
-        # nobody gets pinged — record the SHA so the next same-SHA flap
-        # also stays silent and return.
-        pending_by_lane = _snapshot_pending_by_lane()
-        LAST_ANNOUNCED_SHA.parent.mkdir(parents=True, exist_ok=True)
-        if not pending_by_lane:
-            LAST_ANNOUNCED_SHA.write_text(sha + "\n")
-            return
-
-        ready_text = f"✅ fully ready (sha={sha}, branch={branch})"
-        boot_text = f"🔄 restarting (sha={sha}, branch={branch})"
+        # time to chew through it. Empty dict = no lanes were mid-task; the
+        # two-stage path will skip them.
+        pending_by_lane = (
+            _snapshot_pending_by_lane() if sha_changed else {}
+        )
 
         msg_ids: dict[LaneKey, int] = {}
         all_pending_ids: set[str] = set()
-        for (chat_id, thread_id), ids in sorted(pending_by_lane.items()):
-            # Respect the allow list — a stale lane for a chat that's no
-            # longer bound shouldn't get a message it can't read anyway.
+        if sha_changed:
+            ready_text = f"✅ fully ready (sha={sha}, branch={branch})"
+            boot_text = f"🔄 restarting (sha={sha}, branch={branch})"
+            for (chat_id, thread_id), ids in sorted(pending_by_lane.items()):
+                # Respect the allow list — a stale lane for a chat that's no
+                # longer bound shouldn't get a message it can't read anyway.
+                if chat_id not in chats:
+                    continue
+                try:
+                    mid = bot.send_returning_id(
+                        chat_id=chat_id,
+                        thread_id=thread_id or None,
+                        text=boot_text,
+                    )
+                except Exception:
+                    LOG.exception(
+                        "online-announce send failed for chat=%s thread=%s",
+                        chat_id,
+                        thread_id,
+                    )
+                    continue
+                if isinstance(mid, int):
+                    msg_ids[(chat_id, thread_id)] = mid
+                    all_pending_ids |= ids
+
+        # User-requested update: send a single "back online" to each
+        # requester lane that wasn't already covered by the two-stage
+        # announce above (avoid duplicate ping for a busy lane that also
+        # ran /update).
+        back_text = f"✅ back online (sha={sha}, branch={branch})"
+        for (chat_id, thread_id) in sorted(requesters):
             if chat_id not in chats:
                 continue
+            if (chat_id, thread_id) in msg_ids:
+                continue
             try:
-                mid = bot.send_returning_id(
+                bot.send(
                     chat_id=chat_id,
                     thread_id=thread_id or None,
-                    text=boot_text,
+                    text=back_text,
                 )
             except Exception:
                 LOG.exception(
-                    "online-announce send failed for chat=%s thread=%s",
+                    "back-online send failed for chat=%s thread=%s",
                     chat_id,
                     thread_id,
                 )
-                continue
-            if isinstance(mid, int):
-                msg_ids[(chat_id, thread_id)] = mid
-                all_pending_ids |= ids
+
+        LAST_ANNOUNCED_SHA.parent.mkdir(parents=True, exist_ok=True)
         LAST_ANNOUNCED_SHA.write_text(sha + "\n")
 
         if not msg_ids:
