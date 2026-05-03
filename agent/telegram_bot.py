@@ -209,6 +209,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("whoami", "your TG identity + this lane's agent"),
     ("version", "show the bux agent version"),
     ("update", "pull latest code + restart"),
+    ("restart", "re-run bootstrap.sh (re-apply config, restart services)"),
 ]
 
 
@@ -4008,7 +4009,8 @@ class Bot:
                 "/login — auth status / connect a service (e.g. /login github, /login claude, /login codex)\n"
                 "/logout — disconnect a service (e.g. /logout github, /logout claude, /logout codex)\n"
                 "/version — show the bux agent version\n"
-                "/update — pull latest code + restart (or /update <branch>)",
+                "/update — pull latest code + restart (or /update <branch>); no-op if already current\n"
+                "/restart — re-run bootstrap.sh to re-apply systemd/cron/deps + restart services",
                 reply_to=mid,
                 thread_id=thread_id,
             )
@@ -4081,6 +4083,9 @@ class Bot:
             return
         if cmd == "/update":
             self._cmd_update(chat_id, mid, thread_id, arg)
+            return
+        if cmd == "/restart":
+            self._cmd_restart(chat_id, mid, thread_id)
             return
         if cmd == "/login":
             self._cmd_login(chat_id, mid, thread_id, arg, slug=slug, sender=sender, owner=owner)
@@ -4600,6 +4605,12 @@ class Bot:
         Branch defaults to whatever the box is tracking (`main` for now). Pass
         `/update <branch>` to switch tracks (e.g. /update stable).
 
+        If after the fetch + checkout HEAD points at the same SHA we already
+        had, skip bootstrap entirely — there's nothing new to apply and a
+        ~10s restart cycle for zero gain is worse than just saying so. The
+        user can run /restart explicitly to force a re-bootstrap (re-apply
+        systemd/cron/deps even when the SHA hasn't moved).
+
         The restart kills this very process, so we send the ack BEFORE invoking
         bootstrap.sh. The new agent comes up within ~10s and the user's next
         message lands fine.
@@ -4625,6 +4636,14 @@ class Bot:
         )
 
         try:
+            # Capture pre-fetch SHA so we can detect a no-op update and skip
+            # the restart cycle entirely.
+            old_sha = subprocess.run(
+                ["git", "-C", repo, "rev-parse", "--short", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            ).stdout.strip()
             # Widen the fetch refspec to all branches if it isn't already.
             # install.sh clones with --branch main, leaving a single-branch
             # remote that can't reach feature branches by name. Idempotent.
@@ -4688,6 +4707,19 @@ class Bot:
                 text=True,
                 timeout=3,
             ).stdout.strip()
+            if new_sha and new_sha == old_sha:
+                # No new commits; skip the restart cycle. /restart is the
+                # explicit escape hatch for "re-apply config without code
+                # changes" (re-runs bootstrap.sh: systemd, cron, deps).
+                self.send(
+                    chat_id,
+                    f"✅ Already on latest `{new_sha}` (`{target}`). "
+                    "Use /restart to re-apply config without code changes.",
+                    reply_to=reply_to,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
             self.send(
                 chat_id,
                 f"✓ Pulled `{new_sha}`. Restarting bux…",
@@ -4695,15 +4727,7 @@ class Bot:
                 thread_id=thread_id,
                 markdown=True,
             )
-            # Mark this lane as having requested the restart, so the post-boot
-            # announce sends it a "back online" confirmation even if the lane
-            # is idle (the default announce only pings lanes with pending work).
-            try:
-                UPDATE_REQUEST_LANES.parent.mkdir(parents=True, exist_ok=True)
-                with UPDATE_REQUEST_LANES.open("a") as f:
-                    f.write(f"{chat_id}\t{thread_id or ''}\n")
-            except Exception:
-                LOG.exception("failed to record update-request lane")
+            self._record_update_request(chat_id, thread_id)
             # bux-tg.service runs as root so this is direct — no sudo needed.
             # Fire-and-forget; the restart kills us before we'd wait.
             subprocess.Popen(
@@ -4719,6 +4743,51 @@ class Bot:
                 reply_to=reply_to,
                 thread_id=thread_id,
             )
+
+    def _cmd_restart(self, chat_id: int, reply_to: int | None, thread_id: int) -> None:
+        """Re-run bootstrap.sh without touching git.
+
+        Useful when systemd units, cron entries, requirements.txt, or service
+        permissions might have drifted and need re-applying — but there's
+        nothing new to pull from origin. Records the requesting lane so the
+        post-boot announce sends a "✅ back online" confirmation.
+        """
+        repo = "/opt/bux/repo"
+        self.send(
+            chat_id,
+            "⏳ Restarting bux (re-applying config)…",
+            reply_to=reply_to,
+            thread_id=thread_id,
+        )
+        self._record_update_request(chat_id, thread_id)
+        try:
+            # bux-tg.service runs as root so this is direct — no sudo needed.
+            # Fire-and-forget; the restart kills us before we'd wait.
+            subprocess.Popen(
+                ["/bin/bash", f"{repo}/agent/bootstrap.sh"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:
+            LOG.exception("/restart failed")
+            self.send(
+                chat_id,
+                f"❌ restart failed: {e}",
+                reply_to=reply_to,
+                thread_id=thread_id,
+            )
+
+    @staticmethod
+    def _record_update_request(chat_id: int, thread_id: int) -> None:
+        """Persist (chat_id, thread_id) to the one-shot file consumed by
+        _announce_online_if_new_sha after the bot restarts. Best-effort —
+        failure here just means the requester won't get pinged on boot."""
+        try:
+            UPDATE_REQUEST_LANES.parent.mkdir(parents=True, exist_ok=True)
+            with UPDATE_REQUEST_LANES.open("a") as f:
+                f.write(f"{chat_id}\t{thread_id or ''}\n")
+        except Exception:
+            LOG.exception("failed to record update-request lane")
 
     def _cmd_login(
         self,
