@@ -885,9 +885,6 @@ def _parse_lane_slug(slug: str) -> LaneKey | None:
         return None
 
 
-    return lanes
-
-
 def _chmod_root_bux_640(path: Path) -> None:
     """Set `path` to 0o640 root:bux. Raises on failure.
 
