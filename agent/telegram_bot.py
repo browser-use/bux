@@ -4082,9 +4082,27 @@ class Bot:
             self._cmd_version(chat_id, mid, thread_id)
             return
         if cmd == "/update":
+            if not _is_owner(sender, owner):
+                self.send(
+                    chat_id,
+                    "❌ `/update` is owner-only.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
             self._cmd_update(chat_id, mid, thread_id, arg)
             return
         if cmd == "/restart":
+            if not _is_owner(sender, owner):
+                self.send(
+                    chat_id,
+                    "❌ `/restart` is owner-only.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
             self._cmd_restart(chat_id, mid, thread_id)
             return
         if cmd == "/login":
@@ -4727,14 +4745,18 @@ class Bot:
                 thread_id=thread_id,
                 markdown=True,
             )
-            self._record_update_request(chat_id, thread_id)
             # bux-tg.service runs as root so this is direct — no sudo needed.
             # Fire-and-forget; the restart kills us before we'd wait.
+            # Record the request only AFTER Popen succeeds, so a launch
+            # failure doesn't leave a stale marker that would emit a false
+            # "back online" the next time something else (systemd, etc.)
+            # restarts the bot.
             subprocess.Popen(
                 ["/bin/bash", f"{repo}/agent/bootstrap.sh"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            self._record_update_request(chat_id, thread_id)
         except Exception as e:
             LOG.exception("/update failed")
             self.send(
@@ -4759,15 +4781,17 @@ class Bot:
             reply_to=reply_to,
             thread_id=thread_id,
         )
-        self._record_update_request(chat_id, thread_id)
         try:
             # bux-tg.service runs as root so this is direct — no sudo needed.
             # Fire-and-forget; the restart kills us before we'd wait.
+            # Record the request only AFTER Popen succeeds — see the same
+            # pattern in _cmd_update for why.
             subprocess.Popen(
                 ["/bin/bash", f"{repo}/agent/bootstrap.sh"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            self._record_update_request(chat_id, thread_id)
         except Exception as e:
             LOG.exception("/restart failed")
             self.send(
