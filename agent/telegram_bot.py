@@ -5328,22 +5328,23 @@ def _announce_online_if_new_sha(bot: "Bot") -> None:
 
     Two paths:
 
-    Two-stage (busy lanes, gated on SHA change): a "🔄 restarting (sha=…)"
-    message in each lane that had pending work when the restart hit, edited
-    in place to "✅ fully ready (sha=…)" once that lane's leftover work has
-    drained. Idle lanes get nothing — a restart is noise to a user whose
+    Two-stage (busy lanes, fires on user-triggered restarts): a "🔄 restarting
+    (sha=…)" message in each lane that had pending work when the restart hit,
+    edited in place to "✅ fully ready (sha=…)" once that lane's leftover work
+    has drained. Idle lanes get nothing — a restart is noise to a user whose
     conversation wasn't mid-task.
 
-    One-shot (user-requested updates, no SHA gate): the lane that ran /update
-    gets a "✅ back online" confirmation unconditionally — even on idle lanes
-    and even when the SHA didn't change (e.g. /update with no new commits).
+    One-shot (user-requested updates): the lane that ran /update gets a
+    "✅ back online" confirmation unconditionally — even on idle lanes and
+    even when the SHA didn't change (e.g. /update with no new commits).
     They explicitly asked for the restart, so they get a confirmation.
 
-    Why the SHA gate on the two-stage path: bux-tg gets restarted by plenty
-    of things that aren't user-initiated — systemd flaps, long-poll backoff
-    escapes, the post-update agent restart itself. Without the gate every
-    blip would spam any busy lane. Same SHA → silent; new SHA → one message
-    per busy lane, edited in place when that lane's work has drained.
+    Gate (suppresses the whole announce on non-user-triggered restarts):
+    bux-tg gets restarted by plenty of things that aren't user-initiated —
+    systemd flaps, long-poll backoff escapes, the post-update agent restart
+    itself. We treat a restart as user-triggered if EITHER the SHA changed
+    (someone manually pulled + restarted) OR a /update requester is recorded.
+    Otherwise we stay silent across the board.
     """
     try:
         repo = "/opt/bux/repo"
@@ -5377,15 +5378,21 @@ def _announce_online_if_new_sha(bot: "Bot") -> None:
             return
 
         # Snapshot leftover work per lane BEFORE the worker drain has had
-        # time to chew through it. Empty dict = no lanes were mid-task; the
-        # two-stage path will skip them.
+        # time to chew through it. We snapshot whenever the restart is
+        # user-triggered (sha changed via out-of-band pull, OR a requester
+        # is present from /update) — busy lanes need the two-stage 🔄→✅
+        # treatment in either case so they know their queued work survives
+        # the restart. The original SHA-only gate was too narrow: it meant
+        # a /update on an already-current branch would silently skip
+        # busy lanes AND fire a "✅ back online" to the requester before
+        # their own pending work had drained.
         pending_by_lane = (
-            _snapshot_pending_by_lane() if sha_changed else {}
+            _snapshot_pending_by_lane() if (sha_changed or requesters) else {}
         )
 
         msg_ids: dict[LaneKey, int] = {}
         all_pending_ids: set[str] = set()
-        if sha_changed:
+        if pending_by_lane:
             ready_text = f"✅ fully ready (sha={sha}, branch={branch})"
             boot_text = f"🔄 restarting (sha={sha}, branch={branch})"
             for (chat_id, thread_id), ids in sorted(pending_by_lane.items()):
