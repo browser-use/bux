@@ -1469,7 +1469,6 @@ class Agent:
 		regex it against the accumulated buffer. No pyte virtual screen
 		needed.
 		"""
-		import os as _os
 		import re
 
 		loop = asyncio.get_running_loop()
@@ -1637,8 +1636,6 @@ def main() -> int:
 	box_id = env.get('BUX_BOX_ID', '')
 	if not box_token or not box_id:
 		LOG.error('BUX_BOX_TOKEN and BUX_BOX_ID must be set — idling')
-		import time
-
 		while True:
 			time.sleep(60)
 	agent = Agent(cloud_url=cloud_url, box_token=box_token, box_id=box_id)
