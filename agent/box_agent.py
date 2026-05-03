@@ -525,10 +525,15 @@ class Agent:
 		self._shells: dict[str, ShellSession] = {}
 		# Claude-login state machine (driven by `claude_login_*` cmds from cloud).
 		# A single in-flight login attempt at a time; new claude_login_start kills
-		# any prior one. See _claude_login_start.
+		# any prior one. See _claude_login_start. The monotonic `_attempt`
+		# counter disambiguates pty file descriptors across retries: kernels
+		# recycle fd numbers immediately after close, so an auto-Enter timer
+		# scheduled for attempt N must check the counter (not just the fd
+		# value) before writing to avoid bleeding into attempt N+1's pty.
 		self._claude_login_pid: int | None = None
 		self._claude_login_fd: int | None = None
 		self._claude_login_task: asyncio.Task | None = None
+		self._claude_login_attempt: int = 0
 		# Strong refs for fire-and-forget tasks (run_task dispatches). The
 		# event loop only weak-refs tasks from asyncio.create_task; without
 		# this set the GC can collect them mid-run and drop the output.
@@ -1357,34 +1362,38 @@ class Agent:
 	# ------------------------------------------------------------------
 	# Claude-Code OAuth login flow.
 	#
-	# `/login` is interactive: claude prints an OAuth URL that the user
-	# opens in a browser, signs in, gets a callback code, then pastes
-	# the code back into the same TUI session. On a phone web terminal
-	# that copy/paste round trip is brutal (xterm.js doesn't long-press
-	# cleanly, the URL wraps awkwardly, etc).
+	# `claude auth login` is interactive: claude prints an OAuth URL,
+	# the user signs in, copies the callback URL/code, and pastes it
+	# back. On a phone web terminal the copy/paste round trip via
+	# xterm.js is brutal — so cloud's FE drives the same flow over
+	# WebSocket, with this agent forking the pty and shuttling stdout
+	# (URL) and stdin (pasted code) over `claude_login_*` events.
 	#
-	# Implementation: drive an *interactive* claude session (no args) in
-	# a pty. Steps:
-	#   1. Wait for the trust prompt → press Enter to accept the cwd.
-	#   2. Send `/login\r` to invoke the slash command.
-	#   3. (No picker — the interactive /login goes straight to OAuth.)
-	#   4. Match `https://claude.{com,ai}/{cai/}?oauth/authorize?...` in
-	#      the stripped output stream. COLUMNS=1000 env keeps claude
-	#      from wrapping the URL across lines.
-	#   5. On `claude_login_code` cmd, write `code\r\n` to the pty.
+	# Implementation tracks the working /claude login flow in the OSS
+	# Telegram bot (telegram_bot.py:_cmd_claude_login → ShellSession):
+	#   1. Fork pty, exec `/usr/bin/claude auth login`.
+	#   2. Strip ANSI from each pty read, regex-match the OAuth URL.
+	#      COLUMNS=1000 keeps claude from wrapping the ~700-char URL.
+	#   3. On `claude_login_code` cmd, write `code\r\n` to the pty,
+	#      then auto-send a blank Enter ~2s later to clear the
+	#      "Press Enter to continue" confirmation prompt claude shows
+	#      after a successful paste.
 	#
-	# Two earlier attempts went wrong: `claude /login` as a CLI arg
-	# fails with "/login isn't available in this environment", and
-	# `claude auth login --claudeai` prints the URL but doesn't read
-	# stdin (it expects the OAuth callback via the browser, not a
-	# pasted code). Only the *interactive* /login slash command
-	# accepts a pasted code; we have to drive the TUI to reach it.
+	# Earlier attempts on this agent drove the *interactive* TUI by
+	# sending `/login` as a slash command. That worked but was fragile:
+	# a hard 12s watchdog on the cloud side blew up on slow box starts,
+	# the pyte virtual-screen renderer was needed to recover URLs from
+	# claude's cursor-right escape sequences, and the "Press Enter to
+	# continue" prompt after the code was never cleared, so the flow
+	# silently hung. The non-interactive `claude auth login` subcommand
+	# avoids all three problems.
 	#
 	# State machine (per-attempt):
 	#   awaiting_url    → claude prints the OAuth URL.
 	#                     We forward it as `claude_login_url`.
 	#   awaiting_code   → user pastes via FE → cloud sends
-	#                     `claude_login_code` → we write to pty stdin.
+	#                     `claude_login_code` → we write to pty stdin
+	#                     and schedule an auto-Enter 2s later.
 	#   done            → claude writes ~/.claude.json. The existing
 	#                     auth-poll loop on this agent picks it up
 	#                     and emits `claude_authed`. Pty exits; we
@@ -1394,9 +1403,15 @@ class Agent:
 	#                     stdout we captured for the user to read.
 	# ------------------------------------------------------------------
 
+	# Auto-Enter delay after writing the OAuth code: claude usually
+	# shows a second "Press Enter to continue" prompt after the code is
+	# accepted. 2s matches what telegram_bot.py:ShellSession does and
+	# is short enough that the user notices the flow advancing.
+	_CLAUDE_LOGIN_AUTO_ENTER_SEC = 2.0
+
 	async def _claude_login_start(self) -> None:
 		# Kill any prior in-flight attempt before starting fresh. Two
-		# concurrent /login pty's would race for the same ~/.claude.json
+		# concurrent login pty's would race for the same ~/.claude.json
 		# write, and the user can only be in one OAuth flow at a time
 		# anyway.
 		await self._claude_login_cleanup()
@@ -1413,9 +1428,10 @@ class Agent:
 			return
 
 		if pid == 0:
-			# Child. Exec interactive claude. We must NOT pass
-			# --dangerously-skip-permissions or `auth login` here — both
-			# disable the slash-command parser that we need for /login.
+			# Child. `claude auth login` is the dedicated OAuth subcommand;
+			# it prints the URL on stdout and then reads a single line of
+			# stdin (the pasted callback URL/code), no slash-command
+			# parser needed.
 			#
 			# COLUMNS=1000 + LINES=50 keep claude from wrapping the
 			# OAuth URL (~700 chars) across multiple lines. Without it,
@@ -1427,7 +1443,7 @@ class Agent:
 				_os.environ['HOME'] = '/home/bux'
 				_os.environ['COLUMNS'] = '1000'
 				_os.environ['LINES'] = '50'
-				_os.execvp('/usr/bin/claude', ['/usr/bin/claude'])
+				_os.execvp('/usr/bin/claude', ['/usr/bin/claude', 'auth', 'login'])
 			except Exception:
 				_os._exit(127)
 
@@ -1443,6 +1459,7 @@ class Agent:
 			LOG.exception('claude_login: TIOCSWINSZ failed (URL may wrap)')
 
 		LOG.info('claude_login: pty forked pid=%s fd=%s', pid, fd)
+		self._claude_login_attempt += 1
 		self._claude_login_pid = pid
 		self._claude_login_fd = fd
 		self._claude_login_task = asyncio.create_task(self._claude_login_read_loop(pid, fd))
@@ -1450,62 +1467,28 @@ class Agent:
 		await self._send({'type': 'ack', 'cmd': 'claude_login_start', 'ok': True})
 
 	async def _claude_login_read_loop(self, pid: int, fd: int) -> None:
-		"""Drain the pty, drive trust prompt → /login → URL extraction.
+		"""Drain the pty: extract the OAuth URL once, then run to EOF.
 
-		Why pyte: claude's TUI renders the OAuth URL with `\x1b[1C`
-		cursor-right escapes between letter groups, AND wraps it across
-		multiple lines even with COLUMNS env hints. Stripping ANSI and
-		regex-matching the byte stream gives us garbage like
-		`https://cl  ud  .com/cai/...`. Feeding the byte stream into a
-		virtual screen renderer (pyte) reconstructs what the user
-		actually sees: rendered text in a 2D grid we can read row-by-row.
-		Joining adjacent rows lets us recover the full URL even when
-		it spans 6+ lines.
+		`claude auth login` prints the URL on its own line (no TUI
+		cursor escapes splitting it letter-by-letter, unlike interactive
+		`/login`), so we only need to ANSI-strip the byte stream and
+		regex it against the accumulated buffer. No pyte virtual screen
+		needed.
 		"""
-		import os as _os
 		import re
-
-		import pyte
 
 		loop = asyncio.get_running_loop()
 		url_done = False
-		trust_done = False
-		login_sent = False
-		started = time.time()
 
-		# 200x60 is wide+tall enough that the URL fits on at most 4 lines
-		# even if claude wraps. We join lines before regex-matching.
-		screen = pyte.Screen(200, 60)
-		stream = pyte.ByteStream(screen)
-
+		# Strips CSI/OSC/SGR + bare ESC sequences. Plenty for `claude
+		# auth login` which only emits color codes around the URL.
+		ansi_re = re.compile(
+			r'\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-_]'
+		)
 		url_re = re.compile(
 			r'https://claude\.(?:com|ai)/(?:cai/)?oauth/authorize\?\S+'
 		)
-		trust_re = re.compile(r'trust this folder', re.IGNORECASE)
-
-		def _screen_text() -> str:
-			return '\n'.join(line.rstrip() for line in screen.display)
-
-		def _find_url() -> str | None:
-			"""Find a URL in the rendered screen, joining adjacent lines.
-
-			Tries longest-first: full screen joined → individual lines.
-			Joining strips line boundaries inside the URL since claude
-			wraps long URLs without inserting actual whitespace.
-			"""
-			lines = [line.rstrip() for line in screen.display]
-			# 1. Try each line on its own first (URL might not have wrapped).
-			for line in lines:
-				m = url_re.search(line)
-				if m:
-					return m.group(0)
-			# 2. Try joining all lines (URL spans multiple rows).
-			joined = ''.join(line.rstrip() for line in lines)
-			m = url_re.search(joined)
-			if m:
-				# Strip any trailing whitespace claude may have padded.
-				return m.group(0).rstrip()
-			return None
+		buf = ''
 
 		try:
 			while True:
@@ -1518,41 +1501,25 @@ class Agent:
 					await self._send({'type': 'claude_login_exited'})
 					return
 				if data is None:
+					# `_read_with_timeout` returns None on poll timeout
+					# (no data within 0.5s). Re-check whether this loop
+					# still owns the current pty; otherwise exit.
 					if self._claude_login_pid != pid:
 						return
-					# After 6s with no trust prompt seen, assume claude
-					# already trusts this dir and just send /login. The
-					# trust prompt is a one-time onboarding card; on
-					# subsequent runs claude lands directly at the chat.
-					if not trust_done and time.time() - started > 6:
-						LOG.info('claude_login: no trust prompt; assuming trusted')
-						trust_done = True
-					if trust_done and not login_sent:
-						LOG.info('claude_login: sending /login')
-						_os.write(fd, b'/login\r')
-						login_sent = True
 					continue
 
-				try:
-					stream.feed(data)
-				except Exception:
-					LOG.exception('claude_login: pyte feed failed')
-					continue
-				screen_text = _screen_text()
+				# Append new bytes (stripped of ANSI) to a rolling buffer
+				# and search for the URL. Cap buffer so a runaway pty
+				# doesn't grow it unbounded — the URL is well under 1KB
+				# and shows up in the first second of output.
+				buf += ansi_re.sub('', data.decode('utf-8', 'replace'))
+				if len(buf) > 32_768:
+					buf = buf[-16_384:]
 
-				if not trust_done and trust_re.search(screen_text):
-					LOG.info('claude_login: trust prompt; pressing Enter')
-					_os.write(fd, b'\r')
-					trust_done = True
-
-				if trust_done and not login_sent:
-					LOG.info('claude_login: sending /login')
-					_os.write(fd, b'/login\r')
-					login_sent = True
-
-				if login_sent and not url_done:
-					url = _find_url()
-					if url:
+				if not url_done:
+					m = url_re.search(buf)
+					if m:
+						url = m.group(0)
 						LOG.info('claude_login: extracted URL (len=%d)', len(url))
 						await self._send({'type': 'claude_login_url', 'url': url})
 						url_done = True
@@ -1594,7 +1561,45 @@ class Agent:
 		# `claude auth status` and will emit claude_authed when the
 		# token lands. Poke the wakeup event so it rechecks immediately.
 		self._auth_wakeup.set()
+		# Schedule a blank-Enter ~2s after the code so the second
+		# "Press Enter to continue" prompt clears itself. Mirrors
+		# auto_enter_after_input_sec=2.0 on the OSS Telegram path,
+		# which is what makes that flow reach "login successful".
+		# Pin the attempt id so a stale timer from a prior attempt
+		# can't write into a recycled fd belonging to a fresh pty.
+		asyncio.create_task(
+			self._claude_login_auto_enter(fd, self._claude_login_attempt)
+		)
 		await self._send({'type': 'ack', 'cmd': 'claude_login_code', 'ok': True})
+
+	async def _claude_login_auto_enter(self, fd: int, attempt: int) -> None:
+		"""Send a blank `\\n` to the pty after a short delay.
+
+		Best-effort: if the user races us by canceling, or the pty has
+		already exited, the write will fail silently and that's fine.
+
+		The `attempt` arg is the monotonic counter captured when we
+		scheduled this timer; checking it here means a stale timer from
+		attempt N can't fire if attempt N+1 happens to receive the same
+		fd from `pty.fork` (kernels reuse closed fd numbers eagerly).
+		"""
+		await asyncio.sleep(self._CLAUDE_LOGIN_AUTO_ENTER_SEC)
+		if self._claude_login_attempt != attempt:
+			return
+		# Belt-and-braces: also check fd identity. A cancellation between
+		# scheduling and firing would have cleared _claude_login_fd to
+		# None, so a fd-value compare against `fd` (an int) safely
+		# returns False.
+		if self._claude_login_fd != fd:
+			return
+		try:
+			import os as _os
+
+			_os.write(fd, b'\n')
+		except Exception:
+			# Pty closed before we got here — login probably already
+			# completed and the auto-poll picked up the new token.
+			pass
 
 	async def _claude_login_cancel(self) -> None:
 		await self._claude_login_cleanup()
@@ -1650,8 +1655,6 @@ def main() -> int:
 	box_id = env.get('BUX_BOX_ID', '')
 	if not box_token or not box_id:
 		LOG.error('BUX_BOX_TOKEN and BUX_BOX_ID must be set — idling')
-		import time
-
 		while True:
 			time.sleep(60)
 	agent = Agent(cloud_url=cloud_url, box_token=box_token, box_id=box_id)
