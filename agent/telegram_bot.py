@@ -4831,17 +4831,28 @@ class Bot:
                 key: LaneKey = (chat_id, thread_id if isinstance(thread_id, int) else 0)
                 sender = job.get("sender") if isinstance(job.get("sender"), dict) else None
                 # If this job was queued behind something and we exposed
-                # a Steer button on its ack bubble, strip the button now
-                # that it's running — a stale tap can't usefully kill
-                # the very job it would have promoted.
+                # a "queued (#N)" ack bubble with a Steer button, delete
+                # that whole bubble now that work is starting — the
+                # placeholder bubble StreamingMessage is about to send
+                # (with the thinking emoji) supersedes it, and leaving
+                # the stale "queued" line above the live bubble made it
+                # harder to scan which message is actually being worked
+                # on. Falls back to stripping the keyboard if delete
+                # fails (TG's 48h delete window, etc.) so a stale Steer
+                # tap can't kill its own job.
                 steer_mid = job.get("steer_msg_id")
                 if isinstance(steer_mid, int):
                     try:
-                        self.call("editMessageReplyMarkup", chat_id=chat_id,
-                                  message_id=steer_mid,
-                                  reply_markup={"inline_keyboard": []})
+                        self.call("deleteMessage", chat_id=chat_id,
+                                  message_id=steer_mid)
                     except Exception:
-                        LOG.exception("strip steer keyboard for %s failed", job_id)
+                        LOG.exception("delete queued ack for %s failed; stripping keyboard instead", job_id)
+                        try:
+                            self.call("editMessageReplyMarkup", chat_id=chat_id,
+                                      message_id=steer_mid,
+                                      reply_markup={"inline_keyboard": []})
+                        except Exception:
+                            LOG.exception("strip steer keyboard for %s failed", job_id)
                 try:
                     self.typing(chat_id, thread_id=key[1])
                     self.run_task(
