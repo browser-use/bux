@@ -862,6 +862,54 @@ def _is_owner(sender: dict | None, owner: dict | None) -> bool:
     return bool(sid and oid and sid == oid)
 
 
+def _box_owner(state: dict) -> dict | None:
+    """Return the global box-owner record, or None if not yet bound.
+
+    The "box owner" is whoever redeemed the original `TG_SETUP_TOKEN` —
+    a single human identity per box, used to auto-allow new chats they
+    add the bot to. Distinct from the per-chat `owners` map (which can
+    have a different first-binder per chat in the multi-chat case).
+
+    Migration: legacy state files only have `owners`. Derive the box
+    owner from the earliest-bound entry there, persist it, and return.
+    """
+    rec = state.get("box_owner")
+    if isinstance(rec, dict) and rec.get("user_id"):
+        return rec
+    owners = state.get("owners") or {}
+    if not owners:
+        return None
+    earliest: dict | None = None
+    for v in owners.values():
+        if not isinstance(v, dict) or not v.get("user_id"):
+            continue
+        if earliest is None or (v.get("bound_at") or 0) < (earliest.get("bound_at") or 0):
+            earliest = v
+    if earliest:
+        state["box_owner"] = {k: earliest[k] for k in ("user_id", "username", "name", "bound_at") if k in earliest}
+        save_state(state)
+    return state.get("box_owner")
+
+
+def _set_box_owner(state: dict, sender: dict) -> None:
+    """Record the global box owner. First-bind wins; never overwrite.
+
+    Called from `_bind_chat` when the setup token gets redeemed. Once
+    set, this identity gates auto-allow of new chats: only my_chat_member
+    updates whose `from.id` matches this user_id will admit a fresh chat.
+    """
+    if state.get("box_owner"):
+        return
+    if not sender.get("user_id"):
+        return
+    rec: dict = {"bound_at": int(time.time())}
+    for k in ("user_id", "username", "name"):
+        if sender.get(k):
+            rec[k] = sender[k]
+    state["box_owner"] = rec
+    save_state(state)
+
+
 def load_allow() -> set[int]:
     if not ALLOWED_FILE.exists():
         return set()
@@ -3552,6 +3600,7 @@ class Bot:
         self.setup_token = ""
         if sender and sender.get("user_id"):
             _set_owner_for(chat_id, sender, self.state)
+            _set_box_owner(self.state, sender)
             LOG.info(
                 "authorized chat_id=%s owner=%s (id=%s)",
                 chat_id,
@@ -3570,6 +3619,78 @@ class Bot:
             "Turn on Topics in this chat and each topic becomes a separate "
             "agent session. Use `/codex` per-topic to switch from claude.",
         )
+
+    def _auto_allow_chat(
+        self,
+        chat_id: int,
+        sender: dict | None,
+        announce: bool = True,
+    ) -> None:
+        """Allow-list a new chat that the box owner just added the bot to.
+
+        Mirror of `_bind_chat` minus the setup-token burn (already burned
+        on first bind). Idempotent: re-running on an already-allowed chat
+        skips the welcome but still backfills the per-chat owner record.
+        """
+        already = chat_id in load_allow()
+        if not already:
+            add_allow(chat_id)
+        if sender and sender.get("user_id"):
+            _set_owner_for(chat_id, sender, self.state)
+        if already:
+            return
+        if announce:
+            try:
+                self.send(
+                    chat_id,
+                    "✓ Activated for this chat (you're the box owner).\n\n"
+                    "Topics inside are auto-allowed. Text me anything.",
+                )
+            except Exception:
+                LOG.exception("auto-allow welcome send failed for chat_id=%s", chat_id)
+
+    def _handle_my_chat_member(self, update: dict) -> None:
+        """React to the bot's own membership changing in some chat.
+
+        Telegram fires `my_chat_member` whenever the bot is added to a
+        chat, removed, or has its admin rights changed. We use it to
+        auto-allow chats that the box owner adds the bot to — the
+        primary path for "I just made a new group, let me use it".
+
+        Security: only `from.id == box_owner.user_id` triggers auto-allow.
+        Anyone else adding the bot is silently ignored (the chat stays
+        denied at the message gate).
+        """
+        try:
+            chat = update.get("chat") or {}
+            chat_id = chat.get("id")
+            if not chat_id:
+                return
+            actor_raw = update.get("from") or {}
+            actor = _extract_sender({"from": actor_raw})
+            box_owner = _box_owner(self.state)
+            if not box_owner:
+                LOG.info("my_chat_member chat_id=%s but no box_owner yet — ignoring", chat_id)
+                return
+            if not actor.get("user_id") or str(actor["user_id"]) != str(box_owner["user_id"]):
+                LOG.info(
+                    "my_chat_member chat_id=%s by user_id=%s (not box owner) — ignoring",
+                    chat_id,
+                    actor.get("user_id") or "?",
+                )
+                return
+            new_status = ((update.get("new_chat_member") or {}).get("status")) or ""
+            if new_status in ("left", "kicked"):
+                LOG.info("my_chat_member chat_id=%s status=%s — not auto-allowing", chat_id, new_status)
+                return
+            LOG.info(
+                "auto-allow chat_id=%s via my_chat_member (added by owner user_id=%s)",
+                chat_id,
+                actor["user_id"],
+            )
+            self._auto_allow_chat(chat_id, actor, announce=True)
+        except Exception:
+            LOG.exception("my_chat_member handling failed")
 
     # ----- Attachments -----
 
@@ -3733,12 +3854,29 @@ class Bot:
         # Binding: first message wins. Topic-id is irrelevant — once the
         # parent chat is bound, every topic in it is automatically allowed.
         if chat_id not in allow:
-            if not self.setup_token:
+            if self.setup_token:
+                LOG.info("binding chat_id=%s (first-message wins)", chat_id)
+                self._bind_chat(chat_id, sender=sender)
+                return
+            # Setup-token already burned. Auto-allow only if the sender is
+            # the box owner — they're the one human authorized to expand
+            # the bot's reach. Anyone else (incl. someone the owner is in
+            # a group with) stays denied. The my_chat_member handler is
+            # the primary path for this; this branch is the fallback for
+            # cases where that update was missed (bot added before
+            # my_chat_member subscription, restart races, etc).
+            box_owner = _box_owner(self.state)
+            if box_owner and sender.get("user_id") and str(sender["user_id"]) == str(box_owner["user_id"]):
+                LOG.info(
+                    "auto-allow chat_id=%s via owner message (user_id=%s)",
+                    chat_id,
+                    sender["user_id"],
+                )
+                self._auto_allow_chat(chat_id, sender, announce=True)
+                # Fall through and process the message in the now-allowed chat.
+            else:
                 LOG.info("dropping msg from chat_id=%s (already bound)", chat_id)
                 return
-            LOG.info("binding chat_id=%s (first-message wins)", chat_id)
-            self._bind_chat(chat_id, sender=sender)
-            return
 
         # Backfill the owner for chats bound before owner-tracking existed:
         # first sender we see in an allowed-but-unowned chat becomes the
@@ -5090,13 +5228,16 @@ class Bot:
             try:
                 # allowed_updates filters server-side so we don't burn
                 # update_ids on channel_post / inline_query / poll / etc —
-                # we only consume message + edited_message + callback_query.
-                # callback_query is for the tg-approve permission bridge
-                # (inline-keyboard taps on Allow/Deny prompts).
+                # we only consume message + edited_message + callback_query
+                # + my_chat_member. callback_query is for the tg-approve
+                # permission bridge (inline-keyboard taps on Allow/Deny
+                # prompts). my_chat_member fires when the bot is
+                # added/removed/promoted in a chat — used to auto-allow
+                # new chats that the box owner adds the bot to.
                 params: dict = {
                     "timeout": POLL_TIMEOUT,
                     "allowed_updates": [
-                        "message", "edited_message", "callback_query",
+                        "message", "edited_message", "callback_query", "my_chat_member",
                     ],
                 }
                 if self.state.get("offset"):
@@ -5111,6 +5252,13 @@ class Bot:
                         threading.Thread(
                             target=self._handle_callback_query,
                             args=(cb,),
+                            daemon=True,
+                        ).start()
+                        continue
+                    if mcm := u.get("my_chat_member"):
+                        threading.Thread(
+                            target=self._handle_my_chat_member,
+                            args=(mcm,),
                             daemon=True,
                         ).start()
                         continue
