@@ -865,14 +865,32 @@ def _is_owner(sender: dict | None, owner: dict | None) -> bool:
 def _box_owner(state: dict) -> dict | None:
     """Return the global box-owner record, or None if not yet bound.
 
-    The "box owner" is whoever redeemed the original `TG_SETUP_TOKEN` —
-    a single human identity per box, used to auto-allow new chats they
-    add the bot to. Distinct from the per-chat `owners` map (which can
-    have a different first-binder per chat in the multi-chat case).
+    The "box owner" is the single human identity per box used to gate
+    auto-allow of new chats and any other owner-only action. Resolved
+    in priority order:
 
-    Migration: legacy state files only have `owners`. Derive the box
-    owner from the earliest-bound entry there, persist it, and return.
+    1. `TG_OWNER_ID` in /etc/bux/tg.env (with optional TG_OWNER_USERNAME
+       and TG_OWNER_NAME). Set by the install path when the cloud or
+       operator provisioning the box already knows the human's TG
+       identity. Authoritative — overrides everything else and prevents
+       any first-message-wins race.
+    2. Persisted `state["box_owner"]` from a previous bind.
+    3. Derived from the earliest entry in `state["owners"]` (legacy
+       migration for installs that pre-date the env var and box_owner
+       fields). Result is persisted into state.
+
+    Distinct from the per-chat `owners` map (which can have a different
+    first-binder per chat in the multi-chat case).
     """
+    env = _read_kv(TG_ENV)
+    env_id = (env.get("TG_OWNER_ID") or "").strip()
+    if env_id:
+        rec: dict = {"user_id": env_id, "source": "env"}
+        for src_key, dst_key in (("TG_OWNER_USERNAME", "username"), ("TG_OWNER_NAME", "name")):
+            v = (env.get(src_key) or "").strip()
+            if v:
+                rec[dst_key] = v
+        return rec
     rec = state.get("box_owner")
     if isinstance(rec, dict) and rec.get("user_id"):
         return rec

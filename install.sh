@@ -16,6 +16,15 @@
 # Optional env vars:
 #   BROWSER_USE_API_KEY  — Browser Use Cloud key (required; prompts if missing)
 #   TG_BOT_TOKEN         — Telegram bot token (enables the TG bot if set)
+#   TG_OWNER_ID          — Telegram numeric user_id of the box owner. When set,
+#                          the bot pins the owner identity at install time
+#                          instead of inferring "first sender wins". Any other
+#                          user (incl. someone who races to redeem the setup
+#                          token) is treated as a guest. Recommended for
+#                          cloud-provisioned boxes — the cloud knows who the
+#                          user is and can supply this directly.
+#   TG_OWNER_USERNAME    — Optional companion to TG_OWNER_ID (display only).
+#   TG_OWNER_NAME        — Optional companion to TG_OWNER_ID (display only).
 #   WITH_ZTK             — install ztk (default 1; set to 0 to skip). ztk is a
 #                          Zig CLI that compresses long Bash tool outputs
 #                          (git diff, ls, test runners) before they hit
@@ -566,6 +575,16 @@ if [ -n "$TG_BOT_TOKEN" ]; then
 TG_BOT_TOKEN=$TG_BOT_TOKEN
 TG_SETUP_TOKEN=$setup_token
 EOF
+	# When the provisioner already knows the owner's TG identity (cloud
+	# install, scripted setup), pin it now. The bot reads TG_OWNER_ID at
+	# startup as the authoritative box-owner — a stranger redeeming the
+	# setup token gets the chat allow-listed but is treated as a guest
+	# for every owner-only check (auto-allow, /terminal, /codex, etc).
+	if [ -n "${TG_OWNER_ID:-}" ]; then
+		printf 'TG_OWNER_ID=%s\n' "$TG_OWNER_ID" >> /etc/bux/tg.env
+		[ -n "${TG_OWNER_USERNAME:-}" ] && printf 'TG_OWNER_USERNAME=%s\n' "$TG_OWNER_USERNAME" >> /etc/bux/tg.env
+		[ -n "${TG_OWNER_NAME:-}" ] && printf 'TG_OWNER_NAME=%s\n' "$TG_OWNER_NAME" >> /etc/bux/tg.env
+	fi
 	# 0o640 root:bux so the tg-send helper can read the bot token from
 	# `at` jobs running as bux. Worst-case leak: someone with bux access
 	# can call sendMessage, but only the bound chat receives it — they
