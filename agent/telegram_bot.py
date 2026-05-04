@@ -3961,25 +3961,18 @@ class Bot:
                 LOG.info("binding chat_id=%s (first-message wins)", chat_id)
                 self._bind_chat(chat_id, sender=sender)
                 return
-            # Setup-token already burned. Auto-allow only if the sender is
-            # the box owner — they're the one human authorized to expand
-            # the bot's reach. Anyone else (incl. someone the owner is in
-            # a group with) stays denied. The my_chat_member handler is
-            # the primary path for this; this branch is the fallback for
-            # cases where that update was missed (bot added before
-            # my_chat_member subscription, restart races, etc).
-            box_owner = _box_owner(self.state)
-            if box_owner and sender.get("user_id") and str(sender["user_id"]) == str(box_owner["user_id"]):
-                LOG.info(
-                    "auto-allow chat_id=%s via owner message (user_id=%s)",
-                    chat_id,
-                    sender["user_id"],
-                )
-                self._auto_allow_chat(chat_id, sender, announce=True)
-                # Fall through and process the message in the now-allowed chat.
-            else:
-                LOG.info("dropping msg from chat_id=%s (already bound)", chat_id)
-                return
+            # Setup-token already burned. The ONLY path to allow-list a
+            # new chat is `my_chat_member` firing with `from.id` matching
+            # the box owner — i.e., the owner explicitly added the bot
+            # via Telegram's add-to-group UI. Owner-sent messages in an
+            # unallowed chat are NOT a fallback: that path used to admit
+            # chats where someone else added the bot (with the owner as
+            # a member) the moment the owner spoke, which leaks the bot
+            # into chats the owner never opted into. To recover from a
+            # missed my_chat_member update, owner must remove + re-add
+            # the bot (or hand-edit /etc/bux/tg-allowed.txt).
+            LOG.info("dropping msg from chat_id=%s (not allow-listed)", chat_id)
+            return
 
         # Backfill the owner for chats bound before owner-tracking existed:
         # first sender we see in an allowed-but-unowned chat becomes the
