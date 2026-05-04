@@ -123,20 +123,37 @@ else
   # Idempotent: remove any prior entry (ignore failure if it didn't exist),
   # then re-add against the current token. -H so HOME resolves to /home/bux
   # and the registration lands in bux's ~/.claude.json, not root's.
+  #
+  # `--scope user` is critical: without it, `claude mcp add` defaults to
+  # `--scope local`, which writes the MCP entry under the *current working
+  # directory's* project record in ~/.claude.json. bootstrap.sh's CWD
+  # depends on who invoked it (cloud-init runs us from /, packer from
+  # /opt/bux/repo, /update from /home/bux), so the MCP would land in a
+  # random project entry the bot's claude session never visits. The bot
+  # always runs claude from /home/bux (see CLAUDE.md), so a registration
+  # under e.g. `projects./opt/bux/repo` is dead weight — `claude mcp list`
+  # from /home/bux returns nothing for composio. User-scope is project-
+  # independent and matches the "available to every claude session as bux"
+  # intent. The `claude mcp remove` call above doesn't take --scope, so it
+  # finds and clears the entry regardless of which scope it was previously
+  # written to (handles the cleanup of the old buggy local-scope entries).
   sudo -u bux -H claude mcp remove composio >/dev/null 2>&1 || true
   # Subshell with `set +x` so the bearer token never lands in trace output
   # (currently bootstrap is set -euo pipefail without -x, but if anyone
   # turns on tracing for debugging they shouldn't accidentally leak the
   # token to /var/log/bux/install.log or the user-data console log).
-  ( set +x; sudo -u bux -H claude mcp add --transport http composio \
+  ( set +x; sudo -u bux -H claude mcp add --scope user --transport http composio \
     https://api.browser-use.com/cloud/composio/mcp \
     --header "Authorization: Bearer $BUX_BOX_TOKEN" >/dev/null ) || \
     echo "bootstrap: WARN failed to register cloud Composio MCP server; continuing bootstrap" >&2
   # Verify the registration actually wrote a usable entry. A silent
   # failure here means the user doesn't get cloud integrations until
   # their next /update — this fail-loud check turns that into a
-  # bootstrap-time error we'll see in install.log instead.
-  if ! sudo -u bux -H claude mcp list 2>/dev/null | grep -q '^composio'; then
+  # bootstrap-time error we'll see in install.log instead. Run `mcp list`
+  # from /home/bux specifically because that's the directory the bot's
+  # claude session runs from — if the registration doesn't surface here,
+  # the bot won't see it, so the verification has to match the consumer.
+  if ! sudo -u bux -H bash -c 'cd /home/bux && claude mcp list 2>/dev/null' | grep -q '^composio'; then
     echo "bootstrap: WARN composio MCP registration didn't take" >&2
   else
     echo "bootstrap: registered cloud Composio MCP server"
