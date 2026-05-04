@@ -366,10 +366,12 @@ git -C /opt/bux/repo rev-list --left-right --count HEAD...origin/main
 
 ### Apply updates
 
+**Use `bux-restart`, not raw `systemctl restart bux-tg`.** When the user asks you to restart (or you need to restart to pick up code you edited), call `bux-restart` — it's a thin wrapper that records the current lane in `/var/lib/bux/update-request.lanes` before calling `systemctl restart bux-tg`, so the post-boot announce sends a "✅ back online (sha=…)" ping into this lane. Plain `systemctl restart bux-tg` skips the ping for idle lanes (the announce only auto-pings busy lanes by default), so the user sees nothing — they have to ask "done?" to know the restart finished.
+
 If only `agent/telegram_bot.py` changed (the most common case), the fast path is one command — `/opt/bux/agent` is a symlink into the repo, so a pull picks up the new file and a restart is all that's left:
 
 ```bash
-sudo systemctl restart bux-tg
+bux-restart
 ```
 
 Pair it with `git -C /opt/bux/repo pull --ff-only origin main` first if there are commits to pick up. Skip bootstrap entirely for bot-only changes — it re-installs deps and restarts every service for ~30s, which is overkill.
@@ -377,7 +379,7 @@ Pair it with `git -C /opt/bux/repo pull --ff-only origin main` first if there ar
 For changes that touch systemd units, cron, requirements.txt, browser-harness, or anything beyond `telegram_bot.py`, run the full bootstrap (this is what `/update` does in TG):
 
 ```bash
-sudo /bin/bash /opt/bux/repo/agent/bootstrap.sh
+bux-restart --bootstrap
 ```
 
 That `git pull`s, re-applies systemd units / cron, pip-installs any new requirements, and restarts box-agent + bux-tg. You will be killed at the tail of this — by the time the user sends another message you'll be running new code.

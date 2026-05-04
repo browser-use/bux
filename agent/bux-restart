@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# bux-restart — restart bux-tg with a back-online ping into the current lane.
+#
+# Drop-in replacement for `sudo systemctl restart bux-tg` when the agent
+# (or a user on the box) wants the restart to be announced. Records the
+# current lane in /var/lib/bux/update-request.lanes so the post-boot
+# announce in telegram_bot.py sends "✅ back online (sha=…)" — same UX
+# as /update from TG, but callable from the shell when claude/codex is
+# the one driving the restart in response to natural-language requests.
+#
+# Usage:
+#   bux-restart                # sudo systemctl restart bux-tg (fast path)
+#   bux-restart --bootstrap    # sudo bootstrap.sh (full deps + units)
+#
+# Routing inputs (set in env by the bot before invoking the agent):
+#   TG_CHAT_ID    — current lane's chat id (required for the ping)
+#   TG_THREAD_ID  — current lane's message_thread_id (optional, for forum topics)
+#
+# Without TG_CHAT_ID the helper still restarts but skips the ping —
+# matches a manual ssh-user restart where there's no lane to ping.
+set -euo pipefail
+
+mode="restart"
+case "${1:-}" in
+  --bootstrap) mode="bootstrap" ;;
+  --help|-h)
+    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0
+    ;;
+  "") ;;
+  *) echo "bux-restart: unknown arg: $1" >&2; exit 2 ;;
+esac
+
+if [ -n "${TG_CHAT_ID:-}" ]; then
+  # Append "<chat_id>\t<thread_id>\n" — same shape _cmd_update writes
+  # in telegram_bot.py. The post-boot consumer reads + unlinks the file,
+  # so a never-consumed line stays in queue until the next restart.
+  sudo install -d -o root -g root -m 0755 /var/lib/bux
+  printf '%s\t%s\n' "$TG_CHAT_ID" "${TG_THREAD_ID:-}" \
+    | sudo tee -a /var/lib/bux/update-request.lanes >/dev/null
+fi
+
+if [ "$mode" = "bootstrap" ]; then
+  # Mirror /update's flow: pull current branch, then bootstrap. bootstrap.sh
+  # alone does NOT git pull — it only re-applies what's already checked out.
+  # Without the pull, a "merge + bux-restart --bootstrap" sequence runs the
+  # OLD code with the new bootstrap, missing the actual change.
+  repo=/opt/bux/repo
+  branch=$(sudo git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)
+  sudo git -C "$repo" pull --ff-only origin "$branch" || {
+    echo "bux-restart: git pull failed for branch=$branch — aborting bootstrap" >&2
+    exit 1
+  }
+  exec sudo /bin/bash "$repo/agent/bootstrap.sh"
+else
+  exec sudo systemctl restart bux-tg
+fi
