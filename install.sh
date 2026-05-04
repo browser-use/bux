@@ -425,6 +425,14 @@ chown -h bux:bux /home/bux/AGENTS.md
 # to the helper itself.
 ln -sfn "$REPO_DIR/agent/tg-send" /usr/local/bin/tg-send
 
+# --- bux-restart: restart-with-ping helper for the agent ------------------
+# Drop-in for `sudo systemctl restart bux-tg` that records the current lane
+# (TG_CHAT_ID / TG_THREAD_ID from env) so the post-boot announce sends a
+# "✅ back online" ping — same UX as /update from TG, but callable from the
+# shell when the agent is restarting itself in response to a natural-
+# language request. Symlinked, same reason as tg-send.
+ln -sfn "$REPO_DIR/agent/bux-restart" /usr/local/bin/bux-restart
+
 # --- tg-approve: bridge claude/codex permission prompts to TG --------------
 # Hook script invoked by claude (PreToolUse) / codex (PermissionRequest).
 # Posts a "[Allow] [Deny]" inline-keyboard message in the same lane and
