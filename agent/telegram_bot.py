@@ -4359,7 +4359,6 @@ class Bot:
                 "/schedules — list reminders / cron jobs\n"
                 "/login — auth status / connect a service (e.g. /login github, /login claude, /login codex)\n"
                 "/logout — disconnect a service (e.g. /logout github, /logout claude, /logout codex)\n"
-                "/swipe — open the agency swipe deck (Tinder-style mini app)\n"
                 "/version — show the bux agent version\n"
                 "/update — pull latest code + restart (or /update <branch>)",
                 reply_to=mid,
@@ -4428,9 +4427,6 @@ class Bot:
                 self._cmd_claude_logout(chat_id, mid, thread_id, sender, owner)
                 return
             self._cmd_agent(key, chat_id, mid, thread_id, AGENT_CLAUDE)
-            return
-        if cmd in ("/swipe", "/agency"):
-            self._cmd_swipe(chat_id, mid, thread_id)
             return
         if cmd == "/version":
             self._cmd_version(chat_id, mid, thread_id)
@@ -4869,38 +4865,6 @@ class Bot:
             # replacement — even if `_pop_next_locked` raised mid-loop.
             with _lanes_lock:
                 _lane_workers.pop(slug, None)
-
-    # ----- Agency mini app -----
-
-    def _cmd_swipe(self, chat_id: int, reply_to: int | None, thread_id: int) -> None:
-        """Send the agency-mini-app launcher button into this topic.
-
-        The URL is set by bootstrap once the cloudflared tunnel comes up; if
-        it isn't there yet, surface a hint instead of a dead button.
-        """
-        url = (_read_kv(BOX_ENV).get("BUX_AGENCY_APP_URL") or "").strip()
-        if not url:
-            self.send(
-                chat_id,
-                "Agency mini app isn't reachable yet — `BUX_AGENCY_APP_URL` "
-                "is unset. Run /update once the tunnel is provisioned.",
-                reply_to=reply_to,
-                thread_id=thread_id,
-                markdown=True,
-            )
-            return
-        markup = {
-            "inline_keyboard": [[
-                {"text": "🃏 Open agency", "web_app": {"url": url}},
-            ]]
-        }
-        self.send(
-            chat_id,
-            "Swipe right to dispatch, left to dismiss, up for feedback.",
-            reply_to=reply_to,
-            thread_id=thread_id,
-            reply_markup=markup,
-        )
 
     # ----- Self-update -----
 
