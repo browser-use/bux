@@ -159,3 +159,8 @@ def insert_task(suggestion_id: int, user_id: str) -> int:
             (suggestion_id, user_id, now()),
         )
     return int(cur.lastrowid)
+
+
+def set_task_topic(task_id: int, topic_id: int) -> None:
+    with connect() as c:
+        c.execute("UPDATE tasks SET topic_id = ? WHERE id = ?", (topic_id, task_id))

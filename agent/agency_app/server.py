@@ -110,12 +110,14 @@ def swipe(
 
     dispatched = False
     if body.decision == "right" and not ctx.is_demo:
-        db.insert_task(body.suggestion_id, ctx.user_id)
-        dispatched = dispatch.dispatch_action(
+        task_id = db.insert_task(body.suggestion_id, ctx.user_id)
+        dispatched, topic_id = dispatch.dispatch_action(
             user_id=ctx.user_id,
             suggestion_title=suggestion["title"],
             draft_action=suggestion["draft_action"] or suggestion["title"],
         )
+        if topic_id is not None:
+            db.set_task_topic(task_id, topic_id)
 
     if body.decision == "up" and body.feedback_text and not ctx.is_demo:
         # Mid-stream feedback as a fresh suggestion the agent can re-propose
