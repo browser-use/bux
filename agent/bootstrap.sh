@@ -91,9 +91,15 @@ fi
 # agent/ after a box has already been provisioned never get linked into
 # /usr/local/bin without a re-bootstrap. Re-assert here on every update so
 # the symlinks track agent/ as new helpers ship. Idempotent (ln -sfn).
-ln -sfn "$REPO_DIR/agent/tg-send"     /usr/local/bin/tg-send
-ln -sfn "$REPO_DIR/agent/tg-buttons"  /usr/local/bin/tg-buttons
-ln -sfn "$REPO_DIR/agent/bux-restart" /usr/local/bin/bux-restart
+ln -sfn "$REPO_DIR/agent/tg-send"        /usr/local/bin/tg-send
+ln -sfn "$REPO_DIR/agent/tg-buttons"     /usr/local/bin/tg-buttons
+ln -sfn "$REPO_DIR/agent/agency-report"  /usr/local/bin/agency-report
+ln -sfn "$REPO_DIR/agent/bux-restart"    /usr/local/bin/bux-restart
+
+# Agency DB lives at /var/lib/bux/agency.db (created by agency_db on
+# first use). Make sure the directory is writable by `bux` so any
+# agency-report invocation can init the schema without sudo.
+install -d -o bux -g bux -m 0755 /var/lib/bux
 
 # --- Cloud Composio MCP server (cloud-side proxy) -------------------------
 # Why MCP at all: cloud holds the platform's Composio API key plus every

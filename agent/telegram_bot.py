@@ -5773,6 +5773,19 @@ class Bot:
                 )
         except Exception:
             LOG.exception("agency keyboard mark failed")
+        # Record the decision against the suggestion row in agency.db so
+        # future Agency runs can dedupe + suppress repeat suggestions
+        # Magnus already responded to. Best-effort: a missing row (button
+        # posted out-of-band, e.g. the legacy tg-buttons helper) just
+        # no-ops.
+        try:
+            import agency_db
+            db = agency_db.conn()
+            agency_db.record_decision(
+                db, chat_id, msg.get("message_id"), label
+            )
+        except Exception:
+            LOG.exception("agency_db record_decision failed")
         who = sender.get("username") or sender.get("first_name") or sender.get("id")
         # Dispatch the choice into the lane as a synthesized user
         # message. The agent resumes the lane session (UUID kept), sees
