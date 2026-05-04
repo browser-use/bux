@@ -3,3 +3,13 @@ __pycache__/
 *.log
 .env
 .DS_Store
+
+# `private/` is the per-box drop zone for personal context — skill files,
+# memory snapshots, scratch notes, anything you'd never want pushed to
+# the public repo. The directory itself is tracked (so the structure
+# shows up on GitHub and tooling can rely on the path existing) but
+# everything inside it is ignored, with the exception of README.md and
+# .gitkeep below.
+private/*
+!private/README.md
+!private/.gitkeep
