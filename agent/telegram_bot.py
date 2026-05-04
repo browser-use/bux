@@ -1836,6 +1836,14 @@ class ShellSession:
             if url in self._announced_urls:
                 continue
             self._announced_urls.add(url)
+            # The claude CLI prints `Live browser: https://live.browser-use.com/?wss=…`
+            # as a startup banner before *every* subcommand, including
+            # `claude auth login`. Surfacing it as a clickable bubble is
+            # noise during an auth flow (the user wants the OAuth URL,
+            # not the live-view URL). The user can always run /live to
+            # pull it on demand.
+            if "live.browser-use.com" in url:
+                continue
             if "auth.openai.com/codex/device" in url and codex_code:
                 self.bot.send(
                     self.chat_id,
@@ -1849,6 +1857,28 @@ class ShellSession:
                     thread_id=self.thread_id,
                     markdown=True,
                     reply_markup=_codex_login_reply_markup(url, codex_code),
+                )
+                continue
+            # Anthropic's OAuth (claude.ai/login?...returnTo=/oauth/authorize)
+            # refuses to complete inside Telegram's in-app browser — claude.ai
+            # detects the embedded WebKit user-agent and the redirect chain
+            # silently breaks. Tapping the inline [Open] button on iOS opens
+            # in that in-app browser by default, so the user has to copy the
+            # link and paste into a real browser. Lead with that hint and
+            # keep the [Open] button only as a fallback for users who've
+            # set Telegram → Settings → Browser to "Default browser".
+            if "claude.ai/login" in url or "/oauth/authorize" in url:
+                self.bot.send(
+                    self.chat_id,
+                    "Open this Claude sign-in link:\n"
+                    f"{url}\n\n"
+                    "⚠️ Telegram's in-app browser breaks Anthropic's "
+                    "OAuth flow. Tap *Copy link* and paste into Chrome "
+                    "(Safari sometimes shows a stale-cookie error — "
+                    "Chrome is the safe choice).",
+                    thread_id=self.thread_id,
+                    markdown=True,
+                    reply_markup=_url_reply_markup(url),
                 )
                 continue
             self.bot.send(
