@@ -92,6 +92,7 @@ fi
 # /usr/local/bin without a re-bootstrap. Re-assert here on every update so
 # the symlinks track agent/ as new helpers ship. Idempotent (ln -sfn).
 ln -sfn "$REPO_DIR/agent/tg-send"     /usr/local/bin/tg-send
+ln -sfn "$REPO_DIR/agent/tg-buttons"  /usr/local/bin/tg-buttons
 ln -sfn "$REPO_DIR/agent/bux-restart" /usr/local/bin/bux-restart
 
 # --- Cloud Composio MCP server (cloud-side proxy) -------------------------

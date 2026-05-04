@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# tg-buttons — post a TG message with inline-keyboard option buttons.
+#
+# Default 3 buttons (Magnus's preferred Agency set):
+#   tg-buttons "Send Hassan the saved draft?"
+#     → [Yes, do it]  [No]  [Just do it differently]
+#
+# Custom labels — pass them as positional args after the body. 1–10 labels.
+#   tg-buttons "Pick a draft" "Send draft A" "Send draft B" "Send draft C"
+#
+# Or feed the body on stdin and pass labels as args:
+#   echo "Pick a draft" | tg-buttons -- "Send draft A" "Send draft B"
+#
+# Honours TG_THREAD_ID — buttons + tap dispatch land in that forum topic.
+# Each button posts callback_data `agcy:<thread_id>:<idx>` (idx is the
+# 0-based button order). The bot's _handle_agency_callback reads the
+# label off the original message's keyboard at tap time, posts a visible
+# "🔘 You picked …" confirmation, and forwards the choice into the lane
+# as a synthesized user message.
+set -euo pipefail
+
+# Parse: first positional = body. Remaining = button labels (or empty for
+# the default set). Support `--` to mean "body on stdin, labels follow".
+if [ "$#" -eq 0 ]; then
+  text="$(cat)"
+  labels=()
+elif [ "$1" = "--" ]; then
+  shift
+  text="$(cat)"
+  labels=("$@")
+else
+  text="$1"
+  shift
+  labels=("$@")
+fi
+text="${text%$'\n'}"
+[ -n "$text" ] || { echo "tg-buttons: empty body" >&2; exit 2; }
+
+# Default labels if none provided.
+if [ "${#labels[@]}" -eq 0 ]; then
+  labels=("✅ Yes, do it" "❌ No" "✏️ Just do it differently")
+fi
+
+if [ "${#labels[@]}" -gt 10 ]; then
+  echo "tg-buttons: at most 10 buttons (got ${#labels[@]})" >&2
+  exit 2
+fi
+
+env_file=/etc/bux/tg.env
+allow_file=/etc/bux/tg-allowed.txt
+[ -r "$env_file" ] || { echo "tg-buttons: cannot read $env_file" >&2; exit 1; }
+[ -r "$allow_file" ] || { echo "tg-buttons: no bound chat (run /start in TG first)" >&2; exit 1; }
+
+# shellcheck disable=SC1090
+. "$env_file"
+[ -n "${TG_BOT_TOKEN:-}" ] || { echo "tg-buttons: TG_BOT_TOKEN missing" >&2; exit 1; }
+
+chat_id=$(awk 'NF{print; exit}' "$allow_file")
+[ -n "$chat_id" ] || { echo "tg-buttons: empty $allow_file" >&2; exit 1; }
+
+thread_id="${TG_THREAD_ID:-0}"
+
+# Build inline_keyboard. One button per row so labels are easy to read on a
+# phone — TG renders them full-width regardless. callback_data carries the
+# thread_id (so the bot routes the tap back to this topic) and the button
+# index (so the bot can read the original label off the message keyboard).
+markup=$(printf '%s\n' "${labels[@]}" \
+  | jq -R . \
+  | jq -sc --argjson t "$thread_id" '
+      {
+        inline_keyboard: (
+          [ . | to_entries[] | [{
+              text: .value,
+              callback_data: ("agcy:" + ($t|tostring) + ":" + (.key|tostring))
+          }] ]
+        )
+      }
+    ')
+
+# Build the JSON body. message_thread_id is omitted when 0 (general chat).
+if [ "$thread_id" -gt 0 ]; then
+  body=$(jq -nc --arg c "$chat_id" --arg t "$text" --argjson th "$thread_id" --argjson m "$markup" \
+    '{chat_id: ($c|tonumber), message_thread_id: $th, text: $t, reply_markup: $m}')
+else
+  body=$(jq -nc --arg c "$chat_id" --arg t "$text" --argjson m "$markup" \
+    '{chat_id: ($c|tonumber), text: $t, reply_markup: $m}')
+fi
+
+curl -fsS -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+  --max-time 15 \
+  -H 'Content-Type: application/json' \
+  -d "$body" \
+  > /dev/null
