@@ -209,10 +209,7 @@ polkit.addRule(function(action, subject) {
         if (unit == "bux-tg.service" ||
             unit == "box-agent.service" ||
             unit == "bux-browser-keeper.service" ||
-            unit == "bux-ttyd.service" ||
-            unit == "bux-agency-app.service" ||
-            unit == "bux-agency-tunnel.service" ||
-            unit == "bux-agency-tunnel-url.service") {
+            unit == "bux-ttyd.service") {
             return polkit.Result.YES;
         }
     }
@@ -220,48 +217,10 @@ polkit.addRule(function(action, subject) {
 POLKIT
 chmod 644 /etc/polkit-1/rules.d/50-bux-chat.rules
 
-# --- agency mini app: cloudflared + db dir --------------------------------
-# Quick tunnel only needs the binary on PATH. Quick tunnels are anonymous
-# and free; they print a random https://*.trycloudflare.com on start. V2
-# will switch to a named tunnel with a stable hostname.
-if ! command -v cloudflared >/dev/null 2>&1; then
-  echo "bootstrap: installing cloudflared"
-  ARCH=$(dpkg --print-architecture 2>/dev/null || echo amd64)
-  case "$ARCH" in
-    amd64) URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" ;;
-    arm64) URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64" ;;
-    *) URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" ;;
-  esac
-  curl -fsSL -o /usr/local/bin/cloudflared "$URL" && chmod 0755 /usr/local/bin/cloudflared || \
-    echo "bootstrap: WARN failed to download cloudflared; agency app tunnel will be unavailable" >&2
-fi
-
-# SQLite + tunnel-log directories. /var/lib/bux is bux-owned so the FastAPI
-# service (User=bux) can open agency.db without sudo.
-install -d -o bux -g bux -m 0755 /var/lib/bux
-install -d -o bux -g bux -m 0755 /var/lib/bux/agency-tunnel
-
-# Relax tg-state.json to 640 root:bux so the agency app (User=bux) can read
-# the owner allowlist. The file is otherwise written 600 by the bot's state
-# saver — group-read is fine since it's owner attribution, not credentials.
-if [ -e /etc/bux/tg-state.json ]; then
-  chown root:bux /etc/bux/tg-state.json
-  chmod 640 /etc/bux/tg-state.json
-fi
-# Same treatment for tg.env (the agency app needs TG_BOT_TOKEN to validate
-# initData HMACs). Already 640 root:bux on a typical install — assert it.
-if [ -e /etc/bux/tg.env ]; then
-  chown root:bux /etc/bux/tg.env
-  chmod 640 /etc/bux/tg.env
-fi
-
-# Polkit rule that lets the bux user manage the agency units (the boot-time
-# update path restarts them after a code change).
 # --- systemd units --------------------------------------------------------
 # Symlink rather than copy so a `git pull` propagates without re-running
 # bootstrap. systemd reads via the symlink fine.
-for unit in box-agent.service bux-ttyd.service bux-browser-keeper.service bux-tg.service \
-            bux-agency-app.service bux-agency-tunnel.service bux-agency-tunnel-url.service; do
+for unit in box-agent.service bux-ttyd.service bux-browser-keeper.service bux-tg.service; do
   ln -sf "$AGENT_DIR/$unit" "/etc/systemd/system/$unit"
 done
 
@@ -320,13 +279,6 @@ systemctl enable bux-browser-keeper.service
 # is written by the agent's tg_install handler.
 systemctl enable bux-tg.service
 
-# Agency mini app: gated on the same /etc/bux/tg.env via ConditionPathExists.
-# bux-agency-tunnel-url is a oneshot — enable so it auto-runs after the
-# tunnel comes up, but don't `enable --now` (Type=oneshot doesn't enjoy that).
-systemctl enable bux-agency-app.service
-systemctl enable bux-agency-tunnel.service
-systemctl enable bux-agency-tunnel-url.service
-
 # Boot-time pull runs ahead of the others on every reboot.
 systemctl enable bux-boot-update.service
 
@@ -356,17 +308,5 @@ fi
 if systemctl is-active --quiet bux-ttyd.service; then
   systemctl restart bux-ttyd.service
 fi
-
-# Agency app: only restart what's already running (first boot starts fresh
-# from the enable lines above).
-if systemctl is-active --quiet bux-agency-app.service; then
-  systemctl restart bux-agency-app.service
-fi
-if systemctl is-active --quiet bux-agency-tunnel.service; then
-  systemctl restart bux-agency-tunnel.service
-fi
-# Re-run the URL capture oneshot so /etc/bux/env picks up any new tunnel
-# hostname (quick tunnels rotate on every restart).
-systemctl start bux-agency-tunnel-url.service 2>/dev/null || true
 
 echo "bootstrap: done"
