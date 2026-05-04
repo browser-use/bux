@@ -72,6 +72,20 @@ if [ -d "$HARNESS_DIR/.git" ]; then
   fi
 fi
 
+# --- Codex CLI (alternative agent, /codex per forum topic) ----------------
+# install.sh installs codex on first boot, but boxes provisioned before
+# that block existed (or where the npm install hit a transient failure
+# and got skipped as non-fatal) end up without it — the user discovers
+# this when `/codex` reports "codex is not installed". Re-check on every
+# update so the install self-heals. Idempotent: skipped when codex is
+# already on bux's PATH. Runs as bux so the binary lands under
+# /home/bux/.npm-global/bin (already on bux's PATH via .profile).
+if command -v npm >/dev/null 2>&1 && ! sudo -iu bux command -v codex >/dev/null 2>&1; then
+  echo "bootstrap: installing Codex CLI for bux"
+  sudo -iu bux npm install -g @openai/codex \
+    || echo "bootstrap: codex install failed (non-fatal — /codex login will hint how to install later)" >&2
+fi
+
 # --- Cloud Composio MCP server (cloud-side proxy) -------------------------
 # Why MCP at all: cloud holds the platform's Composio API key plus every
 # integration the user OAuth'd via cloud.browser-use.com. Rather than
