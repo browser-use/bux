@@ -4831,17 +4831,28 @@ class Bot:
                 key: LaneKey = (chat_id, thread_id if isinstance(thread_id, int) else 0)
                 sender = job.get("sender") if isinstance(job.get("sender"), dict) else None
                 # If this job was queued behind something and we exposed
-                # a Steer button on its ack bubble, strip the button now
-                # that it's running — a stale tap can't usefully kill
-                # the very job it would have promoted.
+                # a "queued (#N)" ack bubble with a Steer button, delete
+                # that whole bubble now that work is starting — the
+                # placeholder bubble StreamingMessage is about to send
+                # (with the thinking emoji) supersedes it, and leaving
+                # the stale "queued" line above the live bubble made it
+                # harder to scan which message is actually being worked
+                # on. Falls back to stripping the keyboard if delete
+                # fails (TG's 48h delete window, etc.) so a stale Steer
+                # tap can't kill its own job.
                 steer_mid = job.get("steer_msg_id")
                 if isinstance(steer_mid, int):
                     try:
-                        self.call("editMessageReplyMarkup", chat_id=chat_id,
-                                  message_id=steer_mid,
-                                  reply_markup={"inline_keyboard": []})
+                        self.call("deleteMessage", chat_id=chat_id,
+                                  message_id=steer_mid)
                     except Exception:
-                        LOG.exception("strip steer keyboard for %s failed", job_id)
+                        LOG.exception("delete queued ack for %s failed; stripping keyboard instead", job_id)
+                        try:
+                            self.call("editMessageReplyMarkup", chat_id=chat_id,
+                                      message_id=steer_mid,
+                                      reply_markup={"inline_keyboard": []})
+                        except Exception:
+                            LOG.exception("strip steer keyboard for %s failed", job_id)
                 try:
                     self.typing(chat_id, thread_id=key[1])
                     self.run_task(
@@ -5704,9 +5715,10 @@ class Bot:
         # segment is a numeric index (current shape). Fall back to the
         # raw string for backward-compat with the slug-based form.
         label = idx_str
+        idx = -1
+        kbd = ((msg.get("reply_markup") or {}).get("inline_keyboard") or [])
         try:
             idx = int(idx_str)
-            kbd = ((msg.get("reply_markup") or {}).get("inline_keyboard") or [])
             flat = [btn for row in kbd for btn in row]
             if 0 <= idx < len(flat):
                 label = flat[idx].get("text") or idx_str
@@ -5718,29 +5730,50 @@ class Bot:
             callback_query_id=cb["id"],
             text=f"✅ {label}"[:200],
         )
-        # Strip keyboard so the same prompt can't be answered twice.
+        # Mark the picked button on the original card's keyboard so the
+        # user keeps a visual record of their choice — but leave all
+        # other buttons in place. They stay tappable so the user can
+        # switch decisions or stack actions; each tap fires its own
+        # lane dispatch and the agent reconciles. Replaces the previous
+        # behavior of stripping the keyboard + posting a separate
+        # "🔘 You picked …" message at the bottom of the topic, which
+        # scrolled the choice away from the card it referenced.
+        picked_prefix = "✓ "
         try:
-            self.call(
-                "editMessageReplyMarkup",
-                chat_id=chat_id,
-                message_id=msg.get("message_id"),
-                reply_markup={"inline_keyboard": []},
-            )
+            if idx >= 0 and kbd:
+                new_kbd: list[list[dict]] = []
+                flat_i = -1
+                marked = False
+                for row in kbd:
+                    new_row: list[dict] = []
+                    for btn in row:
+                        flat_i += 1
+                        text = btn.get("text") or ""
+                        if flat_i == idx and not text.startswith(picked_prefix):
+                            new_row.append({**btn, "text": picked_prefix + text})
+                            marked = True
+                        else:
+                            new_row.append(btn)
+                    new_kbd.append(new_row)
+                if marked:
+                    self.call(
+                        "editMessageReplyMarkup",
+                        chat_id=chat_id,
+                        message_id=msg.get("message_id"),
+                        reply_markup={"inline_keyboard": new_kbd},
+                    )
+            elif kbd:
+                # No resolvable idx (legacy slug-based callback) — strip
+                # the keyboard so the same prompt can't be answered twice.
+                self.call(
+                    "editMessageReplyMarkup",
+                    chat_id=chat_id,
+                    message_id=msg.get("message_id"),
+                    reply_markup={"inline_keyboard": []},
+                )
         except Exception:
-            LOG.exception("agency keyboard strip failed")
-        # Persistent visible confirmation in the topic — Magnus wanted
-        # the choice readable in the chat, not just a transient toast.
+            LOG.exception("agency keyboard mark failed")
         who = sender.get("username") or sender.get("first_name") or sender.get("id")
-        try:
-            confirm_kwargs = {
-                "chat_id": chat_id,
-                "text": f"🔘 You picked: {label}",
-            }
-            if target_thread:
-                confirm_kwargs["message_thread_id"] = target_thread
-            self.call("sendMessage", **confirm_kwargs)
-        except Exception:
-            LOG.exception("agency confirm post failed")
         # Dispatch the choice into the lane as a synthesized user
         # message. The agent resumes the lane session (UUID kept), sees
         # the tap, and runs the corresponding action.
