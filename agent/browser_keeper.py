@@ -67,7 +67,7 @@ def cdp_ws_from_url(cdp_url):
 
 
 def create_browser(profile_id):
-	r = bu_req('POST', '/browsers', {'profile_id': profile_id, 'timeout': SESSION_MIN})
+	r = bu_req('POST', '/browsers', {'profileId': profile_id, 'timeout': SESSION_MIN})
 	bid = r.get('id')
 	cdp_url = r.get('cdpUrl') or r.get('cdp_url')
 	ws = cdp_ws_from_url(cdp_url) if cdp_url else ''
