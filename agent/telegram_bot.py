@@ -2483,6 +2483,13 @@ class StreamingMessage:
         # in the header. Set so we only count each sub-agent once even
         # though it emits many events.
         self._sub_agent_ids: set[str] = set()
+        # Map sub-agent tool_use_id → human description (captured from the
+        # parent's Agent tool_use input) so each sub-agent's final report
+        # bubble can be labeled "🤖 sub-agent: <description>".
+        self._sub_agent_descriptions: dict[str, str] = {}
+        # Track which sub-agent ids we've already surfaced a report for,
+        # so a duplicate tool_result event doesn't double-post.
+        self._sub_agent_reports_sent: set[str] = set()
         self._tool_call_count = 0
         # Sticky stats from the `result` event. The defensive finalize()
         # that runs after the stream loop has no event to read from, so
@@ -2502,6 +2509,40 @@ class StreamingMessage:
             return
         self._sub_agent_ids.add(parent_tool_use_id)
         self._rerender_streaming()
+
+    def note_sub_agent_description(self, tool_use_id: str, description: str) -> None:
+        """Record the human description for a sub-agent's tool_use_id so
+        the eventual report bubble can be labeled. Captured from the
+        parent's Agent tool_use input.description at dispatch time."""
+        if tool_use_id and description:
+            self._sub_agent_descriptions[tool_use_id] = description
+
+    def send_subagent_report(self, tool_use_id: str, text: str) -> None:
+        """Surface a sub-agent's final return value as its own TG bubble
+        below the orchestrator bubble. Without this, the user only ever
+        sees the orchestrator's synthesis — the actual sub-agent reports
+        are dropped on the floor (which the orchestrator may quietly
+        truncate or paraphrase). Each sub-agent posts at most once per
+        turn (idempotent on tool_use_id)."""
+        if not text or not tool_use_id:
+            return
+        if tool_use_id in self._sub_agent_reports_sent:
+            return
+        self._sub_agent_reports_sent.add(tool_use_id)
+        desc = self._sub_agent_descriptions.get(tool_use_id, "").strip()
+        header = f"🤖 sub-agent: {desc}" if desc else "🤖 sub-agent"
+        body = text.strip()
+        # Reserve room for header + a small MDV2 escape budget. The send
+        # path is plain text (no MDV2 wrapping), so the cap is just
+        # REPLY_MAX minus header overhead.
+        cap = max(500, self._MAX_BODY - len(header) - 50)
+        if len(body) > cap:
+            body = body[:cap].rstrip() + "\n\n…(truncated)"
+        msg = f"{header}\n\n{body}"
+        try:
+            self._bot.send(self._chat_id, msg, thread_id=self._thread_id)
+        except Exception:
+            LOG.exception("failed to send sub-agent report bubble")
 
     def note_tool_call(self, count: int = 1) -> None:
         if count <= 0:
@@ -3125,7 +3166,23 @@ class Bot:
                     if et == "assistant":
                         content = (ev.get("message") or {}).get("content") or []
                         for block in content:
-                            if not (isinstance(block, dict) and block.get("type") == "text"):
+                            if not isinstance(block, dict):
+                                continue
+                            btype = block.get("type")
+                            # Capture descriptions for Agent tool_use calls so
+                            # the sub-agent's eventual report bubble can be
+                            # labeled. Other tool_use blocks pass through.
+                            if btype == "tool_use":
+                                tname = (block.get("name") or "").lower()
+                                if tname in {"task", "agent"}:
+                                    tu_id = block.get("id") or ""
+                                    tinput = block.get("input") if isinstance(block.get("input"), dict) else {}
+                                    desc = (tinput.get("description")
+                                            or tinput.get("subagent_type")
+                                            or "")
+                                    stream_msg.note_sub_agent_description(tu_id, str(desc))
+                                continue
+                            if btype != "text":
                                 continue
                             text = (block.get("text") or "").strip()
                             if not text:
@@ -3133,6 +3190,34 @@ class Bot:
                             stream_msg.append(text)
                             if not any_text:
                                 any_text = True
+                    elif et == "user":
+                        # tool_results coming back to the parent. For
+                        # results matching a sub-agent we've seen, surface
+                        # the report as its own bubble — otherwise the
+                        # user never sees the sub-agent's actual findings.
+                        msg = ev.get("message") or {}
+                        ucontent = msg.get("content") or []
+                        if isinstance(ucontent, list):
+                            for block in ucontent:
+                                if not (isinstance(block, dict) and block.get("type") == "tool_result"):
+                                    continue
+                                tu_id = block.get("tool_use_id") or ""
+                                if not tu_id or tu_id not in stream_msg._sub_agent_ids:
+                                    continue
+                                tr_content = block.get("content")
+                                report_text = ""
+                                if isinstance(tr_content, str):
+                                    report_text = tr_content
+                                elif isinstance(tr_content, list):
+                                    parts = []
+                                    for b in tr_content:
+                                        if isinstance(b, dict) and b.get("type") == "text":
+                                            t = b.get("text") or ""
+                                            if t:
+                                                parts.append(t)
+                                    report_text = "\n\n".join(parts)
+                                if report_text:
+                                    stream_msg.send_subagent_report(tu_id, report_text)
                     elif et == "result":
                         # Turn complete; flip to the final view (last block
                         # prominent, earlier blocks collapsed underneath).
