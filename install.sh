@@ -25,6 +25,19 @@
 #                          user is and can supply this directly.
 #   TG_OWNER_USERNAME    — Optional companion to TG_OWNER_ID (display only).
 #   TG_OWNER_NAME        — Optional companion to TG_OWNER_ID (display only).
+#   BUX_BOX_TOKEN        — Per-box bearer token for the cloud Composio MCP
+#                          proxy (api.browser-use.com/cloud/composio/mcp). When
+#                          set, bootstrap.sh registers the MCP server so every
+#                          integration the user has connected on
+#                          cloud.browser-use.com (Gmail, Calendar, Slack, …)
+#                          shows up as a native Claude Code tool with no
+#                          per-box auth ceremony. When unset, the box runs
+#                          fine but the cloud Composio MCP is silently
+#                          skipped — supply this for cloud-provisioned boxes.
+#   BUX_BOX_ID           — Optional companion to BUX_BOX_TOKEN: cloud-side
+#                          UUID for this box. Persisted alongside the token.
+#   BUX_CLOUD_URL        — Optional override for the cloud endpoint base
+#                          (default: wss://api.browser-use.com). Persisted.
 #   WITH_ZTK             — install ztk (default 1; set to 0 to skip). ztk is a
 #                          Zig CLI that compresses long Bash tool outputs
 #                          (git diff, ls, test runners) before they hit
@@ -73,14 +86,21 @@ fi
 # --- collect config --------------------------------------------------------
 BROWSER_USE_API_KEY="${BROWSER_USE_API_KEY:-}"
 BUX_PROFILE_ID="${BUX_PROFILE_ID:-}"
+BUX_BOX_TOKEN="${BUX_BOX_TOKEN:-}"
+BUX_BOX_ID="${BUX_BOX_ID:-}"
+BUX_CLOUD_URL="${BUX_CLOUD_URL:-}"
 
 # If /etc/bux/env already exists (rerun), seed missing values from it so the
-# script is truly idempotent without making the user re-type secrets.
-if [ -z "$BROWSER_USE_API_KEY" ] && [ -r /etc/bux/env ]; then
-	# shellcheck disable=SC1091
-	BROWSER_USE_API_KEY="$(. /etc/bux/env && printf %s "${BROWSER_USE_API_KEY:-}")"
-	# shellcheck disable=SC1091
+# script is truly idempotent without making the user re-type secrets. User-
+# passed env wins over on-disk values, so an explicit
+# `BUX_BOX_TOKEN=newtoken sudo bash install.sh` rotates the token. Subshell
+# the source so it can't clobber the in-process vars.
+if [ -r /etc/bux/env ]; then
+	BROWSER_USE_API_KEY="${BROWSER_USE_API_KEY:-$(. /etc/bux/env && printf %s "${BROWSER_USE_API_KEY:-}")}"
 	BUX_PROFILE_ID="${BUX_PROFILE_ID:-$(. /etc/bux/env && printf %s "${BUX_PROFILE_ID:-}")}"
+	BUX_BOX_TOKEN="${BUX_BOX_TOKEN:-$(. /etc/bux/env && printf %s "${BUX_BOX_TOKEN:-}")}"
+	BUX_BOX_ID="${BUX_BOX_ID:-$(. /etc/bux/env && printf %s "${BUX_BOX_ID:-}")}"
+	BUX_CLOUD_URL="${BUX_CLOUD_URL:-$(. /etc/bux/env && printf %s "${BUX_CLOUD_URL:-}")}"
 fi
 
 if [ -z "$BROWSER_USE_API_KEY" ] && [ -t 0 ]; then
@@ -478,11 +498,18 @@ JSON
 fi
 
 # --- /etc/bux/env (shared by systemd services) -----------------------------
+# BUX_BOX_TOKEN / BUX_BOX_ID / BUX_CLOUD_URL are written when supplied — they
+# are what bootstrap.sh needs to register the cloud Composio MCP server (so
+# Gmail / Calendar / Slack / etc. surface as Claude Code tools). When unset,
+# the lines are skipped and bootstrap silently skips MCP registration.
 if [ ! -f /etc/bux/env ]; then
-	cat > /etc/bux/env <<EOF
-BROWSER_USE_API_KEY=$BROWSER_USE_API_KEY
-BUX_PROFILE_ID=$BUX_PROFILE_ID
-EOF
+	{
+		printf 'BROWSER_USE_API_KEY=%s\n' "$BROWSER_USE_API_KEY"
+		printf 'BUX_PROFILE_ID=%s\n' "$BUX_PROFILE_ID"
+		[ -n "$BUX_BOX_TOKEN" ] && printf 'BUX_BOX_TOKEN=%s\n' "$BUX_BOX_TOKEN"
+		[ -n "$BUX_BOX_ID" ] && printf 'BUX_BOX_ID=%s\n' "$BUX_BOX_ID"
+		[ -n "$BUX_CLOUD_URL" ] && printf 'BUX_CLOUD_URL=%s\n' "$BUX_CLOUD_URL"
+	} > /etc/bux/env
 	chmod 640 /etc/bux/env
 	chown root:bux /etc/bux/env
 else
