@@ -84,17 +84,22 @@ def _post(token: str, payload: dict, attempt: int = 0) -> None:
         urllib.request.urlopen(req, timeout=15).read()
     except urllib.error.HTTPError as e:
         raw = e.read().decode("utf-8", "replace")
-        # 429 with a sane retry_after: sleep and retry once. A multi-chunk
-        # send from a chatty lane can hit per-chat rate limits even though
-        # each chunk is well under TG's per-second cap; one retry covers
-        # those without burning the whole reply.
+        # 429: honor TG's `retry_after` and retry once. A multi-chunk send
+        # from a chatty lane can hit per-chat rate limits even though each
+        # chunk is well under TG's per-second cap; one retry covers those
+        # without burning the whole reply. The cap is 60s — under a real
+        # flood limit TG can advertise tens of seconds, so a 5s cap would
+        # come back too early and re-trip the limit. 60s bounds runaway
+        # waits while letting normal flood backoffs through.
         if e.code == 429 and attempt == 0:
+            wait = 1
             try:
                 parsed = json.loads(raw) if raw.startswith("{") else {}
                 ra = (parsed.get("parameters") or {}).get("retry_after")
-                wait = min(int(ra), 5) if isinstance(ra, (int, float)) and ra > 0 else 1
+                if isinstance(ra, (int, float)) and ra > 0:
+                    wait = min(int(ra), 60)
             except Exception:
-                wait = 1
+                pass
             time.sleep(wait)
             _post(token, payload, attempt + 1)
             return
