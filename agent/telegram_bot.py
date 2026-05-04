@@ -574,31 +574,69 @@ def _render_final_view(
 
 
 def _chunk_for_telegram(text: str, max_len: int) -> list[str]:
-    """Split on paragraph boundaries when possible so we don't slice
-    mid-formatting (which TG would 400 on for MarkdownV2).
-    Falls back to char-aligned cut for paragraphs longer than max_len."""
+    """Split text into messages that fit Telegram's 4096-char cap.
+
+    Telegram silently drops `sendMessage` payloads over 4096 chars and
+    400s an `editMessageText` of the same shape, so any text destined
+    for TG has to be pre-split by us. Boundaries are tried in order of
+    decreasing readability:
+        paragraph (\\n\\n) → line (\\n) → sentence end → word (space) → char.
+
+    The chunker is greedy: it packs as much as fits below `max_len` per
+    message before cutting. Trailing/leading whitespace at the seam is
+    stripped so the user doesn't see a stray blank line at the top of
+    the next bubble.
+    """
+    if not text:
+        return [" "]
     if len(text) <= max_len:
-        return [text or " "]
+        return [text]
     chunks: list[str] = []
-    current = ""
-    for para in text.split("\n\n"):
-        if not current:
-            current = para
-        elif len(current) + 2 + len(para) <= max_len:
-            current = current + "\n\n" + para
-        else:
-            chunks.append(current)
-            current = para
-    if current:
-        chunks.append(current)
-    final: list[str] = []
-    for c in chunks:
-        if len(c) <= max_len:
-            final.append(c)
-        else:
-            for i in range(0, len(c), max_len):
-                final.append(c[i : i + max_len])
-    return final
+    remaining = text
+    while len(remaining) > max_len:
+        cut = _find_split_point(remaining, max_len)
+        head = remaining[:cut]
+        stripped = head.rstrip()
+        chunks.append(stripped or head)
+        remaining = remaining[cut:].lstrip()
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
+def _find_split_point(text: str, max_len: int) -> int:
+    """Pick the best index ≤ max_len to cut `text` at.
+
+    Prefers paragraph, then single-newline, then sentence terminator,
+    then word boundary, then a hard char cut as last resort. Each tier
+    requires the boundary to sit past `max_len // 4` so we don't emit
+    a tiny chunk just because there happens to be one structural break
+    near the start of the window.
+    """
+    window = text[:max_len]
+    floor = max(max_len // 4, 1)
+
+    idx = window.rfind("\n\n")
+    if idx >= floor:
+        return idx + 2
+
+    idx = window.rfind("\n")
+    if idx >= floor:
+        return idx + 1
+
+    sentence_idx = -1
+    for terminator in (". ", "! ", "? ", ".\n", "!\n", "?\n"):
+        i = window.rfind(terminator)
+        if i != -1 and i + len(terminator) > sentence_idx:
+            sentence_idx = i + len(terminator)
+    if sentence_idx >= floor:
+        return sentence_idx
+
+    idx = window.rfind(" ")
+    if idx >= floor:
+        return idx + 1
+
+    return max_len
 
 
 def _parse_command(text: str) -> tuple[str | None, str]:
@@ -2580,12 +2618,8 @@ class StreamingMessage:
         desc = self._sub_agent_descriptions.get(tool_use_id, "").strip()
         header = f"🤖 sub-agent: {desc}" if desc else "🤖 sub-agent"
         body = text.strip()
-        # Reserve room for header + a small MDV2 escape budget. The send
-        # path is plain text (no MDV2 wrapping), so the cap is just
-        # REPLY_MAX minus header overhead.
-        cap = max(500, self._MAX_BODY - len(header) - 50)
-        if len(body) > cap:
-            body = body[:cap].rstrip() + "\n\n…(truncated)"
+        # Long bodies split across multiple TG messages via the bot's
+        # chunker — no truncation. Header sits on top of the first piece.
         msg = f"{header}\n\n{body}"
         try:
             self._bot.send(self._chat_id, msg, thread_id=self._thread_id)
@@ -2699,10 +2733,68 @@ class StreamingMessage:
         )
         if not rendered:
             return
+        # Most final views fit in one bubble — _render_final_view trims old
+        # steps to keep the body under _MAX_BODY. The exception is a turn
+        # whose FINAL block alone is bigger than the cap (long claude
+        # answer): the renderer can't trim that without dropping the answer
+        # itself. Detect overflow and split it into follow-up bubbles.
+        if len(rendered) > self._MAX_BODY:
+            self._finalize_with_overflow()
+            return
         if self._message_id is None:
             self._send_initial(rendered)
             return
         self._edit(rendered)
+
+    def _finalize_with_overflow(self) -> None:
+        """Final view path when the answer is too long for a single bubble.
+
+        Edits the streaming bubble down to just the collapsed-steps view
+        (with the stats footer) so it stays in place as the trace, then
+        posts the full final answer as chunked sendMessage bubbles below.
+        Bot.send runs the chunker over the raw text, so each follow-up
+        bubble gets MDV2 conversion in isolation and TG's 4096-char cap is
+        respected per message.
+        """
+        steps = self._blocks[:-1]
+        final_text = self._blocks[-1].strip()
+        footer = _format_final_footer(
+            self._last_usage,
+            self._last_duration_ms,
+            tool_calls=self._tool_call_count,
+        )
+        bubble = ""
+        if steps:
+            bubble = _render_collapsed_steps(
+                steps,
+                len(steps),
+                self._MAX_BODY,
+                sub_agents=len(self._sub_agent_ids),
+                trailer=footer,
+                marker=self._thinking_emoji,
+            )
+        if not bubble:
+            # No prior steps to collapse (one-shot turn with a huge answer).
+            # Render a tiny placeholder so the bubble has something, then
+            # let the chunked answer carry the rest.
+            placeholder = self._thinking_emoji
+            if footer:
+                placeholder += "\n" + footer
+            bubble = _render_expandable_blockquote(placeholder)
+        if self._message_id is None:
+            self._send_initial(bubble)
+        elif bubble:
+            self._edit(bubble)
+        if final_text:
+            try:
+                self._bot.send(
+                    self._chat_id,
+                    final_text,
+                    thread_id=self._thread_id,
+                    markdown=True,
+                )
+            except Exception:
+                LOG.exception("failed to send overflow final answer")
 
     # ----- low-level send / edit -----
 
@@ -2826,11 +2918,7 @@ class Bot:
         """
         del reply_to
         as_markdown = markdown or pre_rendered
-        chunks = (
-            _chunk_for_telegram(text, REPLY_MAX)
-            if as_markdown
-            else [text[i : i + REPLY_MAX] or " " for i in range(0, max(len(text), 1), REPLY_MAX)]
-        )
+        chunks = _chunk_for_telegram(text, REPLY_MAX)
         first_id: int | None = None
         for chunk in chunks:
             if as_markdown:

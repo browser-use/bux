@@ -1,64 +1,166 @@
-#!/usr/bin/env bash
-# tg-send "your message here"        # arg form
-# echo "msg" | tg-send                # stdin form (for piping output)
-# claude -p "..." | tg-send           # the recurring use case
-#
-# Forum-topic routing (set in env by the bot before invoking the agent):
-#   TG_CHAT_ID    — chat to post into (default: first line of tg-allowed.txt)
-#   TG_THREAD_ID  — message_thread_id, so a backgrounded `claude -p ... | tg-send &`
-#                   pings back into the same forum topic the user asked from
-#   TG_REPLY_TO   — optional reply_to_message_id
-#   TG_LINK_PREVIEW=1 — opt back in to TG link previews (default: suppressed)
-set -euo pipefail
-if [ "$#" -ge 1 ]; then
-  text="$*"
-else
-  text="$(cat)"
-fi
-text="${text%$'\n'}"
-[ -n "$text" ] || { echo "tg-send: empty payload (no args, no stdin)" >&2; exit 2; }
-env_file=/etc/bux/tg.env
-allow_file=/etc/bux/tg-allowed.txt
-[ -r "$env_file" ] || { echo "tg-send: cannot read $env_file" >&2; exit 1; }
-[ -r "$allow_file" ] || { echo "tg-send: no bound chat (run /start in TG first)" >&2; exit 1; }
-# shellcheck disable=SC1090
-. "$env_file"
-[ -n "${TG_BOT_TOKEN:-}" ] || { echo "tg-send: TG_BOT_TOKEN missing" >&2; exit 1; }
-# Prefer TG_CHAT_ID (per-lane routing exported by the bot); fall back to
-# the first allowed chat. The file is one-id-per-line; we currently bind
-# only one chat anyway.
-if [ -n "${TG_CHAT_ID:-}" ]; then
-  chat_id="$TG_CHAT_ID"
-else
-  chat_id=$(awk 'NF{print; exit}' "$allow_file")
-fi
-[ -n "$chat_id" ] || { echo "tg-send: empty $allow_file" >&2; exit 1; }
-# TG caps sendMessage at 4096 chars; truncate with marker so a long
-# claude -p output doesn't 400 silently.
-if [ "${#text}" -gt 4000 ]; then
-  text="${text:0:3950}…(truncated)"
-fi
-# Build payload, optionally injecting message_thread_id and reply_to_message_id.
-# Numeric coercion in jq → bad values 400 here instead of confusing TG.
-# Suppress link previews by default — same reason as the bot itself
-# (preview cards eat phone-screen real estate). Callers that want a
-# preview can `TG_LINK_PREVIEW=1 tg-send …`.
-preview_disabled=true
-if [ "${TG_LINK_PREVIEW:-}" = "1" ]; then
-  preview_disabled=false
-fi
-jq_filter='{chat_id: ($c|tonumber), text: $t, link_preview_options: {is_disabled: ($lp == "true")}}'
-jq_args=(--arg c "$chat_id" --arg t "$text" --arg lp "$preview_disabled")
-if [ -n "${TG_THREAD_ID:-}" ]; then
-  jq_filter="${jq_filter} + {message_thread_id: (\$tid|tonumber)}"
-  jq_args+=(--arg tid "$TG_THREAD_ID")
-fi
-if [ -n "${TG_REPLY_TO:-}" ]; then
-  jq_filter="${jq_filter} + {reply_to_message_id: (\$rid|tonumber)}"
-  jq_args+=(--arg rid "$TG_REPLY_TO")
-fi
-curl -fsS -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
-  --max-time 15 \
-  -H 'Content-Type: application/json' \
-  -d "$(jq -nc "${jq_args[@]}" "$jq_filter")" \
-  > /dev/null
+#!/opt/bux/venv/bin/python
+"""tg-send "your message here"        # arg form
+   echo "msg" | tg-send                # stdin form (for piping output)
+   claude -p "..." | tg-send           # the recurring use case
+
+Forum-topic routing (set in env by the bot before invoking the agent):
+  TG_CHAT_ID    — chat to post into (default: first line of tg-allowed.txt)
+  TG_THREAD_ID  — message_thread_id, so a backgrounded `claude -p ... | tg-send &`
+                  pings back into the same forum topic the user asked from
+  TG_REPLY_TO   — optional reply_to_message_id
+  TG_LINK_PREVIEW=1 — opt back in to TG link previews (default: suppressed)
+
+Long payloads are split into sequential messages (~3500 chars each) at
+paragraph / line / sentence / word boundaries. Telegram silently drops
+sendMessage requests over 4096 chars, so this script never relies on
+the API to surface oversize input.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+
+import time
+import urllib.request
+import urllib.error
+
+
+# Resolve the agent dir from the script's own location so a worktree
+# checkout (e.g. /tmp/bux-foo/agent/tg-send) finds its sibling
+# telegram_bot.py instead of the prod copy. Prod /usr/local/bin/tg-send
+# is a symlink into /opt/bux/repo/agent so this still picks up the
+# right file in normal installs.
+_HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(_HERE))
+sys.path.insert(1, "/opt/bux/repo/agent")
+
+from telegram_bot import _chunk_for_telegram, REPLY_MAX  # noqa: E402
+
+ENV_FILE = Path("/etc/bux/tg.env")
+ALLOW_FILE = Path("/etc/bux/tg-allowed.txt")
+TG_BASE = "https://api.telegram.org"
+
+
+def _read_kv(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        out[k.strip()] = v.strip().strip('"').strip("'")
+    return out
+
+
+def _read_payload(args: list[str]) -> str:
+    if args:
+        return " ".join(args)
+    return sys.stdin.read()
+
+
+def _bound_chat_id() -> str:
+    if not ALLOW_FILE.is_file():
+        sys.stderr.write("tg-send: no bound chat (run /start in TG first)\n")
+        sys.exit(1)
+    for line in ALLOW_FILE.read_text().splitlines():
+        line = line.strip()
+        if line:
+            return line
+    sys.stderr.write(f"tg-send: empty {ALLOW_FILE}\n")
+    sys.exit(1)
+
+
+def _post(token: str, payload: dict, attempt: int = 0) -> None:
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        f"{TG_BASE}/bot{token}/sendMessage",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        urllib.request.urlopen(req, timeout=15).read()
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", "replace")
+        # 429 with a sane retry_after: sleep and retry once. A multi-chunk
+        # send from a chatty lane can hit per-chat rate limits even though
+        # each chunk is well under TG's per-second cap; one retry covers
+        # those without burning the whole reply.
+        if e.code == 429 and attempt == 0:
+            try:
+                parsed = json.loads(raw) if raw.startswith("{") else {}
+                ra = (parsed.get("parameters") or {}).get("retry_after")
+                wait = min(int(ra), 5) if isinstance(ra, (int, float)) and ra > 0 else 1
+            except Exception:
+                wait = 1
+            time.sleep(wait)
+            _post(token, payload, attempt + 1)
+            return
+        sys.stderr.write(f"tg-send: TG returned {e.code} {e.reason}: {raw[:300]}\n")
+        sys.exit(1)
+
+
+def main() -> int:
+    text = _read_payload(sys.argv[1:]).rstrip("\n")
+    if not text:
+        sys.stderr.write("tg-send: empty payload (no args, no stdin)\n")
+        return 2
+
+    if not ENV_FILE.is_file():
+        sys.stderr.write(f"tg-send: cannot read {ENV_FILE}\n")
+        return 1
+    env = _read_kv(ENV_FILE)
+    token = env.get("TG_BOT_TOKEN") or os.environ.get("TG_BOT_TOKEN", "")
+    if not token:
+        sys.stderr.write("tg-send: TG_BOT_TOKEN missing\n")
+        return 1
+
+    chat_id = os.environ.get("TG_CHAT_ID") or _bound_chat_id()
+    try:
+        chat_id_int = int(chat_id)
+    except ValueError:
+        sys.stderr.write(f"tg-send: bad TG_CHAT_ID {chat_id!r}\n")
+        return 1
+
+    thread_id_env = os.environ.get("TG_THREAD_ID")
+    thread_id: int | None = None
+    if thread_id_env:
+        try:
+            thread_id = int(thread_id_env)
+        except ValueError:
+            sys.stderr.write(f"tg-send: bad TG_THREAD_ID {thread_id_env!r}\n")
+            return 1
+
+    reply_to_env = os.environ.get("TG_REPLY_TO")
+    reply_to: int | None = None
+    if reply_to_env:
+        try:
+            reply_to = int(reply_to_env)
+        except ValueError:
+            sys.stderr.write(f"tg-send: bad TG_REPLY_TO {reply_to_env!r}\n")
+            return 1
+
+    preview_disabled = os.environ.get("TG_LINK_PREVIEW", "") != "1"
+
+    chunks = _chunk_for_telegram(text, REPLY_MAX)
+    for i, chunk in enumerate(chunks):
+        payload: dict = {
+            "chat_id": chat_id_int,
+            "text": chunk or " ",
+            "link_preview_options": {"is_disabled": preview_disabled},
+        }
+        if thread_id is not None:
+            payload["message_thread_id"] = thread_id
+        # Reply only on the first chunk; the follow-up bubbles stand on
+        # their own so the thread doesn't show N quoted-reply badges.
+        if reply_to is not None and i == 0:
+            payload["reply_to_message_id"] = reply_to
+        _post(token, payload)
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
