@@ -1,0 +1,21 @@
+[Unit]
+Description=bux agency mini app (FastAPI + SQLite, served behind cloudflared)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/bux/tg.env
+
+[Service]
+Type=simple
+User=bux
+Group=bux
+EnvironmentFile=/etc/bux/tg.env
+EnvironmentFile=-/etc/bux/env
+WorkingDirectory=/opt/bux/agent
+ExecStart=/opt/bux/venv/bin/uvicorn agency_app.server:app --host 127.0.0.1 --port 8443
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/bux/agency-app.log
+StandardError=append:/var/log/bux/agency-app.log
+
+[Install]
+WantedBy=multi-user.target
