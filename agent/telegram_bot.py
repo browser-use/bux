@@ -5418,6 +5418,9 @@ class Bot:
             if data.startswith("steer:"):
                 self._handle_steer_callback(cb, data)
                 return
+            if data.startswith("agcy:"):
+                self._handle_agency_callback(cb, data)
+                return
             if data == "codex_login_retry":
                 msg = cb.get("message") or {}
                 chat = msg.get("chat") or {}
@@ -5563,6 +5566,81 @@ class Bot:
             callback_query_id=cb["id"],
             text="🚀 steered — running this next",
         )
+
+    def _handle_agency_callback(self, cb: dict, data: str) -> None:
+        """Process an Agency-button tap.
+
+        callback_data shape: `agcy:<thread_id>:<choice>`
+          choice ∈ {yes, dontcare, different, rethink}
+
+        Semantics: owner-only. ack the tap, strip the keyboard so it can't be
+        re-tapped, and dispatch a synthesized lane message into the same
+        topic so the agent picks the choice up as if the user typed it.
+        For `different` and `rethink` the lane message asks the agent to
+        request a free-text follow-up; the user's next normal message in
+        the lane carries the clarification.
+        """
+        msg = cb.get("message") or {}
+        chat = msg.get("chat") or {}
+        chat_id = chat.get("id")
+        if not chat_id:
+            return
+        sender = cb.get("from") or {}
+        owner = _owner_for(chat_id, self.state)
+        if owner and not _is_owner({"user_id": sender.get("id")}, owner):
+            self.call(
+                "answerCallbackQuery",
+                callback_query_id=cb["id"],
+                text="Only the box owner can answer.",
+                show_alert=True,
+            )
+            return
+        parts = data.split(":")
+        if len(parts) != 3:
+            self.call("answerCallbackQuery", callback_query_id=cb["id"])
+            return
+        try:
+            target_thread = int(parts[1])
+        except ValueError:
+            target_thread = 0
+        choice = parts[2]
+        labels = {
+            "yes": "✅ yes",
+            "dontcare": "🤷 don't care",
+            "different": "✏️ different",
+            "rethink": "🔁 rethink",
+        }
+        toast = labels.get(choice, choice)
+        self.call("answerCallbackQuery", callback_query_id=cb["id"], text=toast)
+        try:
+            self.call(
+                "editMessageReplyMarkup",
+                chat_id=chat_id,
+                message_id=msg.get("message_id"),
+                reply_markup={"inline_keyboard": []},
+            )
+        except Exception:
+            LOG.exception("agency keyboard strip failed")
+        prompt = f"[agency-button] {choice} (tapped by @{sender.get('username') or sender.get('id')})"
+        if choice == "different":
+            prompt += "\n\nThe user wants you to do this differently. Reply asking what they would change, then wait for their next message."
+        elif choice == "rethink":
+            prompt += "\n\nThe user wants you to rethink this suggestion. Re-evaluate the underlying ask and propose a different approach as a fresh suggestion (with new buttons via tg-buttons)."
+        try:
+            self.run_task(
+                (chat_id, target_thread),
+                prompt,
+                reply_to=None,
+                sender={
+                    "user_id": str(sender.get("id") or ""),
+                    "username": sender.get("username") or "",
+                    "name": (sender.get("first_name") or "") + (
+                        (" " + sender["last_name"]) if sender.get("last_name") else ""
+                    ),
+                },
+            )
+        except Exception:
+            LOG.exception("agency callback dispatch failed")
 
 
 def _consume_update_request_lanes() -> set["LaneKey"]:

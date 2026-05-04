@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# tg-buttons — post a TG message with the 4 Agency inline buttons.
+#
+#   tg-buttons "Hassan HIPAA — send the saved draft 19df…1d?"
+#
+# Optionally takes the body on stdin if no argument is given:
+#   echo "..." | tg-buttons
+#
+# Honours TG_THREAD_ID when set (lands in the active forum topic).
+# Buttons emit callback_data agcy:<thread_id>:{yes,dontcare,different,rethink}.
+# The bot's _handle_agency_callback dispatches that into the same lane so the
+# agent receives the tap as a fresh user message.
+set -euo pipefail
+
+if [ "$#" -ge 1 ]; then
+  text="$*"
+else
+  text="$(cat)"
+fi
+text="${text%$'\n'}"
+[ -n "$text" ] || { echo "tg-buttons: empty payload" >&2; exit 2; }
+
+env_file=/etc/bux/tg.env
+allow_file=/etc/bux/tg-allowed.txt
+[ -r "$env_file" ] || { echo "tg-buttons: cannot read $env_file" >&2; exit 1; }
+[ -r "$allow_file" ] || { echo "tg-buttons: no bound chat (run /start in TG first)" >&2; exit 1; }
+
+# shellcheck disable=SC1090
+. "$env_file"
+[ -n "${TG_BOT_TOKEN:-}" ] || { echo "tg-buttons: TG_BOT_TOKEN missing" >&2; exit 1; }
+
+chat_id=$(awk 'NF{print; exit}' "$allow_file")
+[ -n "$chat_id" ] || { echo "tg-buttons: empty $allow_file" >&2; exit 1; }
+
+thread_id="${TG_THREAD_ID:-0}"
+
+# 4 inline buttons — yes / don't care / different / rethink. callback_data
+# carries the lane thread_id so the bot can dispatch the choice into the
+# right topic when the user taps.
+markup=$(jq -nc --argjson t "$thread_id" '{
+  inline_keyboard: [
+    [
+      {text: "✅ yes do this",     callback_data: ("agcy:" + ($t|tostring) + ":yes")},
+      {text: "🤷 don'\''t care",   callback_data: ("agcy:" + ($t|tostring) + ":dontcare")}
+    ],
+    [
+      {text: "✏️ different",        callback_data: ("agcy:" + ($t|tostring) + ":different")},
+      {text: "🔁 rethink",          callback_data: ("agcy:" + ($t|tostring) + ":rethink")}
+    ]
+  ]
+}')
+
+# Build the JSON body. message_thread_id is omitted when 0 (general chat).
+if [ "$thread_id" -gt 0 ]; then
+  body=$(jq -nc --arg c "$chat_id" --arg t "$text" --argjson th "$thread_id" --argjson m "$markup" \
+    '{chat_id: ($c|tonumber), message_thread_id: $th, text: $t, reply_markup: $m}')
+else
+  body=$(jq -nc --arg c "$chat_id" --arg t "$text" --argjson m "$markup" \
+    '{chat_id: ($c|tonumber), text: $t, reply_markup: $m}')
+fi
+
+curl -fsS -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+  --max-time 15 \
+  -H 'Content-Type: application/json' \
+  -d "$body" \
+  > /dev/null
