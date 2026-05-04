@@ -1,0 +1,15 @@
+[Unit]
+Description=bux agency tunnel — capture the trycloudflare URL into /etc/bux/env
+After=bux-agency-tunnel.service
+Requires=bux-agency-tunnel.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/bux/agent/agency_app/capture_tunnel_url.sh
+StandardOutput=append:/var/log/bux/agency-tunnel.log
+StandardError=append:/var/log/bux/agency-tunnel.log
+RemainAfterExit=no
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target
