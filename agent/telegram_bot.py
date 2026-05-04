@@ -5653,6 +5653,18 @@ class Bot:
             self.call("sendMessage", **confirm_kwargs)
         except Exception:
             LOG.exception("agency confirm post failed")
+        # Record the decision against the suggestion row so future
+        # agency runs can dedupe + suppress repeat suggestions Magnus
+        # already responded to. Best-effort: a missing row (button posted
+        # before the DB existed) just no-ops.
+        try:
+            import agency_db
+            db = agency_db.conn()
+            agency_db.record_decision(
+                db, chat_id, msg.get("message_id"), label
+            )
+        except Exception:
+            LOG.exception("agency_db record_decision failed")
         # Dispatch the choice into the lane as a synthesized user
         # message. The agent resumes the lane session (UUID kept), sees
         # the tap, and runs the corresponding action.
