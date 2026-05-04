@@ -5570,15 +5570,23 @@ class Bot:
     def _handle_agency_callback(self, cb: dict, data: str) -> None:
         """Process an Agency-button tap.
 
-        callback_data shape: `agcy:<thread_id>:<choice>`
-          choice ∈ {yes, dontcare, different, rethink}
+        callback_data shape: `agcy:<thread_id>:<idx>` — idx is the 0-based
+        position of the tapped button in the original message's keyboard.
+        The button label is read off the original message at tap time so
+        callers can use any custom set of labels (default 3-button set is
+        Yes, do it / No / Just do it differently — see tg-buttons).
 
-        Semantics: owner-only. ack the tap, strip the keyboard so it can't be
-        re-tapped, and dispatch a synthesized lane message into the same
-        topic so the agent picks the choice up as if the user typed it.
-        For `different` and `rethink` the lane message asks the agent to
-        request a free-text follow-up; the user's next normal message in
-        the lane carries the clarification.
+        Steps:
+          1. owner-gate
+          2. resolve the tapped label off cb.message.reply_markup
+          3. ack with a toast carrying the label
+          4. strip the keyboard so it can't be re-tapped
+          5. post a visible "🔘 You picked …" message in the same topic
+          6. dispatch a synthesized lane message into the topic so the
+             agent receives the choice as if the user typed it. Labels
+             whose lowercased text contains "different" / "rethink" /
+             "redo" get a follow-up prompt asking for clarification or
+             a re-evaluation.
         """
         msg = cb.get("message") or {}
         chat = msg.get("chat") or {}
@@ -5603,15 +5611,26 @@ class Bot:
             target_thread = int(parts[1])
         except ValueError:
             target_thread = 0
-        choice = parts[2]
-        labels = {
-            "yes": "✅ yes",
-            "dontcare": "🤷 don't care",
-            "different": "✏️ different",
-            "rethink": "🔁 rethink",
-        }
-        toast = labels.get(choice, choice)
-        self.call("answerCallbackQuery", callback_query_id=cb["id"], text=toast)
+        idx_str = parts[2]
+        # Resolve the label from the original keyboard if the third
+        # segment is a numeric index (current shape). Fall back to the
+        # raw string for backward-compat with the slug-based form.
+        label = idx_str
+        try:
+            idx = int(idx_str)
+            kbd = ((msg.get("reply_markup") or {}).get("inline_keyboard") or [])
+            flat = [btn for row in kbd for btn in row]
+            if 0 <= idx < len(flat):
+                label = flat[idx].get("text") or idx_str
+        except ValueError:
+            pass
+        # Toast (transient).
+        self.call(
+            "answerCallbackQuery",
+            callback_query_id=cb["id"],
+            text=f"✅ {label}"[:200],
+        )
+        # Strip keyboard so the same prompt can't be answered twice.
         try:
             self.call(
                 "editMessageReplyMarkup",
@@ -5621,10 +5640,27 @@ class Bot:
             )
         except Exception:
             LOG.exception("agency keyboard strip failed")
-        prompt = f"[agency-button] {choice} (tapped by @{sender.get('username') or sender.get('id')})"
-        if choice == "different":
+        # Persistent visible confirmation in the topic — Magnus wanted
+        # the choice readable in the chat, not just a transient toast.
+        who = sender.get("username") or sender.get("first_name") or sender.get("id")
+        try:
+            confirm_kwargs = {
+                "chat_id": chat_id,
+                "text": f"🔘 You picked: {label}",
+            }
+            if target_thread:
+                confirm_kwargs["message_thread_id"] = target_thread
+            self.call("sendMessage", **confirm_kwargs)
+        except Exception:
+            LOG.exception("agency confirm post failed")
+        # Dispatch the choice into the lane as a synthesized user
+        # message. The agent resumes the lane session (UUID kept), sees
+        # the tap, and runs the corresponding action.
+        prompt = f"[agency-button] {label} (tapped by @{who})"
+        low = label.lower()
+        if any(w in low for w in ("different", "differently")):
             prompt += "\n\nThe user wants you to do this differently. Reply asking what they would change, then wait for their next message."
-        elif choice == "rethink":
+        elif any(w in low for w in ("rethink", "redo")):
             prompt += "\n\nThe user wants you to rethink this suggestion. Re-evaluate the underlying ask and propose a different approach as a fresh suggestion (with new buttons via tg-buttons)."
         try:
             self.run_task(
