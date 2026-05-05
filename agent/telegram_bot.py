@@ -663,13 +663,20 @@ def _extract_start_payload(text: str) -> str | None:
     """Pull the `<token>` out of a `/start <token>` message, or None.
 
     Telegram's deep-link `t.me/<bot>?start=<token>` opens the chat with
-    `/start <token>` pre-filled. We accept ONLY this exact shape for
+    `/start <token>` pre-filled. We accept ONLY this EXACT shape for
     binding — bare `/start`, `/start@<bot>`, `/start  ` (no payload),
-    and any other text all return None and the caller drops the
-    message.
+    `/start <token> anything-trailing`, and any other text all return
+    None and the caller drops the message.
 
-    The payload may not contain whitespace (Telegram strips it from
-    the deep-link URL), so a single split is sufficient.
+    Telegram's `start=` URL parameter is restricted to [A-Za-z0-9_-]
+    by the Bot API, so the only legitimate first message a deep-link
+    can produce is `/start <token>` with no trailing content. An
+    earlier draft of this helper accepted `/start <token> trailing`
+    by taking only the first token from `rest` — that opens a small
+    "decorate the message to confuse logs" hole and could let a
+    deep-link pasted into a group bind via any extra text appended
+    by another member. We strict-match instead: rest must be exactly
+    one token (no internal whitespace).
     """
     if not text:
         return None
@@ -679,10 +686,13 @@ def _extract_start_payload(text: str) -> str | None:
     rest = rest.strip()
     if not rest:
         return None
-    # Telegram pads payloads only via the URL `start=` param which can't
-    # contain whitespace, but be defensive: take only the first token.
-    payload = rest.split(None, 1)[0]
-    return payload or None
+    # Reject anything past the first whitespace-delimited token. Per
+    # Telegram's Bot API, `?start=` payloads can't contain whitespace,
+    # so any trailing text means the message wasn't produced by the
+    # deep-link as-is — refuse to bind.
+    if rest.split() != [rest]:
+        return None
+    return rest
 
 
 def _read_kv(path: Path) -> dict[str, str]:
