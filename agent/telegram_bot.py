@@ -41,6 +41,7 @@ from __future__ import annotations
 import errno
 import fcntl
 import grp
+import hmac
 import json
 import logging
 import os
@@ -656,6 +657,42 @@ def _parse_command(text: str) -> tuple[str | None, str]:
     rest = parts[1].strip() if len(parts) > 1 else ""
     cmd, _, _bot = head.partition("@")
     return cmd, rest
+
+
+def _extract_start_payload(text: str) -> str | None:
+    """Pull the `<token>` out of a `/start <token>` message, or None.
+
+    Telegram's deep-link `t.me/<bot>?start=<token>` opens the chat with
+    `/start <token>` pre-filled. We accept ONLY this EXACT shape for
+    binding — bare `/start`, `/start@<bot>`, `/start  ` (no payload),
+    `/start <token> anything-trailing`, and any other text all return
+    None and the caller drops the message.
+
+    Telegram's `start=` URL parameter is restricted to [A-Za-z0-9_-]
+    by the Bot API, so the only legitimate first message a deep-link
+    can produce is `/start <token>` with no trailing content. An
+    earlier draft of this helper accepted `/start <token> trailing`
+    by taking only the first token from `rest` — that opens a small
+    "decorate the message to confuse logs" hole and could let a
+    deep-link pasted into a group bind via any extra text appended
+    by another member. We strict-match instead: rest must be exactly
+    one token (no internal whitespace).
+    """
+    if not text:
+        return None
+    cmd, rest = _parse_command(text)
+    if cmd != "/start":
+        return None
+    rest = rest.strip()
+    if not rest:
+        return None
+    # Reject anything past the first whitespace-delimited token. Per
+    # Telegram's Bot API, `?start=` payloads can't contain whitespace,
+    # so any trailing text means the message wasn't produced by the
+    # deep-link as-is — refuse to bind.
+    if rest.split() != [rest]:
+        return None
+    return rest
 
 
 def _read_kv(path: Path) -> dict[str, str]:
@@ -4072,12 +4109,39 @@ class Bot:
         sender = _extract_sender(msg)
         allow = load_allow()
 
-        # Binding: first message wins. Topic-id is irrelevant — once the
-        # parent chat is bound, every topic in it is automatically allowed.
+        # Binding: requires `/start <setup_token>` from the deep-link.
+        # Topic-id is irrelevant — once the parent chat is bound, every
+        # topic in it is automatically allowed.
+        #
+        # Earlier behavior was "first message wins" which leaked the bot
+        # to anyone who guessed the handle and DM'd `/start` before the
+        # legitimate owner. We now require the message to carry the
+        # exact one-time setup_token cloud baked into the t.me/<bot>?
+        # start=<token> deep-link the FE rendered. The token lives only
+        # in (a) the owner's screen / Telegram client and (b) this box's
+        # /etc/bux/tg.env — there is no third copy.
         if chat_id not in allow:
             if self.setup_token:
-                LOG.info("binding chat_id=%s (first-message wins)", chat_id)
-                self._bind_chat(chat_id, sender=sender)
+                # Require `/start <token>` *exactly* — no other text
+                # message bypasses the gate. constant-time compare so a
+                # bind brute-force attacker can't time-side-channel.
+                bind_payload = _extract_start_payload(text)
+                if bind_payload is not None and hmac.compare_digest(
+                    bind_payload, self.setup_token
+                ):
+                    LOG.info(
+                        "binding chat_id=%s via valid /start token", chat_id
+                    )
+                    self._bind_chat(chat_id, sender=sender)
+                    return
+                # Wrong / missing token. Drop silently — no reply,
+                # no log of the attempt's content. An attacker who
+                # found the bot handle gets nothing back to confirm
+                # the bot is live.
+                LOG.info(
+                    "dropping unbind chat_id=%s (no/bad setup token)",
+                    chat_id,
+                )
                 return
             # Setup-token already burned. The ONLY path to allow-list a
             # new chat is `my_chat_member` firing with `from.id` matching
