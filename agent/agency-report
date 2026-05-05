@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""agency-report — record + post an Agency suggestion to Telegram.
+
+Always:
+  1. records the suggestion in /var/lib/bux/agency.db
+  2. posts the body to TG with inline-keyboard buttons (default 4)
+  3. wires the message_id back into the row so a button tap can record
+     the user's decision against the right suggestion.
+
+Default buttons: ✅ Yes, do it · ❌ No · ✏️ Just do it differently · 🔄 Regenerate
+
+Custom buttons: pass --button (repeatable) to override the set.
+
+Dedupe: pass --source <slug> + --skip-if-exists to suppress if the same
+source already has a row that is not 'pending'. Returns 0 silently when
+suppressed (status of the prior row is printed to stderr).
+
+Usage:
+  agency-report --title "Hassan HIPAA send" \\
+                --description "Saved Gmail draft 19df…1d sitting unsent." \\
+                --importance high \\
+                --source gmail-draft-19df00477868154d \\
+                --prompt "Open Gmail draft 19df…, send it, post to #wall-king-magnus." \\
+                --skip-if-exists
+
+  agency-report --title "Pick a draft" \\
+                --description "Three drafts ready for the Hassan thread." \\
+                --button "Send draft A" --button "Send draft B" --button "Send draft C"
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+REPO_AGENT = Path(__file__).resolve().parent
+sys.path.insert(0, str(REPO_AGENT))
+
+import agency_db  # noqa: E402
+
+import urllib.request  # noqa: E402
+
+DEFAULT_BUTTONS = [
+    "✅ Yes, do it",
+    "❌ No",
+    "✏️ Just do it differently",
+    "🔄 Regenerate",
+]
+
+
+def _read_kv(path: Path) -> dict:
+    out: dict[str, str] = {}
+    try:
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            out[k.strip()] = v.strip().strip('"').strip("'")
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def bot_token() -> str:
+    tok = os.environ.get("TG_BOT_TOKEN")
+    if tok:
+        return tok
+    tok = _read_kv(Path("/etc/bux/tg.env")).get("TG_BOT_TOKEN")
+    if not tok:
+        sys.exit("agency-report: TG_BOT_TOKEN missing (env or /etc/bux/tg.env)")
+    return tok
+
+
+def chat_id() -> int:
+    raw = Path("/etc/bux/tg-allowed.txt").read_text().splitlines()
+    for line in raw:
+        line = line.strip()
+        if line:
+            return int(line)
+    sys.exit("agency-report: no bound chat (run /start in TG first)")
+
+
+def send_with_buttons(
+    *, token: str, chat: int, thread: int, text: str, buttons: list[str]
+) -> int:
+    keyboard = [
+        [{"text": label, "callback_data": f"agcy:{thread}:{i}"}]
+        for i, label in enumerate(buttons)
+    ]
+    body: dict = {
+        "chat_id": chat,
+        "text": text,
+        "reply_markup": {"inline_keyboard": keyboard},
+    }
+    if thread > 0:
+        body["message_thread_id"] = thread
+    req = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/sendMessage",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as r:
+        resp = json.loads(r.read())
+    if not resp.get("ok"):
+        sys.exit(f"agency-report: sendMessage failed: {resp}")
+    return int(resp["result"]["message_id"])
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description="Record + post an Agency suggestion to Telegram.")
+    p.add_argument("--title", required=True, help="Short scannable headline.")
+    p.add_argument("--description", required=True, help="One-paragraph body.")
+    p.add_argument(
+        "--importance",
+        choices=("high", "med", "low"),
+        default="med",
+        help="Priority bucket for triage. Default: med.",
+    )
+    p.add_argument(
+        "--source",
+        help="Stable slug for dedupe (e.g. slack-c-minerva, gmail-thread-19df, gh-pr-78).",
+    )
+    p.add_argument(
+        "--prompt",
+        help="Exact action that runs if user taps yes — agent will see this in the lane.",
+    )
+    p.add_argument(
+        "--button",
+        action="append",
+        default=None,
+        help="Custom button label. Repeatable. If omitted, uses the default 4-button set.",
+    )
+    p.add_argument(
+        "--thread-id",
+        type=int,
+        default=int(os.environ.get("TG_THREAD_ID", "0")),
+        help="TG forum thread to post into. Defaults to $TG_THREAD_ID or 0 (general).",
+    )
+    p.add_argument(
+        "--skip-if-exists",
+        action="store_true",
+        help="If a suggestion with this --source already exists and isn't pending, "
+        "skip posting (exit 0).",
+    )
+    args = p.parse_args()
+
+    buttons = args.button or DEFAULT_BUTTONS
+
+    db = agency_db.conn()
+
+    if args.skip_if_exists and args.source:
+        prior = agency_db.exists(db, args.source)
+        if prior and prior.get("status") != "pending":
+            print(
+                f"agency-report: source={args.source!r} already exists "
+                f"(id={prior['id']}, status={prior['status']}). Skipping.",
+                file=sys.stderr,
+            )
+            return 0
+
+    sugg_id = agency_db.insert(
+        db,
+        title=args.title,
+        description=args.description,
+        importance=args.importance,
+        source=args.source,
+        prompt=args.prompt,
+        buttons=buttons,
+        chat_id=chat_id(),
+        thread_id=args.thread_id,
+    )
+
+    body_lines = [f"🎫 #{sugg_id} · {args.title}", "", args.description]
+    if args.prompt:
+        body_lines += ["", "If yes I'll run:", "```", args.prompt, "```"]
+    body = "\n".join(body_lines)
+
+    msg_id = send_with_buttons(
+        token=bot_token(),
+        chat=chat_id(),
+        thread=args.thread_id,
+        text=body,
+        buttons=buttons,
+    )
+    agency_db.update_message(db, sugg_id, msg_id)
+    print(sugg_id)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
