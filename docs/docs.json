@@ -1,0 +1,45 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "BUX",
+  "colors": {
+    "primary": "#000000",
+    "light": "#ffffff",
+    "dark": "#000000"
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "BUX",
+        "groups": [
+          {
+            "group": "Get started",
+            "pages": [
+              "bux/introduction",
+              "bux/quickstart"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "bux/access-methods",
+              "bux/authentication",
+              "bux/examples"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "bux/architecture"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/browser-use/bux"
+    }
+  }
+}

@@ -1,0 +1,65 @@
+---
+title: "Authentication & profiles"
+description: "How BUX handles logged-in sessions: Browser Use Profiles, cookie import, and the live login flow."
+icon: "lock"
+---
+
+BUX never sees your passwords. Instead, it relies on **Browser Use Profiles**, reusable browser identities that hold cookies, local storage, and a stable fingerprint per site.
+
+## Browser Use Profiles
+
+A profile is a directory mounted into the VM's Chrome. Each profile is scoped to a single domain (or a small set of related domains), so a leak on one site can't expose another.
+
+You can create a profile in three ways:
+
+<Tabs>
+  <Tab title="Import from local Chrome">
+    Run the [Browser Use companion extension](https://chromewebstore.google.com) on your laptop, pick a tab, and click **Send to BUX**. The extension copies cookies for that origin into a new profile and uploads it to your Browser Use account.
+  </Tab>
+  <Tab title="Live login (recommended)">
+    Ask BUX to perform a task that needs a login. It will reply with a one-time live browser URL. Sign in normally; BUX captures the resulting cookies into a fresh profile and reuses it for the rest of the session.
+  </Tab>
+  <Tab title="Manual">
+    From the dashboard, create an empty profile and either paste a cookie JSON export or attach a `storageState.json` file from Playwright.
+  </Tab>
+</Tabs>
+
+<Note>
+  Profiles are encrypted at rest with a key scoped to your account. Browser Use staff cannot decrypt them.
+</Note>
+
+## The live login flow
+
+This is the path you'll use most often.
+
+<Steps>
+  <Step title="Agent hits a login wall">
+    Claude Code detects the page is asking for credentials and pauses the task.
+  </Step>
+  <Step title="BUX surfaces a remote browser URL">
+    The web terminal and Telegram chat both receive a short-lived URL such as `https://live.bux.browser-use.com/<session-id>`.
+  </Step>
+  <Step title="You sign in interactively">
+    The URL streams the VM's actual Chrome to your browser via WebRTC. Type your password, complete 2FA, do whatever the site asks.
+  </Step>
+  <Step title="BUX captures the session">
+    On success, BUX writes a profile, drops the live URL, and resumes the agent from where it paused.
+  </Step>
+</Steps>
+
+The live URL expires after 10 minutes, even if you do nothing.
+
+## Session refresh
+
+BUX rotates the in-VM browser session every **240 minutes**. This protects against long-running tabs accumulating stale state and gives sites with strict session lifetimes (banks, identity providers) a clean handoff.
+
+When refresh happens mid-task, profiles are reloaded automatically, so most workflows are unaffected. If a profile has expired, you'll see a new live login URL.
+
+## Rotating and revoking
+
+- Rotate a single profile from the dashboard: **Profiles → Pick one → Rotate cookies**. The next task triggers a fresh live login.
+- Revoke everything: **Settings → Danger zone → Wipe profiles**. All BUX VMs in your account drop their profile mounts on the next task.
+
+<Warning>
+  Wiping profiles cannot be undone. Any agent currently running a task that needs a login will pause and request a new live login.
+</Warning>

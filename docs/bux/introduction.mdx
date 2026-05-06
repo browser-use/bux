@@ -1,0 +1,55 @@
+---
+title: "Introduction"
+description: "Browser Use Box (BUX) is a cloud VM that runs Claude Code and Browser Harness 24/7, controllable from Telegram, the web, or SSH."
+icon: "cube"
+---
+
+## What is BUX?
+
+Browser Use Box (BUX) is a cloud virtual machine that boots in 30 to 60 seconds with **Claude Code** and **Browser Harness** preinstalled. You drive it from Telegram, a web terminal at `cloud.browser-use.com/bux`, or SSH, so the agent can keep working when your laptop is closed.
+
+BUX is built for tasks where a regular browser agent struggles: dashboards behind SSO, multi-step workflows that span hours, and anything you want to kick off from your phone.
+
+<Note>
+  Looking for the launch story and the reasoning behind BUX? Read the [launch blog post](https://browser-use.com/posts/bux-launch-blog).
+</Note>
+
+## When to reach for BUX
+
+| You want to...                                                             | Use BUX |
+| -------------------------------------------------------------------------- | ------- |
+| Run an agent on complex SaaS dashboards (Azure, Google Workspace, Stripe)  | Yes     |
+| Trigger long-running tasks from Telegram while away from your machine      | Yes     |
+| Keep Claude Code session context across days                               | Yes     |
+| One-off scrape that finishes in seconds                                    | The [SDK](/quickstart) is simpler |
+
+## How it works
+
+1. You provision a BUX VM from the cloud dashboard or CLI.
+2. The VM boots from a prebaked AMI with Claude Code, Browser Harness, and a remote browser already running.
+3. You send instructions over Telegram, the web terminal, or SSH.
+4. Claude Code drives the local Chrome through Browser Harness; when login is required, BUX surfaces a live browser URL so you can authenticate once.
+5. Cookies and credentials are saved to a Browser Use Profile so the next run skips the login step.
+
+## Key concepts
+
+<CardGroup cols={2}>
+  <Card title="Browser Use Profiles" icon="id-card" href="/bux/authentication">
+    Reusable browser identities (cookies, storage, fingerprint) attached to a VM.
+  </Card>
+  <Card title="Live login URL" icon="link" href="/bux/authentication#live-login">
+    A short-lived URL that streams the VM's browser to you so you can sign in interactively.
+  </Card>
+  <Card title="Telegram session" icon="paper-plane" href="/bux/access-methods#telegram">
+    A persistent Claude Code session bound to your Telegram chat, with full history.
+  </Card>
+  <Card title="Self-hosting" icon="server" href="/bux/architecture#self-hosting">
+    The VM image and orchestration are open source in the `bux` repository.
+  </Card>
+</CardGroup>
+
+## Next steps
+
+- [Quickstart](/bux/quickstart): create your first BUX in under five minutes.
+- [Access methods](/bux/access-methods): pick between Telegram, web, and SSH.
+- [Examples](/bux/examples): copyable prompts for common workflows.
