@@ -1,76 +1,48 @@
 ---
 title: "Quickstart"
-description: "Provision a BUX VM and run your first task from Telegram in five minutes."
+description: "From zero to a BUX you can talk to from Telegram in five minutes."
 icon: "rocket"
 ---
 
-This guide takes you from zero to a running BUX VM that you can talk to from Telegram.
-
-## Prerequisites
-
 <Steps>
-  <Step title="Browser Use account">
-    Sign up at [cloud.browser-use.com](https://cloud.browser-use.com). The free tier is enough to launch your first BUX.
+  <Step title="Sign in and create a BUX">
+    Open [cloud.browser-use.com](https://cloud.browser-use.com), go to **BUX**, click **New Box**. Boot takes 30 to 60 seconds.
   </Step>
-  <Step title="Claude Code access">
-    BUX runs Claude Code inside the VM. Make sure your Anthropic account has Claude Code enabled. You will paste the auth token once during setup.
+  <Step title="Authorise Claude Code">
+    The web terminal prints a one-time `claude login` URL. Open it, authorise, paste the token back. The session persists across restarts.
   </Step>
-  <Step title="Telegram bot (optional, recommended)">
-    Open a chat with [@BotFather](https://t.me/BotFather), run `/newbot`, and copy the bot token. You will hand it to BUX so it can send and receive messages on your behalf.
+  <Step title="Link a Telegram bot">
+    In [@BotFather](https://t.me/BotFather), run `/newbot` and copy the token. Paste it into the BUX dashboard, then send `/start` to your bot.
+  </Step>
+  <Step title="Send a task">
+    From Telegram:
+
+    ```
+    Open my GitHub notifications and summarise anything from the last 24 hours.
+    ```
+
+    The first run will reply with a [live login URL](/bux/authentication#live-login). Sign in once; future runs reuse the saved profile.
   </Step>
 </Steps>
 
-## 1. Create a BUX
+## Other ways to drive your BUX
 
-From the dashboard, open **BUX** in the sidebar and click **New Box**.
+| Surface       | Best for                                   |
+| ------------- | ------------------------------------------ |
+| Telegram      | Quick prompts, mobile, push notifications. |
+| Web terminal  | Long sessions, copy/paste, debugging.      |
+| SSH           | Scripting, file transfer, piping output.   |
 
-<Info>
-  The first boot takes 30 to 60 seconds. The VM is launched from a prebaked AMI, so Claude Code, Browser Harness, and a headful Chrome are already installed.
-</Info>
+All three attach to the same `tmux` session, so you can switch surfaces mid-task without losing state.
 
-## 2. Connect Claude Code
+## Self-hosting
 
-When the VM is ready, BUX prints a one-time `claude login` URL in the web terminal. Open it in any browser, authorize, and paste the resulting token back into the terminal. The session persists across restarts.
+The VM image and orchestration are open source.
 
-## 3. Connect Telegram
-
-In the BUX dashboard, paste the bot token from `@BotFather` and click **Link**. Open your bot in Telegram and send `/start`. The first message you receive confirms the link.
-
-<Note>
-  The Telegram session keeps Claude Code's full conversation history, so you can pick up a task tomorrow exactly where you left off.
-</Note>
-
-## 4. Run your first task
-
-Send a message to the bot:
-
-```
-Open google.com and tell me the top result for "browser use".
+```bash
+git clone https://github.com/browser-use/bux
+cd bux
+make deploy AWS_REGION=us-east-1
 ```
 
-You will see Claude Code stream its reasoning back into the chat, and a screenshot of the final page when the task finishes.
-
-## 5. Try a task that needs login
-
-```
-Go to my GitHub notifications and summarise anything from the last 24 hours.
-```
-
-The first time you ask this, BUX will reply with a **live browser URL**. Open it, sign in to GitHub once, and BUX captures the cookies into a [Browser Use Profile](/bux/authentication). Subsequent runs skip the login step.
-
-## What's next
-
-<CardGroup cols={2}>
-  <Card title="Pick the right access method" icon="signal" href="/bux/access-methods">
-    Telegram for mobile, web terminal for long sessions, SSH for power users.
-  </Card>
-  <Card title="Manage credentials safely" icon="lock" href="/bux/authentication">
-    Import cookies from your local Chrome or build profiles from scratch.
-  </Card>
-  <Card title="Browse examples" icon="lightbulb" href="/bux/examples">
-    Copyable prompts for deployments, travel booking, and SaaS dashboards.
-  </Card>
-  <Card title="Self-host" icon="server" href="/bux/architecture#self-hosting">
-    Run BUX in your own AWS account from the open-source repo.
-  </Card>
-</CardGroup>
+You'll need an Anthropic API key, an AWS account, and a Telegram bot token. Profiles and logs stay in your account.

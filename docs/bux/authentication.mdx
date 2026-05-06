@@ -1,65 +1,40 @@
 ---
-title: "Authentication & profiles"
-description: "How BUX handles logged-in sessions: Browser Use Profiles, cookie import, and the live login flow."
+title: "Authentication"
+description: "How BUX handles logins: live browser URLs and Browser Use Profiles."
 icon: "lock"
 ---
 
-BUX never sees your passwords. Instead, it relies on **Browser Use Profiles**, reusable browser identities that hold cookies, local storage, and a stable fingerprint per site.
+BUX never sees your passwords. Logged-in sessions live in **Browser Use Profiles**, encrypted bundles of cookies and storage scoped to a single domain.
 
-## Browser Use Profiles
+## Live login {#live-login}
 
-A profile is a directory mounted into the VM's Chrome. Each profile is scoped to a single domain (or a small set of related domains), so a leak on one site can't expose another.
-
-You can create a profile in three ways:
-
-<Tabs>
-  <Tab title="Import from local Chrome">
-    Run the [Browser Use companion extension](https://chromewebstore.google.com) on your laptop, pick a tab, and click **Send to BUX**. The extension copies cookies for that origin into a new profile and uploads it to your Browser Use account.
-  </Tab>
-  <Tab title="Live login (recommended)">
-    Ask BUX to perform a task that needs a login. It will reply with a one-time live browser URL. Sign in normally; BUX captures the resulting cookies into a fresh profile and reuses it for the rest of the session.
-  </Tab>
-  <Tab title="Manual">
-    From the dashboard, create an empty profile and either paste a cookie JSON export or attach a `storageState.json` file from Playwright.
-  </Tab>
-</Tabs>
-
-<Note>
-  Profiles are encrypted at rest with a key scoped to your account. Browser Use staff cannot decrypt them.
-</Note>
-
-## The live login flow
-
-This is the path you'll use most often.
+The path you'll use most often.
 
 <Steps>
   <Step title="Agent hits a login wall">
-    Claude Code detects the page is asking for credentials and pauses the task.
+    Claude Code pauses the task and asks BUX for help.
   </Step>
-  <Step title="BUX surfaces a remote browser URL">
-    The web terminal and Telegram chat both receive a short-lived URL such as `https://live.bux.browser-use.com/<session-id>`.
+  <Step title="BUX sends you a live URL">
+    A short-lived URL like `https://live.bux.browser-use.com/<id>` arrives in Telegram and the web terminal. It expires after 10 minutes.
   </Step>
   <Step title="You sign in interactively">
-    The URL streams the VM's actual Chrome to your browser via WebRTC. Type your password, complete 2FA, do whatever the site asks.
+    The URL streams the VM's Chrome to your browser via WebRTC. Type your password, do 2FA, whatever the site needs.
   </Step>
   <Step title="BUX captures the session">
-    On success, BUX writes a profile, drops the live URL, and resumes the agent from where it paused.
+    On success, BUX writes a profile and resumes the task from where it paused.
   </Step>
 </Steps>
 
-The live URL expires after 10 minutes, even if you do nothing.
+## Importing existing logins
 
-## Session refresh
+Skip the live login if you already have the cookies locally. With the [Browser Use Chrome extension](https://chromewebstore.google.com), pick a tab and click **Send to BUX**; the cookies for that origin upload to a new profile.
 
-BUX rotates the in-VM browser session every **240 minutes**. This protects against long-running tabs accumulating stale state and gives sites with strict session lifetimes (banks, identity providers) a clean handoff.
+## Lifetimes and rotation
 
-When refresh happens mid-task, profiles are reloaded automatically, so most workflows are unaffected. If a profile has expired, you'll see a new live login URL.
+- The in-VM browser session refreshes every **240 minutes** for security. Most workflows are unaffected; expired profiles trigger a new live login.
+- Rotate one profile from the dashboard: **Profiles → Rotate cookies**.
+- Wipe everything: **Settings → Danger zone → Wipe profiles**.
 
-## Rotating and revoking
-
-- Rotate a single profile from the dashboard: **Profiles → Pick one → Rotate cookies**. The next task triggers a fresh live login.
-- Revoke everything: **Settings → Danger zone → Wipe profiles**. All BUX VMs in your account drop their profile mounts on the next task.
-
-<Warning>
-  Wiping profiles cannot be undone. Any agent currently running a task that needs a login will pause and request a new live login.
-</Warning>
+<Note>
+  Profiles are encrypted at rest with a per-account KMS key. Browser Use staff cannot decrypt them. The BUX VM's IAM role is empty, so even a compromised agent cannot reach AWS resources.
+</Note>

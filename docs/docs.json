@@ -13,24 +13,11 @@
         "tab": "BUX",
         "groups": [
           {
-            "group": "Get started",
+            "group": "BUX",
             "pages": [
               "bux/introduction",
-              "bux/quickstart"
-            ]
-          },
-          {
-            "group": "Guides",
-            "pages": [
-              "bux/access-methods",
-              "bux/authentication",
-              "bux/examples"
-            ]
-          },
-          {
-            "group": "Reference",
-            "pages": [
-              "bux/architecture"
+              "bux/quickstart",
+              "bux/authentication"
             ]
           }
         ]
