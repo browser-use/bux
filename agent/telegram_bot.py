@@ -4592,7 +4592,7 @@ class Bot:
         if depth > 1:
             steer_kbd = {
                 "inline_keyboard": [[{
-                    "text": "🚀 Steer (kill running, run this next)",
+                    "text": "🚀 Steer",
                     "callback_data": f"steer:{slug}:{job['id']}",
                 }]],
             }
