@@ -5877,6 +5877,24 @@ class Bot:
 
         if kind == "action":
             action_prompt = sugg_row.get("prompt") or label
+            # Post the original prompt as the first visible message in the
+            # new topic so the user can see what the agent is being asked
+            # to do. Otherwise run_task dispatches it as an internal lane
+            # input and only the agent's *response* surfaces in TG, which
+            # leaves the user guessing what the agent is working on.
+            try:
+                self.call(
+                    "sendMessage",
+                    chat_id=chat_id,
+                    message_thread_id=new_thread_id,
+                    text=(
+                        "📋 <b>Running this on your behalf</b>\n"
+                        f"<pre>{_html.escape(action_prompt, quote=False)}</pre>"
+                    ),
+                    parse_mode="HTML",
+                )
+            except Exception:
+                LOG.exception("agency action prompt-display failed")
             try:
                 self.run_task(
                     (chat_id, new_thread_id),
