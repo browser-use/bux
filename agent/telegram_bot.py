@@ -5914,6 +5914,25 @@ class Bot:
 
         msg_id = msg.get("message_id")
 
+        # Universal 🔥 reaction on any agency-button tap so the user
+        # can tell at a glance which cards have been answered, even
+        # after the keyboard is stripped. Fires for every kind
+        # (action / dismiss / refine / custom). setMessageReaction
+        # replaces prior reactions, so tapping again on a custom
+        # multi-button card keeps the fire in place rather than
+        # accumulating.
+        if msg_id:
+            try:
+                self.call(
+                    "setMessageReaction",
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    reaction=[{"type": "emoji", "emoji": "🔥"}],
+                    is_big=False,
+                )
+            except Exception:
+                LOG.exception("agency setMessageReaction failed")
+
         # Lookup the suggestion row (for title + prompt) and record the
         # decision. Best-effort: a missing row (button posted out-of-band,
         # e.g. the legacy tg-buttons helper) means action/refine fall back
