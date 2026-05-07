@@ -155,9 +155,9 @@ def record_decision(
         status = "accepted"
     elif any(w in low for w in ("regen", "redo", "rethink")):
         status = "regenerated"
-    elif any(w in low for w in ("different", "differently")):
+    elif any(w in low for w in ("different", "differently", "edit", "refine")):
         status = "differently"
-    elif "no" in low or "skip" in low or "don't" in low or "ignore" in low:
+    elif "skip" in low or "no" in low or "don't" in low or "ignore" in low:
         status = "dismissed"
     else:
         status = "accepted"  # custom labels like "Send draft A" → treat as accept
