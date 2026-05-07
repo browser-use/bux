@@ -47,7 +47,6 @@ import logging
 import os
 import pty
 import pwd
-import random
 import re
 import secrets
 import select
@@ -154,31 +153,16 @@ _SERVICE_MESSAGE_FIELDS = frozenset({
 # allowlist excludes ⏳/✅/⚠️/❌ — this is a verified-allowed pick.
 EMOJI_ERROR = "💔"
 
-# Pool the placeholder bubble draws from on every new turn — one random pick
-# per `StreamingMessage.start()`. Goes inside a regular message body, not a
-# reaction, so the Telegram reaction allowlist doesn't apply. Curated across
-# approval / laughter / astonishment / doubt so the vibe stays "agent is on
-# it" rather than going off into food or animals.
-THINKING_EMOJIS = (
-    # approval / cheering
-    "👍", "🥰", "👏", "🙏", "👌", "💯", "🤝", "✨",
-    "⭐", "🌟", "💪", "🤗", "✅", "🎯", "🥇", "🙌", "💫",
-    "🎊", "🥳", "🫡", "🆒", "💘",
-    # laughter / joy
-    "😄", "😁", "😂", "🤣", "😆", "🤪", "😜", "😝", "🤭", "🥲",
-    "😻", "🙃", "😋", "😎", "🥸", "😅", "🤠", "😇", "🤓", "🤡",
-    # astonishment / wow
-    "🤯", "😱", "🤩", "😲", "😮", "😯", "🫨", "🙀", "👀", "🫢",
-    "🫣", "😳", "🥶", "🥵", "🌪", "💥", "🎆", "🎇",
-    # doubt / thinking
-    "🤔", "🤨", "🧐", "🤷", "🙄",
-    "😶", "💭", "🐌", "🐢", "⏳", "🌀", "👻",
-)
+# Placeholder bubble shown immediately on a new turn, before any text has
+# arrived. Plain text "..." rather than a random emoji — the giant animated
+# jumboji was visually noisy on phone, and "..." matches the universal "agent
+# is typing" mental model.
+THINKING_PLACEHOLDER = "..."
 
 
 def random_thinking_emoji() -> str:
-    """One placeholder emoji per turn. Cosmetic; never security-sensitive."""
-    return random.choice(THINKING_EMOJIS)
+    """Placeholder string for a fresh turn. Name kept for call-site stability."""
+    return THINKING_PLACEHOLDER
 
 # Recognised agents per lane. Values double as PATH binary names.
 AGENT_CLAUDE = "claude"
@@ -2687,18 +2671,10 @@ class StreamingMessage:
 
     def start(self) -> None:
         """Send a placeholder bubble immediately, before any text has
-        arrived. The emoji is a random pick from THINKING_EMOJIS so each
-        turn has a slightly different vibe (approval / laughter /
-        astonishment / doubt) instead of always the same 🤔.
-
-        Sent as plain text (no MarkdownV2 wrapping) so TG mobile
-        renders it as the large animated "jumboji" — wrapping the emoji
-        in the expandable-blockquote markup we use for the streaming
-        view downgrades it to inline-sized formatted text with no
-        animation. The first `append()` / `finalize()` edits this
-        message into the formatted body, which TG accepts on edit
-        regardless of how the original was sent. Idempotent: no-op if
-        a message has already been sent.
+        arrived. Plain "..." so the user sees the agent is on it without
+        the visual noise of an animated jumboji. The first `append()` /
+        `finalize()` edits this message into the formatted body.
+        Idempotent: no-op if a message has already been sent.
         """
         if self._message_id is not None:
             return
