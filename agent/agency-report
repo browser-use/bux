@@ -158,12 +158,39 @@ def _resolve_field(plain: str | None, raw_html: str | None) -> str | None:
     return _esc(plain)
 
 
+def _wrap_image_text(text: str, max_per_line: int = 22) -> str:
+    """Word-wrap the placehold.co label so each line stays short.
+    placehold.co auto-fits text to canvas width; with a long single line
+    the font shrinks until unreadable on phone. Wrapping gives bigger
+    per-line glyphs. Single-word lines that exceed the limit pass through
+    unbroken (no mid-word splits)."""
+    words = text.split()
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        if not current:
+            current = word
+        elif len(current) + 1 + len(word) <= max_per_line:
+            current += " " + word
+        else:
+            lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return "\n".join(lines)
+
+
 def _resolve_image_url(args: argparse.Namespace) -> str | None:
     if args.image:
         return args.image
     if args.image_text:
-        encoded = urllib.parse.quote(args.image_text)
-        return f"https://placehold.co/1200x630/2a0a3a/ff66cc/png?text={encoded}"
+        # Wrap to 22 chars per line for readable phone-screen glyphs.
+        # placehold.co accepts literal \n in the text param (URL-encoded
+        # as %0A by quote()). Canvas stays 1200x630 (TG's preferred card
+        # aspect ratio); the wrapping is what does the work.
+        wrapped = _wrap_image_text(args.image_text, max_per_line=22)
+        encoded = urllib.parse.quote(wrapped)
+        return f"https://placehold.co/1200x630/2a0a3a/ff66cc/png?text={encoded}&font=montserrat"
     return None
 
 
