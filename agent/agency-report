@@ -25,23 +25,32 @@ all get kind=custom (existing dispatch-in-same-topic behavior).
 
 Custom buttons: pass --button (repeatable). Layout wraps in pairs of two.
 
-Canonical card layout (HTML parse mode):
+Canonical card layout (HTML parse mode). Order is locked; the *number*
+of expandable blocks is variable (0, 1, 2, N — your call):
 
   [optional image]
-  <emoji> <b>headline</b>
-  <i>source: <link></i>
+  <emoji> <b>headline</b>           ← write the specific action here:
+                                       "Reply to <user> on Slack: …" or
+                                       "Merge PR #347" — *not* "Agency 95"
+                                       or a generic source description.
   <optional subhead>
 
-  <blockquote expandable>📝 <b>Drafted action</b>
-  ...the actionable content the user will accept...
-  </blockquote>
+  <blockquote expandable>…</blockquote>   ← zero or more
+  <blockquote expandable>…</blockquote>
+  …
 
-  <blockquote expandable>💭 <b>Why</b>
-  ...the reasoning / context...
-  </blockquote>
+  <i>source: <link></i>             ← at the very end, italic, optional.
 
   [Yes] [Skip]
   [Edit]
+
+Blocks are specified one of two ways:
+  • Legacy 2-block: --draft (becomes "📝 Drafted action") and --reasoning
+    (becomes "💭 Why"). Backward-compatible with the original PR.
+  • Flexible: --block (repeatable, JSON object). Each --block becomes
+    one expandable. Use this when you have a different shape — e.g.
+    three variants A/B/C, or a single "context" block, or zero blocks
+    (--info-only with just headline + source link).
 
 If --image (URL), --image-file (local path), or --image-text (auto-rendered
 placeholder) is given, the image renders above the body. For bodies that
@@ -66,10 +75,15 @@ Field mapping:
   --image              direct image URL
   --image-file         path to a local image file (multipart upload)
   --image-text         alt: shorthand text → auto-generated placehold.co card
-  --draft              actionable content (first expandable). Falls back to
-                       --prompt when omitted.
-  --reasoning          why-now / context (second expandable). Falls back to
-                       --description when omitted.
+  --block              repeatable; each value is a JSON object
+                       {emoji, title, body[, body_html]} → one expandable.
+                       When given, fully overrides --draft / --reasoning.
+                       Use for 3-variant pickers, info-only cards, or any
+                       non-2-block shape.
+  --draft              legacy: actionable content (first expandable).
+                       Falls back to --prompt when omitted.
+  --reasoning          legacy: why-now / context (second expandable).
+                       Falls back to --description when omitted.
   --description        legacy alias for --reasoning (kept for back-compat)
   --prompt             exact action that runs if user taps Yes — also fills
                        draft when --draft is not given.
@@ -218,43 +232,103 @@ def _build_keyboard(
     return rows
 
 
+def _resolve_blocks(args: argparse.Namespace) -> list[dict]:
+    """Build the ordered list of expandable blocks rendered in the card.
+
+    Two ways to specify them:
+      • --block JSON (repeatable): full control. Each value is a JSON
+        object {"emoji": "📝", "title": "Variant A", "body": "..."}.
+        When ANY --block is passed, the legacy --draft / --reasoning
+        flags are ignored — --block fully overrides them.
+      • Legacy --draft / --reasoning (each renders one block): the
+        original 2-block shape, useful for the common case.
+
+    Body content is HTML-passed-through when --block is used; the caller
+    is responsible for escaping (use the helper to wrap raw text). For
+    --draft / --reasoning, the existing escape rules apply (raw HTML via
+    --draft-html / --reasoning-html, otherwise auto-escaped).
+
+    Returns a list of {emoji, title, body_html} dicts.
+    """
+    if args.block:
+        out: list[dict] = []
+        for raw in args.block:
+            try:
+                spec = json.loads(raw)
+            except Exception as e:
+                sys.exit(f"agency-report: bad --block JSON: {e}")
+            if not isinstance(spec, dict) or "body" not in spec:
+                sys.exit("agency-report: --block must be a JSON object with at least 'body'.")
+            out.append({
+                "emoji": spec.get("emoji") or "",
+                "title": spec.get("title") or "",
+                "body_html": (
+                    spec["body"]
+                    if spec.get("body_html")
+                    else html.escape(spec["body"], quote=False)
+                ),
+            })
+        return out
+
+    blocks: list[dict] = []
+    draft = _resolve_field(args.draft, args.draft_html)
+    if not draft and args.prompt:
+        draft = f"<pre>{html.escape(args.prompt, quote=False)}</pre>"
+    if draft:
+        blocks.append({
+            "emoji": args.draft_emoji or "📝",
+            "title": args.draft_title or "Drafted action",
+            "body_html": draft,
+        })
+    reasoning = _resolve_field(args.reasoning, args.reasoning_html)
+    if not reasoning and args.description:
+        reasoning = _esc(args.description)
+    if reasoning:
+        blocks.append({
+            "emoji": args.reasoning_emoji or "💭",
+            "title": args.reasoning_title or "Why",
+            "body_html": reasoning,
+        })
+    return blocks
+
+
 def _build_body(args: argparse.Namespace) -> str:
+    """Canonical layout — order is locked:
+        1. headline (emoji + bold title)
+        2. optional one-line subhead
+        3. zero-or-more expandable blocks
+        4. source link, italic, at the very end (if provided)
+    """
     parts: list[str] = []
 
     emoji = (args.emoji or "").strip()
     headline = _resolve_field(args.title, args.title_html)
     parts.append(f"{emoji} <b>{headline}</b>".lstrip())
 
-    src_label = _resolve_field(args.source_label, args.source_label_html)
-    if src_label and args.source_url:
-        url = html.escape(args.source_url, quote=True)
-        parts.append(f'<i>source: <a href="{url}">{src_label}</a></i>')
-    elif src_label:
-        parts.append(f"<i>source: {src_label}</i>")
-
     subhead = _resolve_field(args.subhead, args.subhead_html)
     if subhead:
         parts.append(subhead)
 
-    draft = _resolve_field(args.draft, args.draft_html)
-    if not draft and args.prompt:
-        draft = f"<pre>{html.escape(args.prompt, quote=False)}</pre>"
-    if draft:
-        title = html.escape(args.draft_title or "Drafted action", quote=False)
-        emoji_d = args.draft_emoji or "📝"
-        parts.append(
-            f"\n<blockquote expandable>{emoji_d} <b>{title}</b>\n{draft}</blockquote>"
-        )
+    blocks = _resolve_blocks(args)
+    for i, block in enumerate(blocks):
+        title = html.escape(block["title"], quote=False) if block["title"] else ""
+        e = block["emoji"]
+        head = f"{e} <b>{title}</b>" if title else (e or "")
+        head_line = head.strip()
+        body = block["body_html"]
+        # Blank line above the first block to separate it from headline/subhead.
+        prefix = "\n" if i == 0 else ""
+        if head_line:
+            parts.append(f"{prefix}<blockquote expandable>{head_line}\n{body}</blockquote>")
+        else:
+            parts.append(f"{prefix}<blockquote expandable>{body}</blockquote>")
 
-    reasoning = _resolve_field(args.reasoning, args.reasoning_html)
-    if not reasoning and args.description:
-        reasoning = _esc(args.description)
-    if reasoning:
-        title = html.escape(args.reasoning_title or "Why", quote=False)
-        emoji_r = args.reasoning_emoji or "💭"
-        parts.append(
-            f"<blockquote expandable>{emoji_r} <b>{title}</b>\n{reasoning}</blockquote>"
-        )
+    src_label = _resolve_field(args.source_label, args.source_label_html)
+    if src_label and args.source_url:
+        url = html.escape(args.source_url, quote=True)
+        parts.append(f'\n<i>source: <a href="{url}">{src_label}</a></i>')
+    elif src_label:
+        parts.append(f"\n<i>source: {src_label}</i>")
 
     return "\n".join(parts)
 
@@ -406,6 +480,15 @@ def main() -> int:
     p.add_argument(
         "--image-text",
         help="Shorthand: auto-generates a placehold.co card with this text.",
+    )
+    p.add_argument(
+        "--block",
+        action="append",
+        default=None,
+        help='Repeatable expandable block as JSON: '
+        '\'{"emoji":"📝","title":"Variant A","body":"..."}\'. '
+        "When given, overrides --draft / --reasoning. Pass any number "
+        "of --block flags for 0/1/2/N expandables.",
     )
     p.add_argument("--draft", help="Actionable content (first expandable).")
     p.add_argument("--draft-title", default="Drafted action", help="Title of the draft block.")
