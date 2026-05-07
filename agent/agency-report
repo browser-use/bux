@@ -28,7 +28,7 @@ Custom buttons: pass --button (repeatable). Layout wraps in pairs of two.
 Canonical card layout (HTML parse mode). Order is locked; the *number*
 of expandable blocks is variable (0, 1, 2, N — your call):
 
-  [optional image]
+  [optional image — skip when text alone is clearer]
   <emoji> <b>headline</b>           ← write the specific action here:
                                        "Reply to <user> on Slack: …" or
                                        "Merge PR #347" — *not* "Agency 95"
@@ -51,6 +51,17 @@ Blocks are specified one of two ways:
     one expandable. Use this when you have a different shape — e.g.
     three variants A/B/C, or a single "context" block, or zero blocks
     (--info-only with just headline + source link).
+
+Yes-tap routing:
+  • Default — Yes / Edit dispatch in the SAME thread the card lives in.
+    Follow-up cards inside an existing worker topic don't spawn nested
+    topics; the conversation stays continuous.
+  • --spawn-topic — Yes / Edit create a fresh forum topic and dispatch
+    the lane there instead. Use for the /agency loop's half-hourly cards
+    (so each cycle's cards live in their own threads) and for any other
+    case where the work warrants a dedicated topic. Agents inside an
+    existing worker topic may also set this to fork sub-tasks into yet
+    another topic — there is no auto-protection against that.
 
 If --image (URL), --image-file (local path), or --image-text (auto-rendered
 placeholder) is given, the image renders above the body. For bodies that
@@ -532,6 +543,16 @@ def main() -> int:
         help="Drop the inline keyboard entirely (FYI cards with no action).",
     )
     p.add_argument(
+        "--spawn-topic",
+        action="store_true",
+        help="On Yes/Edit tap, spawn a fresh forum topic and dispatch "
+        "the lane there. Default: run in-place in the current thread. "
+        "Set this on agency-loop cards (so each cycle's cards live in "
+        "their own topics) and any other case where the work warrants "
+        "a dedicated thread. Agents inside an existing worker topic "
+        "may also set this to fork sub-tasks into yet another topic.",
+    )
+    p.add_argument(
         "--thread-id",
         type=int,
         default=int(os.environ.get("TG_THREAD_ID", "0")),
@@ -573,6 +594,7 @@ def main() -> int:
         buttons=button_labels_for_db,
         chat_id=chat_id(),
         thread_id=args.thread_id,
+        spawn_topic=args.spawn_topic,
     )
 
     body = _build_body(args)

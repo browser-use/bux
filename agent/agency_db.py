@@ -54,7 +54,7 @@ def init_schema(db: sqlite3.Connection) -> None:
           title           TEXT NOT NULL,
           description     TEXT NOT NULL,
           importance      TEXT CHECK (importance IN ('high','med','low')) DEFAULT 'med',
-          source          TEXT,                  -- e.g. slack-c-minerva, gmail-thread-19df, gh-pr-78
+          source          TEXT,                  -- e.g. slack-c-foo, gmail-thread-19df, gh-pr-78
           prompt          TEXT,                  -- the action that would run if user says yes
           buttons_json    TEXT,                  -- JSON list of the labels shown
           tg_chat_id      INTEGER,
@@ -69,6 +69,7 @@ def init_schema(db: sqlite3.Connection) -> None:
           worker_topic_id INTEGER,               -- TG topic where the resulting agent runs
           worker_started_at   INTEGER,
           worker_completed_at INTEGER,
+          spawn_topic     INTEGER NOT NULL DEFAULT 0,  -- 1 = Yes-tap creates a fresh topic; 0 = run in-place
           created_at      INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
           updated_at      INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
         );
@@ -79,6 +80,15 @@ def init_schema(db: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_sugg_worker_topic ON suggestions(worker_topic_id);
         """
     )
+    # Backfill spawn_topic on pre-existing tables. ALTER TABLE has no
+    # IF NOT EXISTS — swallow the duplicate-column error from re-runs.
+    try:
+        db.execute(
+            "ALTER TABLE suggestions ADD COLUMN spawn_topic INTEGER NOT NULL DEFAULT 0"
+        )
+    except sqlite3.OperationalError as e:
+        if "duplicate column" not in str(e).lower():
+            raise
     db.commit()
 
 
@@ -97,13 +107,14 @@ def insert(
     buttons: list[str] | None = None,
     chat_id: int | None = None,
     thread_id: int | None = None,
+    spawn_topic: bool = False,
 ) -> int:
     cur = db.execute(
         """
         INSERT INTO suggestions (
           title, description, importance, source, prompt, buttons_json,
-          tg_chat_id, tg_thread_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          tg_chat_id, tg_thread_id, spawn_topic
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             title,
@@ -114,6 +125,7 @@ def insert(
             json.dumps(buttons) if buttons is not None else None,
             chat_id,
             thread_id,
+            1 if spawn_topic else 0,
         ),
     )
     db.commit()

@@ -5914,25 +5914,6 @@ class Bot:
 
         msg_id = msg.get("message_id")
 
-        # Universal 🔥 reaction on any agency-button tap so the user
-        # can tell at a glance which cards have been answered, even
-        # after the keyboard is stripped. Fires for every kind
-        # (action / dismiss / refine / custom). setMessageReaction
-        # replaces prior reactions, so tapping again on a custom
-        # multi-button card keeps the fire in place rather than
-        # accumulating.
-        if msg_id:
-            try:
-                self.call(
-                    "setMessageReaction",
-                    chat_id=chat_id,
-                    message_id=msg_id,
-                    reaction=[{"type": "emoji", "emoji": "🔥"}],
-                    is_big=False,
-                )
-            except Exception:
-                LOG.exception("agency setMessageReaction failed")
-
         # Lookup the suggestion row (for title + prompt) and record the
         # decision. Best-effort: a missing row (button posted out-of-band,
         # e.g. the legacy tg-buttons helper) means action/refine fall back
@@ -5948,20 +5929,19 @@ class Bot:
             LOG.exception("agency_db record_decision failed")
 
         if kind == "custom" or not sugg_row:
-            self._agency_mark_picked(chat_id, msg_id, idx, kbd)
+            # Custom buttons stack — additive ✓ on the tapped one,
+            # leave others intact so the user can fire multiple in
+            # sequence (e.g. "Send draft A" then "also Send draft B").
+            self._agency_mark_picked(chat_id, msg_id, idx, kbd, reset_others=False)
             self._agency_dispatch_custom(chat_id, target_thread, label, sender)
             return
 
-        # action / dismiss / refine — final decisions, strip keyboard.
-        try:
-            self.call(
-                "editMessageReplyMarkup",
-                chat_id=chat_id,
-                message_id=msg_id,
-                reply_markup={"inline_keyboard": []},
-            )
-        except Exception:
-            LOG.exception("agency keyboard strip failed")
+        # Default kinds (action / dismiss / refine): keep the keyboard
+        # visible so the user can re-tap to change their mind. Reset
+        # any prior ✓ so only the latest choice is highlighted, then
+        # mark the tapped button. No reaction needed — the ✓ on the
+        # button itself is the at-a-glance "what I picked" signal.
+        self._agency_mark_picked(chat_id, msg_id, idx, kbd, reset_others=True)
 
         if kind == "dismiss":
             try:
@@ -5983,31 +5963,44 @@ class Bot:
                 LOG.exception("agency_db set_status(dismissed) failed")
             return
 
-        # action / refine — spawn a fresh forum topic.
+        # action / refine — spawn a fresh forum topic OR run in-place,
+        # depending on what the posting agent asked for via the suggestion's
+        # spawn_topic flag (set by `agency-report --spawn-topic`).
+        # Default (spawn_topic=0): run in the same thread the card lives in.
+        # That keeps follow-up cards inside an existing worker topic from
+        # spawning more nested topics. The /agency loop should set
+        # --spawn-topic so each cycle's cards live in their own threads.
+        # No auto-protection: if an agent inside an existing worker topic
+        # explicitly sets --spawn-topic, we honor it and fork another topic.
         topic_title = (sugg_row.get("title") or label)[:128]
+        spawn = bool(sugg_row.get("spawn_topic"))
         new_thread_id = 0
-        try:
-            res = self.call("createForumTopic", chat_id=chat_id, name=topic_title)
-            if res.get("ok"):
-                new_thread_id = int(res["result"].get("message_thread_id") or 0)
-        except Exception:
-            LOG.exception("createForumTopic failed")
+        if spawn:
+            try:
+                res = self.call("createForumTopic", chat_id=chat_id, name=topic_title)
+                if res.get("ok"):
+                    new_thread_id = int(res["result"].get("message_thread_id") or 0)
+            except Exception:
+                LOG.exception("createForumTopic failed")
+            if not new_thread_id:
+                # Fallback to in-place dispatch so the user isn't stuck.
+                LOG.warning(
+                    "agency: createForumTopic returned no thread; falling back to in-place"
+                )
+                spawn = False
 
-        if not new_thread_id:
-            # Fallback to legacy same-topic dispatch so the user isn't stuck.
-            LOG.warning("agency: createForumTopic returned no thread; falling back to custom dispatch")
-            self._agency_dispatch_custom(chat_id, target_thread, label, sender)
-            return
+        # work_thread = where the lane actually runs.
+        work_thread = new_thread_id if spawn else target_thread
 
         try:
-            agency_db.set_worker_topic(db, sugg_row["id"], new_thread_id)
+            agency_db.set_worker_topic(db, sugg_row["id"], work_thread)
         except Exception:
             LOG.exception("agency_db set_worker_topic failed")
 
         if kind == "action":
             action_prompt = sugg_row.get("prompt") or label
             # Post the original prompt as the first visible message in the
-            # new topic so the user can see what the agent is being asked
+            # work thread so the user can see what the agent is being asked
             # to do. Otherwise run_task dispatches it as an internal lane
             # input and only the agent's *response* surfaces in TG, which
             # leaves the user guessing what the agent is working on.
@@ -6015,7 +6008,7 @@ class Bot:
                 self.call(
                     "sendMessage",
                     chat_id=chat_id,
-                    message_thread_id=new_thread_id,
+                    message_thread_id=work_thread or None,
                     text=(
                         "📋 <b>Running this on your behalf</b>\n"
                         f"<pre>{_html.escape(action_prompt, quote=False)}</pre>"
@@ -6026,7 +6019,7 @@ class Bot:
                 LOG.exception("agency action prompt-display failed")
             try:
                 self.run_task(
-                    (chat_id, new_thread_id),
+                    (chat_id, work_thread),
                     action_prompt,
                     reply_to=None,
                     sender={
@@ -6042,7 +6035,7 @@ class Bot:
         elif kind == "refine":
             # Show the full card context as visible messages so the user
             # can see what they're refining, then persist the same context
-            # to a per-topic file. The lane handler reads the file on the
+            # to a per-thread file. The lane handler reads the file on the
             # user's next reply and prepends it to the agent's prompt so
             # the re-draft has the original card in scope.
             ctx_text = _agency_build_refine_context(sugg_row)
@@ -6050,21 +6043,21 @@ class Bot:
                 self.call(
                     "sendMessage",
                     chat_id=chat_id,
-                    message_thread_id=new_thread_id,
+                    message_thread_id=work_thread or None,
                     text=ctx_text,
                     parse_mode="HTML",
                 )
             except Exception:
                 LOG.exception("agency refine context-display failed")
             try:
-                _agency_write_refine_context(new_thread_id, sugg_row)
+                _agency_write_refine_context(work_thread, sugg_row)
             except Exception:
                 LOG.exception("agency refine context-persist failed")
             try:
                 self.call(
                     "sendMessage",
                     chat_id=chat_id,
-                    message_thread_id=new_thread_id,
+                    message_thread_id=work_thread or None,
                     text=(
                         "👇 What would you change? Reply here with whatever's "
                         "missing, off, or worth a different angle — I'll re-draft "
@@ -6074,67 +6067,76 @@ class Bot:
             except Exception:
                 LOG.exception("agency refine prompt post failed")
 
-        # URL-button reply in the original topic linking to the new one.
-        chat_str = str(chat_id).removeprefix("-100")
-        new_topic_url = f"https://t.me/c/{chat_str}/{new_thread_id}"
-        verb = "working" if kind == "action" else "refining"
-        try:
-            self.call(
-                "sendMessage",
-                chat_id=chat_id,
-                message_thread_id=target_thread or None,
-                text=f"→ {verb} in <b>{_html.escape(topic_title[:80])}</b>",
-                parse_mode="HTML",
-                reply_parameters={
-                    "message_id": msg_id,
-                    "allow_sending_without_reply": True,
-                },
-                reply_markup={
-                    "inline_keyboard": [[
-                        {"text": "🧵 Open thread", "url": new_topic_url}
-                    ]]
-                },
-            )
-        except Exception:
-            LOG.exception("agency new-topic deeplink reply failed")
+        # If we spawned a fresh topic, post a URL-button reply in the
+        # original topic linking to the new one. For in-place runs the
+        # work is happening right here, so no deep-link is needed.
+        if spawn and new_thread_id:
+            chat_str = str(chat_id).removeprefix("-100")
+            new_topic_url = f"https://t.me/c/{chat_str}/{new_thread_id}"
+            verb = "working" if kind == "action" else "refining"
+            try:
+                self.call(
+                    "sendMessage",
+                    chat_id=chat_id,
+                    message_thread_id=target_thread or None,
+                    text=f"→ {verb} in <b>{_html.escape(topic_title[:80])}</b>",
+                    parse_mode="HTML",
+                    reply_parameters={
+                        "message_id": msg_id,
+                        "allow_sending_without_reply": True,
+                    },
+                    reply_markup={
+                        "inline_keyboard": [[
+                            {"text": "🧵 Open thread", "url": new_topic_url}
+                        ]]
+                    },
+                )
+            except Exception:
+                LOG.exception("agency new-topic deeplink reply failed")
 
     def _agency_mark_picked(
-        self, chat_id: int, msg_id: int | None, idx: int, kbd: list
+        self,
+        chat_id: int,
+        msg_id: int | None,
+        idx: int,
+        kbd: list,
+        reset_others: bool = False,
     ) -> None:
-        """Custom-button behavior: mark the tapped button with a "✓ "
-        prefix, leave the rest tappable so the user can stack actions
-        (e.g. tap multiple "Send draft X" buttons in sequence)."""
+        """Mark the tapped button with a "✓ " prefix, keep all buttons
+        tappable so the user can re-tap (default kinds) or stack actions
+        (custom buttons).
+
+        reset_others=False — additive. Leaves prior ✓ marks intact so
+            multi-tap on custom buttons accumulates ("Send A" + "Send B").
+        reset_others=True — exclusive. Strips ✓ from every other button
+            before marking the new one, so only the latest pick is
+            highlighted. Use for the default Yes/Skip/Edit set where
+            the user is changing their mind, not stacking.
+        """
         picked_prefix = "✓ "
         try:
-            if idx >= 0 and kbd:
-                new_kbd: list[list[dict]] = []
-                flat_i = -1
-                marked = False
-                for row in kbd:
-                    new_row: list[dict] = []
-                    for btn in row:
-                        flat_i += 1
-                        text = btn.get("text") or ""
-                        if flat_i == idx and not text.startswith(picked_prefix):
-                            new_row.append({**btn, "text": picked_prefix + text})
-                            marked = True
-                        else:
-                            new_row.append(btn)
-                    new_kbd.append(new_row)
-                if marked:
-                    self.call(
-                        "editMessageReplyMarkup",
-                        chat_id=chat_id,
-                        message_id=msg_id,
-                        reply_markup={"inline_keyboard": new_kbd},
-                    )
-            elif kbd:
-                self.call(
-                    "editMessageReplyMarkup",
-                    chat_id=chat_id,
-                    message_id=msg_id,
-                    reply_markup={"inline_keyboard": []},
-                )
+            if idx < 0 or not kbd:
+                return
+            new_kbd: list[list[dict]] = []
+            flat_i = -1
+            for row in kbd:
+                new_row: list[dict] = []
+                for btn in row:
+                    flat_i += 1
+                    text = btn.get("text") or ""
+                    if flat_i == idx:
+                        if not text.startswith(picked_prefix):
+                            text = picked_prefix + text
+                    elif reset_others and text.startswith(picked_prefix):
+                        text = text[len(picked_prefix):]
+                    new_row.append({**btn, "text": text})
+                new_kbd.append(new_row)
+            self.call(
+                "editMessageReplyMarkup",
+                chat_id=chat_id,
+                message_id=msg_id,
+                reply_markup={"inline_keyboard": new_kbd},
+            )
         except Exception:
             LOG.exception("agency keyboard mark failed")
 
