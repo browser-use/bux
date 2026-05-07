@@ -5734,24 +5734,31 @@ class Bot:
     def _handle_agency_callback(self, cb: dict, data: str) -> None:
         """Process an Agency-button tap.
 
-        callback_data shape: `agcy:<thread_id>:<idx>` — idx is the 0-based
-        position of the tapped button in the original message's keyboard.
-        The button label is read off the original message at tap time so
-        callers can use any custom set of labels (default 3-button set is
-        Yes, do it / No / Just do it differently — see tg-buttons).
+        callback_data shape: `agcy:<thread_id>:<idx>:<kind>` where kind ∈
+        {action, dismiss, refine, custom}. The legacy 3-segment shape
+        (`agcy:<thread>:<idx>`) is treated as kind=custom for back-compat.
 
-        Steps:
-          1. owner-gate
-          2. resolve the tapped label off cb.message.reply_markup
-          3. ack with a toast carrying the label
-          4. strip the keyboard so it can't be re-tapped
-          5. post a visible "🔘 You picked …" message in the same topic
-          6. dispatch a synthesized lane message into the topic so the
-             agent receives the choice as if the user typed it. Labels
-             whose lowercased text contains "different" / "rethink" /
-             "redo" get a follow-up prompt asking for clarification or
-             a re-evaluation.
+        Behavior per kind:
+          • action  — open a fresh forum topic named after the
+                      suggestion title, dispatch the suggestion's
+                      --prompt there as a new lane (run_task), strip
+                      keyboard, post a URL-button reply in the original
+                      topic linking to the new one.
+          • dismiss — record the dismissal, strip keyboard, post a
+                      1-line "⏭ skipped" ack reply. NO LLM dispatch.
+          • refine  — open a fresh forum topic, post "What would you
+                      change?" as the visible task; do NOT dispatch
+                      (the agent picks up on the user's next reply).
+                      Strip keyboard + URL-button reply in original.
+          • custom  — existing behavior. Mark the picked button with a
+                      "✓ " prefix, leave others tappable, dispatch a
+                      synthesized "[agency-button] LABEL" message into
+                      the SAME topic. Custom button sets stack: tap
+                      multiple in sequence and each fires its own lane
+                      dispatch.
         """
+        import html as _html
+
         msg = cb.get("message") or {}
         chat = msg.get("chat") or {}
         chat_id = chat.get("id")
@@ -5768,7 +5775,7 @@ class Bot:
             )
             return
         parts = data.split(":")
-        if len(parts) != 3:
+        if len(parts) not in (3, 4):
             self.call("answerCallbackQuery", callback_query_id=cb["id"])
             return
         try:
@@ -5776,9 +5783,8 @@ class Bot:
         except ValueError:
             target_thread = 0
         idx_str = parts[2]
-        # Resolve the label from the original keyboard if the third
-        # segment is a numeric index (current shape). Fall back to the
-        # raw string for backward-compat with the slug-based form.
+        kind = parts[3] if len(parts) == 4 else "custom"
+
         label = idx_str
         idx = -1
         kbd = ((msg.get("reply_markup") or {}).get("inline_keyboard") or [])
@@ -5789,20 +5795,148 @@ class Bot:
                 label = flat[idx].get("text") or idx_str
         except ValueError:
             pass
-        # Toast (transient).
+
         self.call(
             "answerCallbackQuery",
             callback_query_id=cb["id"],
             text=f"✅ {label}"[:200],
         )
-        # Mark the picked button on the original card's keyboard so the
-        # user keeps a visual record of their choice — but leave all
-        # other buttons in place. They stay tappable so the user can
-        # switch decisions or stack actions; each tap fires its own
-        # lane dispatch and the agent reconciles. Replaces the previous
-        # behavior of stripping the keyboard + posting a separate
-        # "🔘 You picked …" message at the bottom of the topic, which
-        # scrolled the choice away from the card it referenced.
+
+        msg_id = msg.get("message_id")
+
+        # Lookup the suggestion row (for title + prompt) and record the
+        # decision. Best-effort: a missing row (button posted out-of-band,
+        # e.g. the legacy tg-buttons helper) means action/refine fall back
+        # to legacy custom behavior.
+        sugg_row: dict | None = None
+        db = None
+        try:
+            import agency_db
+            db = agency_db.conn()
+            sugg_row = agency_db.find_by_message(db, chat_id, msg_id)
+            agency_db.record_decision(db, chat_id, msg_id, label)
+        except Exception:
+            LOG.exception("agency_db record_decision failed")
+
+        if kind == "custom" or not sugg_row:
+            self._agency_mark_picked(chat_id, msg_id, idx, kbd)
+            self._agency_dispatch_custom(chat_id, target_thread, label, sender)
+            return
+
+        # action / dismiss / refine — final decisions, strip keyboard.
+        try:
+            self.call(
+                "editMessageReplyMarkup",
+                chat_id=chat_id,
+                message_id=msg_id,
+                reply_markup={"inline_keyboard": []},
+            )
+        except Exception:
+            LOG.exception("agency keyboard strip failed")
+
+        if kind == "dismiss":
+            try:
+                self.call(
+                    "sendMessage",
+                    chat_id=chat_id,
+                    message_thread_id=target_thread or None,
+                    text="⏭ skipped — won't surface this again.",
+                    reply_parameters={
+                        "message_id": msg_id,
+                        "allow_sending_without_reply": True,
+                    },
+                )
+            except Exception:
+                LOG.exception("agency dismiss ack failed")
+            try:
+                agency_db.set_status(db, sugg_row["id"], "dismissed")
+            except Exception:
+                LOG.exception("agency_db set_status(dismissed) failed")
+            return
+
+        # action / refine — spawn a fresh forum topic.
+        topic_title = (sugg_row.get("title") or label)[:128]
+        new_thread_id = 0
+        try:
+            res = self.call("createForumTopic", chat_id=chat_id, name=topic_title)
+            if res.get("ok"):
+                new_thread_id = int(res["result"].get("message_thread_id") or 0)
+        except Exception:
+            LOG.exception("createForumTopic failed")
+
+        if not new_thread_id:
+            # Fallback to legacy same-topic dispatch so the user isn't stuck.
+            LOG.warning("agency: createForumTopic returned no thread; falling back to custom dispatch")
+            self._agency_dispatch_custom(chat_id, target_thread, label, sender)
+            return
+
+        try:
+            agency_db.set_worker_topic(db, sugg_row["id"], new_thread_id)
+        except Exception:
+            LOG.exception("agency_db set_worker_topic failed")
+
+        if kind == "action":
+            action_prompt = sugg_row.get("prompt") or label
+            try:
+                self.run_task(
+                    (chat_id, new_thread_id),
+                    action_prompt,
+                    reply_to=None,
+                    sender={
+                        "user_id": str(sender.get("id") or ""),
+                        "username": sender.get("username") or "",
+                        "name": (sender.get("first_name") or "") + (
+                            (" " + sender["last_name"]) if sender.get("last_name") else ""
+                        ),
+                    },
+                )
+            except Exception:
+                LOG.exception("agency action dispatch failed")
+        elif kind == "refine":
+            try:
+                self.call(
+                    "sendMessage",
+                    chat_id=chat_id,
+                    message_thread_id=new_thread_id,
+                    text=(
+                        "What would you change about this suggestion? "
+                        "Reply here with whatever's missing, off, or worth a "
+                        "different angle — I'll re-draft and post a fresh card."
+                    ),
+                )
+            except Exception:
+                LOG.exception("agency refine prompt post failed")
+
+        # URL-button reply in the original topic linking to the new one.
+        chat_str = str(chat_id).removeprefix("-100")
+        new_topic_url = f"https://t.me/c/{chat_str}/{new_thread_id}"
+        verb = "working" if kind == "action" else "refining"
+        try:
+            self.call(
+                "sendMessage",
+                chat_id=chat_id,
+                message_thread_id=target_thread or None,
+                text=f"→ {verb} in <b>{_html.escape(topic_title[:80])}</b>",
+                parse_mode="HTML",
+                reply_parameters={
+                    "message_id": msg_id,
+                    "allow_sending_without_reply": True,
+                },
+                reply_markup={
+                    "inline_keyboard": [[
+                        {"text": "🧵 Open thread", "url": new_topic_url}
+                    ]]
+                },
+            )
+        except Exception:
+            LOG.exception("agency new-topic deeplink reply failed")
+
+    def _agency_mark_picked(
+        self, chat_id: int, msg_id: int | None, idx: int, kbd: list
+    ) -> None:
+        """Custom-button behavior: mark the tapped button with a "✓ "
+        prefix, leave the rest tappable so the user can stack actions
+        (e.g. tap multiple "Send draft X" buttons in sequence)."""
         picked_prefix = "✓ "
         try:
             if idx >= 0 and kbd:
@@ -5824,43 +5958,40 @@ class Bot:
                     self.call(
                         "editMessageReplyMarkup",
                         chat_id=chat_id,
-                        message_id=msg.get("message_id"),
+                        message_id=msg_id,
                         reply_markup={"inline_keyboard": new_kbd},
                     )
             elif kbd:
-                # No resolvable idx (legacy slug-based callback) — strip
-                # the keyboard so the same prompt can't be answered twice.
                 self.call(
                     "editMessageReplyMarkup",
                     chat_id=chat_id,
-                    message_id=msg.get("message_id"),
+                    message_id=msg_id,
                     reply_markup={"inline_keyboard": []},
                 )
         except Exception:
             LOG.exception("agency keyboard mark failed")
-        # Record the decision against the suggestion row in agency.db so
-        # future Agency runs can dedupe + suppress repeat suggestions
-        # Magnus already responded to. Best-effort: a missing row (button
-        # posted out-of-band, e.g. the legacy tg-buttons helper) just
-        # no-ops.
-        try:
-            import agency_db
-            db = agency_db.conn()
-            agency_db.record_decision(
-                db, chat_id, msg.get("message_id"), label
-            )
-        except Exception:
-            LOG.exception("agency_db record_decision failed")
+
+    def _agency_dispatch_custom(
+        self, chat_id: int, target_thread: int, label: str, sender: dict
+    ) -> None:
+        """Custom-button behavior: dispatch a synthesized "[agency-button]
+        LABEL (tapped by …)" message into the SAME topic so the agent
+        receives the tap as if the user typed it. Labels containing
+        "different" / "rethink" / "redo" get follow-up instructions."""
         who = sender.get("username") or sender.get("first_name") or sender.get("id")
-        # Dispatch the choice into the lane as a synthesized user
-        # message. The agent resumes the lane session (UUID kept), sees
-        # the tap, and runs the corresponding action.
         prompt = f"[agency-button] {label} (tapped by @{who})"
         low = label.lower()
         if any(w in low for w in ("different", "differently")):
-            prompt += "\n\nThe user wants you to do this differently. Reply asking what they would change, then wait for their next message."
+            prompt += (
+                "\n\nThe user wants you to do this differently. Reply asking "
+                "what they would change, then wait for their next message."
+            )
         elif any(w in low for w in ("rethink", "redo")):
-            prompt += "\n\nThe user wants you to rethink this suggestion. Re-evaluate the underlying ask and propose a different approach as a fresh suggestion (with new buttons via tg-buttons)."
+            prompt += (
+                "\n\nThe user wants you to rethink this suggestion. Re-evaluate "
+                "the underlying ask and propose a different approach as a fresh "
+                "suggestion (with new buttons via tg-buttons)."
+            )
         try:
             self.run_task(
                 (chat_id, target_thread),
