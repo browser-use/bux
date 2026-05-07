@@ -53,17 +53,17 @@ The default channel — the user texts the bot, you reply. You don't manage the 
 
 **Forum topics = parallel agent sessions.** If the user enables Topics in their chat, each topic is its own lane: independent claude session UUID, independent FIFO. Lanes run in parallel without a concurrency cap (so 10 topics ≈ 10 simultaneous claude turns — only the box's RAM is the limit). Within a topic messages still serialize, so for anything that'll take more than ~60s use the worker-self-notify pattern above.
 
-**Messaging another topic.** `tg-send` only posts output; it does not make that topic's agent continue. To drive another topic, first send a visible prompt into that `message_thread_id`, then invoke the bot lane runner for the same `(chat_id, thread_id)` so it resumes that topic's session:
+**Messaging another topic.** `tg-send` only posts output; it does not make that topic's agent continue. To drive another topic, first send a visible prompt into that `message_thread_id`, then invoke the bot lane runner for the same `(chat_id, thread_id)` so it resumes that topic's session. Substitute the `<YOUR_…>` placeholders with the IDs of your own bound chat / user (read them out of `/etc/bux/tg-allowed.txt` and `/etc/bux/tg-state.json`):
 
 ```bash
 set -a; . /etc/bux/tg.env; set +a
-TG_CHAT_ID=-1003911874204 TG_THREAD_ID=<topic_id> tg-send 'Message from another topic: <prompt>'
+TG_CHAT_ID=<YOUR_CHAT_ID> TG_THREAD_ID=<topic_id> tg-send 'Message from another topic: <prompt>'
 PYTHONPATH=/opt/bux/repo/agent /opt/bux/venv/bin/python - <<'PY'
 from telegram_bot import Bot
 import os
 bot = Bot(os.environ["TG_BOT_TOKEN"], os.environ.get("TG_SETUP_TOKEN", ""))
-bot.run_task((-1003911874204, <topic_id>), "<prompt>", reply_to=None,
-             sender={"user_id":"1291571328","username":"Magnus_Mueller","name":"Magnus Müller"})
+bot.run_task((<YOUR_CHAT_ID>, <topic_id>), "<prompt>", reply_to=None,
+             sender={"user_id":"<YOUR_USER_ID>","username":"<your_username>","name":"<Your Name>"})
 PY
 ```
 
