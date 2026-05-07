@@ -130,12 +130,19 @@ def update_message(db: sqlite3.Connection, suggestion_id: int, message_id: int) 
 
 def find_by_message(
     db: sqlite3.Connection, chat_id: int, message_id: int
-) -> sqlite3.Row | None:
+) -> dict[str, Any] | None:
+    """Return the suggestion row as a plain dict (or None if not found).
+
+    Returning a dict (not the raw sqlite3.Row) lets callers use .get() and
+    other dict APIs without surprises — sqlite3.Row supports indexed access
+    but not the dict protocol's .get() method.
+    """
     cur = db.execute(
         "SELECT * FROM suggestions WHERE tg_chat_id = ? AND tg_message_id = ? LIMIT 1",
         (chat_id, message_id),
     )
-    return cur.fetchone()
+    row = cur.fetchone()
+    return dict(row) if row is not None else None
 
 
 def record_decision(
