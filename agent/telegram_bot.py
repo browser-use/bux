@@ -6012,6 +6012,48 @@ class Bot:
             except Exception:
                 original_labels = None
 
+        # Resolve / spawn a worker thread BEFORE marking the keyboard so
+        # we can append a URL-button row to the card itself when the
+        # work lives in a separate thread. That way the deep-link is
+        # glued to the card permanently — never lost when other cards
+        # stack up below.
+        topic_title = (sugg_row.get("title") or label)[:128] if sugg_row else label
+        spawn = bool(sugg_row and sugg_row.get("spawn_topic"))
+        existing_worker = int(sugg_row.get("worker_topic_id") or 0) if sugg_row else 0
+        new_thread_id = 0
+        if spawn and existing_worker and existing_worker != target_thread:
+            # Multi-tap: a prior Yes/Edit already spawned a topic for this
+            # suggestion. Reuse it instead of forking again.
+            new_thread_id = existing_worker
+        elif spawn and kind in ("action", "refine"):
+            try:
+                res = self.call("createForumTopic", chat_id=chat_id, name=topic_title)
+                if res.get("ok"):
+                    new_thread_id = int(res["result"].get("message_thread_id") or 0)
+            except Exception:
+                LOG.exception("createForumTopic failed")
+            if not new_thread_id:
+                LOG.warning(
+                    "agency: createForumTopic returned no thread; falling back to in-place"
+                )
+                spawn = False
+
+        # work_thread = where the lane actually runs.
+        if kind in ("action", "refine"):
+            work_thread = new_thread_id if (spawn and new_thread_id) else target_thread
+        else:
+            work_thread = target_thread
+
+        # URL button row to glue onto the card. Only when work lives in
+        # a different thread than the card itself.
+        append_url_row = None
+        if new_thread_id and new_thread_id != target_thread:
+            chat_str = str(chat_id).removeprefix("-100")
+            append_url_row = [{
+                "text": "🧵 Open thread",
+                "url": f"https://t.me/c/{chat_str}/{new_thread_id}",
+            }]
+
         if kind == "custom" or not sugg_row:
             # Custom buttons stack — additive Style A on the tapped one,
             # leave others intact so the user can fire multiple in
@@ -6020,6 +6062,7 @@ class Bot:
                 chat_id, msg_id, idx, kbd,
                 reset_others=False,
                 original_labels=original_labels,
+                append_url_row=append_url_row,
             )
             self._agency_dispatch_custom(chat_id, target_thread, label, sender)
             return
@@ -6027,10 +6070,13 @@ class Bot:
         # Default kinds (action / dismiss / refine): keep the keyboard
         # visible so the user can re-tap to change their mind. Reset
         # any prior pick so only the latest choice is highlighted.
+        # The URL row (if any) is glued in last so the deep-link to the
+        # spawned topic is always one tap away from the card.
         self._agency_mark_picked(
             chat_id, msg_id, idx, kbd,
             reset_others=True,
             original_labels=original_labels,
+            append_url_row=append_url_row,
         )
 
         if kind == "dismiss":
@@ -6052,35 +6098,6 @@ class Bot:
             except Exception:
                 LOG.exception("agency_db set_status(dismissed) failed")
             return
-
-        # action / refine — spawn a fresh forum topic OR run in-place,
-        # depending on what the posting agent asked for via the suggestion's
-        # spawn_topic flag (set by `agency-report --spawn-topic`).
-        # Default (spawn_topic=0): run in the same thread the card lives in.
-        # That keeps follow-up cards inside an existing worker topic from
-        # spawning more nested topics. The /agency loop should set
-        # --spawn-topic so each cycle's cards live in their own threads.
-        # No auto-protection: if an agent inside an existing worker topic
-        # explicitly sets --spawn-topic, we honor it and fork another topic.
-        topic_title = (sugg_row.get("title") or label)[:128]
-        spawn = bool(sugg_row.get("spawn_topic"))
-        new_thread_id = 0
-        if spawn:
-            try:
-                res = self.call("createForumTopic", chat_id=chat_id, name=topic_title)
-                if res.get("ok"):
-                    new_thread_id = int(res["result"].get("message_thread_id") or 0)
-            except Exception:
-                LOG.exception("createForumTopic failed")
-            if not new_thread_id:
-                # Fallback to in-place dispatch so the user isn't stuck.
-                LOG.warning(
-                    "agency: createForumTopic returned no thread; falling back to in-place"
-                )
-                spawn = False
-
-        # work_thread = where the lane actually runs.
-        work_thread = new_thread_id if spawn else target_thread
 
         try:
             agency_db.set_worker_topic(db, sugg_row["id"], work_thread)
@@ -6157,32 +6174,10 @@ class Bot:
             except Exception:
                 LOG.exception("agency refine prompt post failed")
 
-        # If we spawned a fresh topic, post a URL-button reply in the
-        # original topic linking to the new one. For in-place runs the
-        # work is happening right here, so no deep-link is needed.
-        if spawn and new_thread_id:
-            chat_str = str(chat_id).removeprefix("-100")
-            new_topic_url = f"https://t.me/c/{chat_str}/{new_thread_id}"
-            verb = "working" if kind == "action" else "refining"
-            try:
-                self.call(
-                    "sendMessage",
-                    chat_id=chat_id,
-                    message_thread_id=target_thread or None,
-                    text=f"→ {verb} in <b>{_html.escape(topic_title[:80])}</b>",
-                    parse_mode="HTML",
-                    reply_parameters={
-                        "message_id": msg_id,
-                        "allow_sending_without_reply": True,
-                    },
-                    reply_markup={
-                        "inline_keyboard": [[
-                            {"text": "🧵 Open thread", "url": new_topic_url}
-                        ]]
-                    },
-                )
-            except Exception:
-                LOG.exception("agency new-topic deeplink reply failed")
+        # Deep-link to the spawned topic is now appended to the card's
+        # own keyboard via _agency_mark_picked(append_url_row=...). No
+        # separate reply message — the link is glued to the card so it
+        # stays visible no matter how many cards stack up below.
 
     def _agency_mark_picked(
         self,
@@ -6192,6 +6187,7 @@ class Bot:
         kbd: list,
         reset_others: bool = False,
         original_labels: list[str] | None = None,
+        append_url_row: list[dict] | None = None,
     ) -> None:
         """Mark the tapped button with Style A — wrap with arrows and
         bold-uppercase the letters: "✅ Yes" → "▶ ✅ 𝗬𝗘𝗦 ◀".
@@ -6218,6 +6214,12 @@ class Bot:
             agency_db.buttons_json contents; custom buttons use
             additive mode and never need restore.
 
+        append_url_row — optional list of URL-button dicts (e.g. a
+            "🧵 Open thread" deep-link) to glue onto the card as the
+            last keyboard row. Re-applied on every tap so the link
+            stays visible across button changes. Replaces any prior
+            URL-only trailing rows so we don't accumulate them.
+
         Legacy cleanup: also strips the prior "✓ " prefix and " ✓"
             suffix mark schemes so cards posted before this rolled out
             tidy up on the next tap.
@@ -6225,9 +6227,21 @@ class Bot:
         try:
             if idx < 0 or not kbd:
                 return
+            # Strip any existing trailing URL-only rows so we can re-apply
+            # cleanly. A URL-only row is one where every button has a
+            # `url` field and no `callback_data`. Callback buttons we
+            # mark on are never URL-only, so this only ever drops a
+            # previously-glued thread-link row.
+            clean_kbd = list(kbd)
+            while clean_kbd and all(
+                ("url" in btn and "callback_data" not in btn)
+                for btn in clean_kbd[-1]
+            ):
+                clean_kbd.pop()
+
             new_kbd: list[list[dict]] = []
             flat_i = -1
-            for row in kbd:
+            for row in clean_kbd:
                 new_row: list[dict] = []
                 for btn in row:
                     flat_i += 1
@@ -6243,6 +6257,10 @@ class Bot:
                         text = _agency_strip_legacy_marks(text)
                     new_row.append({**btn, "text": text})
                 new_kbd.append(new_row)
+
+            if append_url_row:
+                new_kbd.append(list(append_url_row))
+
             self.call(
                 "editMessageReplyMarkup",
                 chat_id=chat_id,

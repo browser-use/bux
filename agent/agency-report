@@ -129,10 +129,18 @@ sys.path.insert(0, str(REPO_AGENT))
 import agency_db  # noqa: E402
 
 # (label, kind) tuples. Kind drives the bot's callback semantics.
-DEFAULT_BUTTONS: list[tuple[str, str]] = [
+# Two label variants — picked at post time based on --spawn-topic so
+# the user can tell from the button alone whether tapping will run
+# in-place or fork a new forum topic.
+DEFAULT_BUTTONS_INPLACE: list[tuple[str, str]] = [
     ("✅ Yes", "action"),
     ("⏭ Skip", "dismiss"),
     ("✏️ Edit", "refine"),
+]
+DEFAULT_BUTTONS_SPAWN: list[tuple[str, str]] = [
+    ("🧵 Yes (new thread)", "action"),
+    ("⏭ Skip", "dismiss"),
+    ("🧵 Edit (new thread)", "refine"),
 ]
 TG_CAPTION_LIMIT = 1024
 
@@ -220,10 +228,12 @@ def _resolve_image_url(args: argparse.Namespace) -> str | None:
 
 
 def _resolve_buttons(args: argparse.Namespace) -> list[tuple[str, str]]:
-    """Returns list of (label, kind). Custom buttons all get kind='custom'."""
+    """Returns list of (label, kind). Custom buttons all get kind='custom'.
+    Default-set labels reflect --spawn-topic so the user can tell from
+    the button alone whether tapping will run here or fork a topic."""
     if args.button:
         return [(label, "custom") for label in args.button]
-    return list(DEFAULT_BUTTONS)
+    return list(DEFAULT_BUTTONS_SPAWN if args.spawn_topic else DEFAULT_BUTTONS_INPLACE)
 
 
 def _build_keyboard(
