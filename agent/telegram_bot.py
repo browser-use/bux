@@ -2853,6 +2853,79 @@ import html as _html_mod  # noqa: E402
 _AGENCY_REFINE_CTX_DIR = Path("/var/lib/bux/agency-refine-context")
 
 
+# ── Agency-card "picked button" Style A helpers ─────────────────────
+# Wraps the picked label with arrows and bold-uppercase the letters so
+# the picked button is unmistakable at phone scale. "✅ Yes" → "▶ ✅
+# 𝗬𝗘𝗦 ◀". Magnus picked this style after a side-by-side comparison of
+# 5 candidates (style A through E) in TG.
+
+_AGENCY_PICK_LEFT = "▶ "
+_AGENCY_PICK_RIGHT = " ◀"
+_BOLD_UPPER_BASE = 0x1D5D4  # Mathematical Sans-Serif Bold "A"
+
+
+def _agency_bold_upper(text: str) -> str:
+    """Map ASCII letters to Mathematical Sans-Serif Bold uppercase.
+    Pass-through for everything else (digits, emoji, punctuation)."""
+    out = []
+    for c in text:
+        if "A" <= c <= "Z":
+            out.append(chr(ord(c) - ord("A") + _BOLD_UPPER_BASE))
+        elif "a" <= c <= "z":
+            out.append(chr(ord(c) - ord("a") + _BOLD_UPPER_BASE))
+        else:
+            out.append(c)
+    return "".join(out)
+
+
+def _agency_unbold(text: str) -> str:
+    """Inverse of _agency_bold_upper — lossy: case collapses to upper."""
+    out = []
+    for c in text:
+        o = ord(c)
+        if _BOLD_UPPER_BASE <= o < _BOLD_UPPER_BASE + 26:
+            out.append(chr(o - _BOLD_UPPER_BASE + ord("A")))
+        else:
+            out.append(c)
+    return "".join(out)
+
+
+def _agency_pick_label(base: str) -> str:
+    return f"{_AGENCY_PICK_LEFT}{_agency_bold_upper(base)}{_AGENCY_PICK_RIGHT}"
+
+
+def _agency_is_picked(text: str) -> bool:
+    return text.startswith(_AGENCY_PICK_LEFT) and text.endswith(_AGENCY_PICK_RIGHT)
+
+
+def _agency_strip_legacy_marks(text: str) -> str:
+    """Strip prior mark schemes — "✓ " prefix (PR #103) and " ✓" suffix
+    (PR #104). Idempotent."""
+    if text.startswith("✓ "):
+        text = text[2:]
+    if text.endswith(" ✓"):
+        text = text[:-2]
+    return text
+
+
+def _agency_unpick_label(
+    text: str,
+    flat_idx: int,
+    original_labels: list[str] | None,
+) -> str:
+    """Strip Style A wrapping + any legacy mark and return the original
+    label. If `original_labels` has an entry at `flat_idx` use it for
+    a lossless restore; otherwise fall back to lossy un-bold (case
+    collapses to upper). Idempotent — safe to call on a label that
+    isn't picked."""
+    if _agency_is_picked(text):
+        if original_labels and 0 <= flat_idx < len(original_labels):
+            return original_labels[flat_idx]
+        inner = text[len(_AGENCY_PICK_LEFT) : -len(_AGENCY_PICK_RIGHT)]
+        return _agency_unbold(inner)
+    return _agency_strip_legacy_marks(text)
+
+
 def _agency_build_refine_context(sugg_row: dict) -> str:
     """Build the visible HTML message that shows the user the original
     card content before they tell us what to change. Mirrors the
@@ -5928,20 +6001,37 @@ class Bot:
         except Exception:
             LOG.exception("agency_db record_decision failed")
 
+        # Pull original button labels from the DB so we can restore an
+        # unpicked button losslessly when the user changes their mind.
+        original_labels: list[str] | None = None
+        if sugg_row and sugg_row.get("buttons_json"):
+            try:
+                original_labels = json.loads(sugg_row["buttons_json"])
+                if not isinstance(original_labels, list):
+                    original_labels = None
+            except Exception:
+                original_labels = None
+
         if kind == "custom" or not sugg_row:
-            # Custom buttons stack — additive ✓ on the tapped one,
+            # Custom buttons stack — additive Style A on the tapped one,
             # leave others intact so the user can fire multiple in
             # sequence (e.g. "Send draft A" then "also Send draft B").
-            self._agency_mark_picked(chat_id, msg_id, idx, kbd, reset_others=False)
+            self._agency_mark_picked(
+                chat_id, msg_id, idx, kbd,
+                reset_others=False,
+                original_labels=original_labels,
+            )
             self._agency_dispatch_custom(chat_id, target_thread, label, sender)
             return
 
         # Default kinds (action / dismiss / refine): keep the keyboard
         # visible so the user can re-tap to change their mind. Reset
-        # any prior ✓ so only the latest choice is highlighted, then
-        # mark the tapped button. No reaction needed — the ✓ on the
-        # button itself is the at-a-glance "what I picked" signal.
-        self._agency_mark_picked(chat_id, msg_id, idx, kbd, reset_others=True)
+        # any prior pick so only the latest choice is highlighted.
+        self._agency_mark_picked(
+            chat_id, msg_id, idx, kbd,
+            reset_others=True,
+            original_labels=original_labels,
+        )
 
         if kind == "dismiss":
             try:
@@ -6101,30 +6191,37 @@ class Bot:
         idx: int,
         kbd: list,
         reset_others: bool = False,
+        original_labels: list[str] | None = None,
     ) -> None:
-        """Mark the tapped button with a trailing " ✓" suffix; keep all
-        buttons tappable so the user can re-tap (default kinds) or
-        stack actions (custom buttons).
+        """Mark the tapped button with Style A — wrap with arrows and
+        bold-uppercase the letters: "✅ Yes" → "▶ ✅ 𝗬𝗘𝗦 ◀".
 
-        Suffix > prefix: when a label already starts with a colorful
-        icon (e.g. "✅ Yes"), a leading "✓ " prefix gets visually
-        swallowed — two checkmarks fighting for the leading slot,
-        impossible to spot which one is picked. Trailing " ✓" sits
-        clearly at the end of the label across all icon shapes.
+        TG buttons can't change background color; the only knob is the
+        label text. Trailing " ✓" suffixes are too easy to miss when
+        the label already leads with a colorful icon. Bold uppercase +
+        framing arrows make the picked button visibly heavier than its
+        siblings at phone scale, regardless of which icon leads.
 
-        reset_others=False — additive. Leaves prior ✓ marks intact so
-            multi-tap on custom buttons accumulates ("Send A" + "Send B").
-        reset_others=True — exclusive. Strips ✓ from every other button
-            before marking the new one, so only the latest pick is
-            highlighted. Use for the default Yes/Skip/Edit set where
-            the user is changing their mind, not stacking.
+        reset_others=False — additive. Multiple buttons can wear the
+            picked treatment simultaneously (custom-button stacking
+            for variant pickers like "Send draft A" + "Send draft B").
+        reset_others=True — exclusive. Strip the picked treatment from
+            every other button before marking this one. Use for the
+            default Yes/Skip/Edit set where the user is changing their
+            mind, not stacking.
 
-        Also strips any legacy leading "✓ " prefix from the previous
-        mark style, so cards posted before this change clean up on
-        the next tap.
+        original_labels — button labels in their original form, indexed
+            in the same order as the keyboard's flattened buttons.
+            Used to restore an unpicked button's label losslessly.
+            Without it, un-marking falls back to lossy un-bold (case
+            collapses to uppercase). The default 3-button caller passes
+            agency_db.buttons_json contents; custom buttons use
+            additive mode and never need restore.
+
+        Legacy cleanup: also strips the prior "✓ " prefix and " ✓"
+            suffix mark schemes so cards posted before this rolled out
+            tidy up on the next tap.
         """
-        suffix = " ✓"
-        legacy_prefix = "✓ "
         try:
             if idx < 0 or not kbd:
                 return
@@ -6135,13 +6232,15 @@ class Bot:
                 for btn in row:
                     flat_i += 1
                     text = btn.get("text") or ""
-                    if text.startswith(legacy_prefix):
-                        text = text[len(legacy_prefix):]
+                    base = _agency_unpick_label(text, flat_i, original_labels)
                     if flat_i == idx:
-                        if not text.endswith(suffix):
-                            text = text + suffix
-                    elif reset_others and text.endswith(suffix):
-                        text = text[: -len(suffix)]
+                        text = _agency_pick_label(base)
+                    elif reset_others:
+                        text = base
+                    else:
+                        # Additive: leave existing picked styling intact,
+                        # but still scrub legacy marks for tidiness.
+                        text = _agency_strip_legacy_marks(text)
                     new_row.append({**btn, "text": text})
                 new_kbd.append(new_row)
             self.call(
