@@ -6102,9 +6102,15 @@ class Bot:
         kbd: list,
         reset_others: bool = False,
     ) -> None:
-        """Mark the tapped button with a "✓ " prefix, keep all buttons
-        tappable so the user can re-tap (default kinds) or stack actions
-        (custom buttons).
+        """Mark the tapped button with a trailing " ✓" suffix; keep all
+        buttons tappable so the user can re-tap (default kinds) or
+        stack actions (custom buttons).
+
+        Suffix > prefix: when a label already starts with a colorful
+        icon (e.g. "✅ Yes"), a leading "✓ " prefix gets visually
+        swallowed — two checkmarks fighting for the leading slot,
+        impossible to spot which one is picked. Trailing " ✓" sits
+        clearly at the end of the label across all icon shapes.
 
         reset_others=False — additive. Leaves prior ✓ marks intact so
             multi-tap on custom buttons accumulates ("Send A" + "Send B").
@@ -6112,8 +6118,13 @@ class Bot:
             before marking the new one, so only the latest pick is
             highlighted. Use for the default Yes/Skip/Edit set where
             the user is changing their mind, not stacking.
+
+        Also strips any legacy leading "✓ " prefix from the previous
+        mark style, so cards posted before this change clean up on
+        the next tap.
         """
-        picked_prefix = "✓ "
+        suffix = " ✓"
+        legacy_prefix = "✓ "
         try:
             if idx < 0 or not kbd:
                 return
@@ -6124,11 +6135,13 @@ class Bot:
                 for btn in row:
                     flat_i += 1
                     text = btn.get("text") or ""
+                    if text.startswith(legacy_prefix):
+                        text = text[len(legacy_prefix):]
                     if flat_i == idx:
-                        if not text.startswith(picked_prefix):
-                            text = picked_prefix + text
-                    elif reset_others and text.startswith(picked_prefix):
-                        text = text[len(picked_prefix):]
+                        if not text.endswith(suffix):
+                            text = text + suffix
+                    elif reset_others and text.endswith(suffix):
+                        text = text[: -len(suffix)]
                     new_row.append({**btn, "text": text})
                 new_kbd.append(new_row)
             self.call(
