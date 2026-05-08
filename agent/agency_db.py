@@ -140,6 +140,36 @@ def update_message(db: sqlite3.Connection, suggestion_id: int, message_id: int) 
     db.commit()
 
 
+def is_worker_topic(db: sqlite3.Connection, thread_id: int | None) -> bool:
+    """True iff `thread_id` was spawned as the worker_topic for some
+    earlier suggestion that lived in a *different* thread.
+
+    Used by `agency-report` to auto-default the spawn-topic flag. When
+    the helper is invoked from inside a thread that's already a worker
+    for some prior card, the new card defaults to in-place dispatch:
+    we're already deep in one task, don't fork another. When the helper
+    is invoked from a non-worker thread (the main agency feed, a fresh
+    chat, etc.), the new card defaults to spawn=True so each suggestion
+    gets its own topic.
+
+    A card whose own `tg_thread_id` equals its `worker_topic_id` is
+    excluded — that's the bookkeeping for an in-place dispatch and
+    doesn't make the thread a "worker for some other card posted
+    elsewhere"."""
+    if not thread_id or thread_id <= 0:
+        return False
+    cur = db.execute(
+        """
+        SELECT 1 FROM suggestions
+         WHERE worker_topic_id = ?
+           AND (tg_thread_id IS NULL OR tg_thread_id != worker_topic_id)
+         LIMIT 1
+        """,
+        (int(thread_id),),
+    )
+    return cur.fetchone() is not None
+
+
 def find_by_message(
     db: sqlite3.Connection, chat_id: int, message_id: int
 ) -> dict[str, Any] | None:

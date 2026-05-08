@@ -52,16 +52,22 @@ Blocks are specified one of two ways:
     three variants A/B/C, or a single "context" block, or zero blocks
     (--info-only with just headline + source link).
 
-Yes-tap routing:
-  • Default — Yes / Edit dispatch in the SAME thread the card lives in.
-    Follow-up cards inside an existing worker topic don't spawn nested
-    topics; the conversation stays continuous.
-  • --spawn-topic — Yes / Edit create a fresh forum topic and dispatch
-    the lane there instead. Use for the /agency loop's half-hourly cards
-    (so each cycle's cards live in their own threads) and for any other
-    case where the work warrants a dedicated topic. Agents inside an
-    existing worker topic may also set this to fork sub-tasks into yet
-    another topic — there is no auto-protection against that.
+Yes-tap routing — auto-default by thread context:
+  • If the current thread is already a worker_topic for some prior
+    card, --spawn-topic defaults to OFF — Yes/Edit dispatch in the
+    same thread. We're already deep in one task; don't fork another.
+  • Otherwise (main agency feed, fresh chat, etc.), --spawn-topic
+    defaults to ON — each Yes/Edit forks a fresh forum topic so
+    suggestions don't pile up in one scroll.
+
+Override the auto-default with:
+  • --spawn-topic    — force spawn (always create a new topic on Yes/Edit)
+  • --no-spawn-topic — force in-place (always run in the current thread)
+
+Default-button labels reflect the chosen routing so the user can tell
+from the button alone whether tapping forks a topic:
+  • spawn:    "🧵 Yes (new thread)" / "⏭ Skip" / "🧵 Edit (new thread)"
+  • in-place: "✅ Yes" / "⏭ Skip" / "✏️ Edit"
 
 If --image (URL), --image-file (local path), or --image-text (auto-rendered
 placeholder) is given, the image renders above the body. For bodies that
@@ -552,15 +558,27 @@ def main() -> int:
         action="store_true",
         help="Drop the inline keyboard entirely (FYI cards with no action).",
     )
-    p.add_argument(
+    spawn_grp = p.add_mutually_exclusive_group()
+    spawn_grp.add_argument(
         "--spawn-topic",
-        action="store_true",
+        dest="spawn_topic",
+        action="store_const",
+        const=True,
+        default=None,
         help="On Yes/Edit tap, spawn a fresh forum topic and dispatch "
-        "the lane there. Default: run in-place in the current thread. "
-        "Set this on agency-loop cards (so each cycle's cards live in "
-        "their own topics) and any other case where the work warrants "
-        "a dedicated thread. Agents inside an existing worker topic "
-        "may also set this to fork sub-tasks into yet another topic.",
+        "the lane there. Use for agency-loop cards (each cycle's cards "
+        "get their own topics) or any case where the work warrants a "
+        "dedicated thread. Overrides the auto-default.",
+    )
+    spawn_grp.add_argument(
+        "--no-spawn-topic",
+        dest="spawn_topic",
+        action="store_const",
+        const=False,
+        help="On Yes/Edit tap, dispatch in the same thread the card "
+        "lives in. Overrides the auto-default. Use when the agent is "
+        "already deep in one topic and follow-up cards should keep the "
+        "conversation in-place.",
     )
     p.add_argument(
         "--thread-id",
@@ -579,10 +597,22 @@ def main() -> int:
     if args.info_only and args.button:
         sys.exit("agency-report: --info-only and --button are mutually exclusive.")
 
+    db = agency_db.conn()
+
+    # spawn_topic auto-default: if the user didn't pass --spawn-topic /
+    # --no-spawn-topic explicitly, infer from thread context.
+    #
+    #   - thread is already a worker_topic for some other card → in-place
+    #     (we're deep in one task; don't fork another)
+    #   - thread is the main feed / a fresh chat → spawn
+    #     (each suggestion gets its own topic)
+    #
+    # Explicit flags always win over the auto-detected default.
+    if args.spawn_topic is None:
+        args.spawn_topic = not agency_db.is_worker_topic(db, args.thread_id)
+
     buttons = _resolve_buttons(args)
     button_labels_for_db = [label for label, _ in buttons]
-
-    db = agency_db.conn()
 
     if args.skip_if_exists and args.source:
         prior = agency_db.exists(db, args.source)
