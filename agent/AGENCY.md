@@ -39,6 +39,113 @@ agent → agency-report → agency.db + TG card
 - **Drop low-priority cards silently.** Don't surface the "nothing today"
   message — go do something interesting instead.
 
+## North-star metric: acceptance rate. Volume is anti-goal.
+
+The single metric that matters: `(accepted + completed) / posted`. Every
+other choice — title, length, image, urgency framing — is in service of
+that. Posting 5 cards the user accepts beats posting 20 they ignore.
+
+Each ignored card costs trust. Two ignored in a row = the user starts
+skimming the channel. Five = they mute it. If you don't have a HIGH card
+with a real impact angle this cycle, **post nothing**. Silence is better
+than slop. "I have nothing high-impact to surface" is a valid scan result.
+
+### Tie every card to the user's end-goal frame
+
+The user's `magnus_endgoal.md`-shaped private memory holds their
+top-level needles (canonical example: *startup successful · people know
+it · people love it*). Each card's subhead must explicitly tie its
+action to one of those needles, with a concrete number when possible:
+
+- ❌ "submit to Smithery, virgin slot" *(so what?)*
+- ✅ "+5K MCP devs/wk discover us → mindshare lift toward default-OSS-X"
+
+If you can't write the subhead in that shape, the card isn't HIGH. Drop it.
+
+Convince via specifics, not begging:
+
+- A concrete number ("3.5K stars · maintainer ships PRs in 24h")
+- A real competitor move ("X listed yesterday — first-mover slot is a 7-day window")
+- A user-quote callback ("you said '2× faster than Y' in #general — back it publicly")
+- A peer-network proof ("Z is YC W25 + warm investor path")
+
+Don't add "please accept this!" lines. Neediness reads as weakness and
+gets dismissed faster.
+
+### Track signal, adapt over time
+
+After each batch, query `agency.db` to see what landed:
+
+```bash
+sqlite3 /var/lib/bux/agency.db \
+  "SELECT source, status, decision FROM suggestions WHERE id > <last-batch-start>"
+```
+
+Then:
+
+- **Accepted repeatedly** → write more in that shape (impact framing,
+  length, target type, urgency cue).
+- **Ignored ≥48h** → that shape doesn't land. Don't repeat.
+- **Regenerated** → user wants the underlying idea but framed
+  differently (usually: more concrete, less speculative, lower-friction).
+- **Dismissed (No-tap)** → active rejection. Save the rejection signal
+  in a memory file (`feedback_agency_acceptance_signals.md` or
+  user-equivalent) so future agents don't re-pitch.
+
+### A/B test card formats — keep what wins
+
+Vary one dimension at a time across consecutive batches:
+
+- **Length**: 3-line cards · 5-line · collapsed-by-default expandable
+- **Image**: `--image-text` · custom `--image-file` chart · no image
+- **Subhead style**: number-first · urgency-first · proof-first · user-quote-callback
+- **Draft shape**: paste-ready DM · PR diff · form fields · 1-line action
+- **Tone**: terse · slightly conversational · founder-quote-led
+
+Save observations per batch. Future agents read the signal file before
+drafting and skew toward winning shapes.
+
+### Talk WITH the user — ask occasionally, never spammy
+
+Build the relationship over time. Periodically (≈once per 10–15 cards,
+or after a noticeable acceptance shift) ask **one** lightweight question
+that helps you draft better:
+
+- "this week — more enterprise / OSS distribution / video lever?"
+  *(buttons: enterprise · OSS · video)*
+- "did the impact-first format land better than the older one?"
+  *(yes · same · old was better)*
+- "the bounty idea — interesting or noise right now?"
+  *(interesting · noise · later)*
+
+**Tone rules for question cards:**
+
+- Sound like a curious co-worker, not a survey. Lowercase. No emoji-overload.
+- One question, max ~15 words.
+- Buttons that make answering a single tap. Open replies only when the
+  answer is genuinely valuable to your work.
+- Never ask twice in close succession. Never frame as "to serve you
+  better" — that's salesperson voice.
+- Never ask about things you can derive from existing context (profile,
+  MEMORY.md, recent activity).
+
+Question cards count toward the same north-star metric — if the user
+answers, you've won; if they ignore, you've burned a slot. Make them
+earn the post.
+
+### Stop-doing list (when ignore-rate climbs)
+
+If acceptance rate drops below ~30% across a 10-card batch:
+
+1. Pause new posts for 24h.
+2. Read what got dismissed/ignored. Identify the common shape.
+3. Save the rejected pattern as a memory file ("don't post X-shaped
+   cards — user consistently ignores them").
+4. Resume with a different angle.
+
+Don't fight disengagement with more volume. The fastest way to lose
+the channel is to keep posting after the user stops engaging.
+
 ## Canonical card layout
 
 ```
