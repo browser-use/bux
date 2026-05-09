@@ -181,18 +181,74 @@ the channel is to keep posting after the user stops engaging.
 
 ## Image-first
 
-Include an image whenever it speeds comprehension. Per card type:
+Include an image on **every** card unless it's a pure photo asset (video MP4,
+real chart, real screenshot — those carry their own visual). The image's job
+is to make the card 2-second-readable on a phone screen: **what** would
+happen if the user taps yes, and **why** it matters.
 
-- Person / outreach → small avatar
-- Company → logo / favicon
-- PR / merge → repo logo + PR number, or tiny diff snippet
-- Plot / metric → real chart via `--image-file` (matplotlib)
-- Video → the MP4 itself
-- Status / FYI → large status emoji
+### `--image-text` — the default, 3-line WHAT-WHY shape
 
-`--image-text` is fine for short conceptual labels (≤6 words). Anything
-longer wants a real chart or screenshot via `--image-file`. Skip only when
-nothing useful would be there.
+`agency-report --image-text "..."` auto-renders a placehold.co card
+(1200×630, magenta-on-purple, font Montserrat) with `\n`-separated lines,
+word-wrapped to ≤22 chars per line. Use the **3-line WHAT-WHY shape**:
+
+```
+LINE 1 — verb-led WHAT (the action / artifact, in caps for hierarchy)
+LINE 2 — concrete subject or vehicle
+LINE 3 — WHY it matters (the number, the lever, the audience)
+```
+
+Worked examples (all rendered placehold.co cards):
+
+| Card | `--image-text` value |
+|---|---|
+| Anthropic Cookbook PR | `"ANTHROPIC COOKBOOK\n+PR canonical tool\n100K Claude devs"` |
+| Lenny Newsletter pitch | `"LENNY'S NEWSLETTER\n3M+ ICP readers\nguest post"` |
+| $25K bounty | `"$25K BOUNTY\n200+ builders\n200+ X posts"` |
+| HF Spaces demo | `"HF SPACES\nbrowser-use demo\n3M MAU homepage"` |
+| 10 evangelists | `"10 EVANGELISTS\nfree lifetime\npublic testimonial"` |
+| Free for OSS | `"FREE FOR OSS\nkills competitor pricing\nforever"` |
+
+### Rules of thumb for `--image-text`
+
+- **≤22 chars per line.** Longer lines auto-wrap; single long words pass
+  through unbroken. 22 × 3 is the readability ceiling on a phone render.
+- **Each line earns its place.** No filler. If you can't write a WHY line,
+  the card itself isn't HIGH — drop it.
+- **Caps for the WHAT line, mixed case for WHY.** Visual hierarchy on the
+  fixed canvas — the eye lands on caps first.
+- **Numbers in the WHY line whenever possible.** "3M readers" beats "huge
+  reach"; "100K Claude devs" beats "the audience".
+- **No bare URLs or `@handles`.** Those go in `--source-label`/`--source-url`
+  for the clickable header. The image is for orientation, not navigation.
+- **Match the language of the title.** If the title says "PR", the image
+  says "+PR" — not "open a pull request".
+
+### When `--image-text` is the wrong tool
+
+Use `--image-file` (multipart upload of a real PNG) when:
+
+- Plot / metric → real matplotlib chart with the actual numbers
+- Person / outreach → small avatar (the recipient's headshot)
+- Company → logo / favicon (when brand recognition matters more than text)
+- PR / merge → tiny diff snippet rendered as code (the artifact itself)
+
+Pass `--image` (direct URL) when you already have a hosted asset (a GitHub
+avatar, an OG-image from a target page). Don't paste random web images that
+haven't been vetted — TG caches pinned to the card.
+
+### When to skip the image entirely
+
+Only when the visual would be strictly worse than its absence:
+
+- Pure status / FYI cards where one large emoji in the title carries the
+  whole signal.
+- Single-number cards (e.g. "deploy 200 OK") where the number IS the
+  message — putting it in an image too is visual noise.
+
+Default position: **include an image**. Defaulting to "no image" makes
+cards read as plain text in a phone scroll where every other agent's card
+has a visual. Yours get skipped.
 
 ## Buttons
 
