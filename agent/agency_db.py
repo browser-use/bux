@@ -70,6 +70,7 @@ def init_schema(db: sqlite3.Connection) -> None:
           worker_started_at   INTEGER,
           worker_completed_at INTEGER,
           spawn_topic     INTEGER NOT NULL DEFAULT 0,  -- 1 = Yes-tap creates a fresh topic; 0 = run in-place
+          refine_context_injected INTEGER NOT NULL DEFAULT 0,  -- 1 once the worker agent has been seeded with the original card
           created_at      INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
           updated_at      INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
         );
@@ -80,15 +81,19 @@ def init_schema(db: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_sugg_worker_topic ON suggestions(worker_topic_id);
         """
     )
-    # Backfill spawn_topic on pre-existing tables. ALTER TABLE has no
+    # Backfill columns on pre-existing tables. ALTER TABLE has no
     # IF NOT EXISTS — swallow the duplicate-column error from re-runs.
-    try:
-        db.execute(
-            "ALTER TABLE suggestions ADD COLUMN spawn_topic INTEGER NOT NULL DEFAULT 0"
-        )
-    except sqlite3.OperationalError as e:
-        if "duplicate column" not in str(e).lower():
-            raise
+    for col, ddl in (
+        ("spawn_topic",
+         "ALTER TABLE suggestions ADD COLUMN spawn_topic INTEGER NOT NULL DEFAULT 0"),
+        ("refine_context_injected",
+         "ALTER TABLE suggestions ADD COLUMN refine_context_injected INTEGER NOT NULL DEFAULT 0"),
+    ):
+        try:
+            db.execute(ddl)
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e).lower():
+                raise
     db.commit()
 
 
@@ -292,3 +297,72 @@ def list_recent(
             "SELECT * FROM suggestions ORDER BY id DESC LIMIT ?", (limit,)
         )
     return [dict(r) for r in cur.fetchall()]
+
+
+def find_by_worker_topic(
+    db: sqlite3.Connection, thread_id: int | None
+) -> dict[str, Any] | None:
+    """Return the suggestion whose worker_topic_id == thread_id, if any.
+    Filters out in-place rows (worker_topic_id == tg_thread_id)."""
+    if not thread_id or thread_id <= 0:
+        return None
+    cur = db.execute(
+        """
+        SELECT * FROM suggestions
+         WHERE worker_topic_id = ?
+           AND (tg_thread_id IS NULL OR tg_thread_id != worker_topic_id)
+         ORDER BY id DESC LIMIT 1
+        """,
+        (int(thread_id),),
+    )
+    row = cur.fetchone()
+    return dict(row) if row is not None else None
+
+
+def pop_refine_context_for_thread(
+    db: sqlite3.Connection, thread_id: int | None
+) -> str | None:
+    """For Edit (refine) flows: at the user's first reply in the worker
+    topic, return the original card's context (title + description +
+    prompt) as a plain-text block, AND atomically mark the suggestion as
+    `refine_context_injected = 1` so subsequent calls return None.
+
+    Replaces the file-based per-thread context cache the bot used to
+    write to /var/lib/bux/agency-refine-context/<thread>.txt. The DB
+    already holds the same content; querying it on the user's first
+    reply is one SELECT + UPDATE and avoids a separate state surface.
+
+    Returns None when:
+      - thread isn't a worker topic for any suggestion
+      - the suggestion isn't in 'differently' (Edit-tapped) status
+      - context already injected on a prior call
+    """
+    if not thread_id or thread_id <= 0:
+        return None
+    cur = db.execute(
+        """
+        SELECT id, title, description, prompt
+          FROM suggestions
+         WHERE worker_topic_id = ?
+           AND status = 'differently'
+           AND refine_context_injected = 0
+         ORDER BY id DESC LIMIT 1
+        """,
+        (int(thread_id),),
+    )
+    row = cur.fetchone()
+    if row is None:
+        return None
+    parts: list[str] = [f"Original agency card title:\n{row['title'] or ''}"]
+    desc = (row["description"] or "").strip()
+    if desc:
+        parts.append(f"\nOriginal context:\n{desc}")
+    prompt = (row["prompt"] or "").strip()
+    if prompt:
+        parts.append(f"\nOriginal action prompt:\n{prompt}")
+    db.execute(
+        "UPDATE suggestions SET refine_context_injected = 1, updated_at = ? WHERE id = ?",
+        (_now(), int(row["id"])),
+    )
+    db.commit()
+    return "\n".join(parts)

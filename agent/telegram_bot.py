@@ -2850,8 +2850,6 @@ class StreamingMessage:
 
 import html as _html_mod  # noqa: E402
 
-_AGENCY_REFINE_CTX_DIR = Path("/var/lib/bux/agency-refine-context")
-
 
 # ── Agency-card "picked button" Style A helpers ─────────────────────
 # Wraps the picked label with arrows and bold-uppercase the letters so
@@ -2930,7 +2928,11 @@ def _agency_build_refine_context(sugg_row: dict) -> str:
     """Build the visible HTML message that shows the user the original
     card content before they tell us what to change. Mirrors the
     canonical card layout (headline + expandable blocks) so it's
-    immediately recognizable."""
+    immediately recognizable.
+
+    The plain-text twin used to seed the worker agent on the user's
+    first reply is built directly from the DB row in
+    `agency_db.pop_refine_context_for_thread`."""
     parts: list[str] = []
     title = sugg_row.get("title") or ""
     parts.append(
@@ -2941,56 +2943,15 @@ def _agency_build_refine_context(sugg_row: dict) -> str:
     prompt = (sugg_row.get("prompt") or "").strip()
     if description:
         parts.append(
-            f"<blockquote expandable>💭 <b>Why</b>\n"
+            f"<blockquote expandable>📎 <b>Context</b>\n"
             f"{_html_mod.escape(description, quote=False)}</blockquote>"
         )
     if prompt:
         parts.append(
             f"<blockquote expandable>📝 <b>Original action prompt</b>\n"
-            f"<code>{_html_mod.escape(prompt, quote=False)}</code></blockquote>"
+            f"{_html_mod.escape(prompt, quote=False)}</blockquote>"
         )
     return "\n".join(parts)
-
-
-def _agency_build_refine_context_plain(sugg_row: dict) -> str:
-    """Build the plain-text context block fed to the agent on the
-    user's first reply. Same content as the visible HTML version
-    minus the markup."""
-    title = sugg_row.get("title") or ""
-    description = (sugg_row.get("description") or "").strip()
-    prompt = (sugg_row.get("prompt") or "").strip()
-    out: list[str] = [f"Original agency card title:\n{title}"]
-    if description:
-        out.append(f"\nOriginal Why / context:\n{description}")
-    if prompt:
-        out.append(f"\nOriginal action prompt:\n{prompt}")
-    return "\n".join(out)
-
-
-def _agency_write_refine_context(thread_id: int, sugg_row: dict) -> None:
-    """Persist the plain-text context for this thread so run_task can
-    pick it up on the user's next reply. One-shot: cleared after read."""
-    _AGENCY_REFINE_CTX_DIR.mkdir(parents=True, exist_ok=True)
-    path = _AGENCY_REFINE_CTX_DIR / f"{int(thread_id)}.txt"
-    path.write_text(_agency_build_refine_context_plain(sugg_row))
-
-
-def _agency_pop_refine_context(thread_id: int) -> str | None:
-    """Read + delete the per-thread context file. Returns None if no
-    pending context for this thread (the common case for any
-    non-refine lane)."""
-    if thread_id <= 0:
-        return None
-    path = _AGENCY_REFINE_CTX_DIR / f"{int(thread_id)}.txt"
-    try:
-        text = path.read_text()
-    except FileNotFoundError:
-        return None
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
-    return text
 
 
 class Bot:
@@ -3347,14 +3308,17 @@ class Bot:
         agent = _agent_for(key, self.state)
         LOG.info("run_task lane=%s agent=%s", _lane_slug(key), agent)
         # Refine-context injection: if the user tapped Edit on an
-        # agency card and this is their first reply in the spawned
-        # topic, the kind=refine handler dropped a context file at
-        # /var/lib/bux/agency-refine-context/<thread>.txt. Pop it,
-        # prepend to the user's prompt, and let the agent re-draft
-        # with the original card in scope. One-shot — popped on first
-        # use; subsequent turns in the same topic are normal.
+        # agency card and this is their first reply in the worker
+        # topic, look up the suggestion via the DB and prepend its
+        # title + description + prompt to the user's message so the
+        # worker agent re-drafts with the original in scope.
+        # `pop_refine_context_for_thread` is atomic — it returns the
+        # context AND flips refine_context_injected=1 in one call, so
+        # subsequent turns in the same thread are normal.
         try:
-            refine_ctx = _agency_pop_refine_context(thread_id)
+            import agency_db as _agency_db
+            db = _agency_db.conn()
+            refine_ctx = _agency_db.pop_refine_context_for_thread(db, thread_id)
             if refine_ctx:
                 prompt = (
                     "You are refining an earlier agency suggestion.\n\n"
@@ -6141,10 +6105,11 @@ class Bot:
                 LOG.exception("agency action dispatch failed")
         elif kind == "refine":
             # Show the full card context as visible messages so the user
-            # can see what they're refining, then persist the same context
-            # to a per-thread file. The lane handler reads the file on the
-            # user's next reply and prepends it to the agent's prompt so
-            # the re-draft has the original card in scope.
+            # can see what they're refining. The plain-text twin used to
+            # seed the worker agent on the user's first reply is read
+            # directly from the DB by `agency_db.pop_refine_context_for_thread`
+            # — no separate per-thread state file needed; the suggestion
+            # row already has title + description + prompt.
             ctx_text = _agency_build_refine_context(sugg_row)
             try:
                 self.call(
@@ -6156,10 +6121,6 @@ class Bot:
                 )
             except Exception:
                 LOG.exception("agency refine context-display failed")
-            try:
-                _agency_write_refine_context(work_thread, sugg_row)
-            except Exception:
-                LOG.exception("agency refine context-persist failed")
             try:
                 self.call(
                     "sendMessage",
