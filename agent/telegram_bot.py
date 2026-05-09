@@ -1295,7 +1295,29 @@ _lane_workers: dict[str, threading.Thread] = {}
 # is added right after Popen succeeds and removed in `finally` so an early
 # error path can't strand a stale handle.
 _inflight_procs: dict[str, subprocess.Popen] = {}
+_inflight_cancel_reasons: dict[str, str] = {}
 _inflight_lock = threading.Lock()
+
+
+def _kill_inflight_proc(slug: str, proc: subprocess.Popen, reason: str) -> None:
+    """Kill an agent turn and remember why its stream loop ended.
+
+    Agent CLIs can spawn children that inherit stdout. Killing only the
+    immediate sudo wrapper leaves those children holding the pipe open, which
+    delays the runner's final cancellation handling. Agent turns use
+    start_new_session=True, so kill the whole process group.
+    """
+    _inflight_cancel_reasons[slug] = reason
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    except Exception:
+        LOG.exception("process-group kill failed for lane %s; falling back to proc.kill", slug)
+        try:
+            proc.kill()
+        except Exception:
+            LOG.exception("proc.kill fallback failed for lane %s", slug)
 
 
 def _new_job_id() -> str:
@@ -1505,39 +1527,9 @@ def _snapshot_lane(slug: str) -> list[dict]:
         return [dict(j) for j in _lanes.get(slug, [])]
 
 
-def _lane_promote_to_front(slug: str, job_id: str) -> dict | None:
-    """Steer a queued job to the head of its lane's queue (just after any
-    in_flight job, so the next `_pop_next_locked` call returns it).
-
-    Returns the moved job on success, or None when the job isn't found OR
-    isn't queued anymore (already in_flight / already finished). The
-    callback handler uses None to render an "already running" toast so a
-    stale Steer tap can't quietly do nothing or, worse, kill the very job
-    the user wanted to promote.
-    """
-    with _lanes_lock:
-        q = _lanes.get(slug, [])
-        for i, j in enumerate(q):
-            if j.get("id") != job_id:
-                continue
-            if j.get("status") != "queued":
-                return None
-            target = 0
-            for k, jk in enumerate(q):
-                if jk.get("status") == "in_flight":
-                    target = k + 1
-            if i == target:
-                return j
-            q.pop(i)
-            q.insert(target, j)
-            _save_lanes_to_disk_locked()
-            return j
-        return None
-
-
-# `_lane_set_steer_msg_id` was removed when auto-steer-on-followup made the
-# Steer button (and its queue-ack bubble) redundant. The drainer still cleans
-# up any legacy `steer_msg_id` parked on pre-upgrade jobs — no setter needed.
+# `_lane_set_steer_msg_id` was removed when the Steer button was retired. The
+# drainer still cleans up any legacy `steer_msg_id` parked on pre-upgrade jobs
+# so old queue-ack bubbles do not linger.
 
 
 # ---------------------------------------------------------------------------
@@ -3481,15 +3473,8 @@ class Bot:
         chat_id, thread_id = key
         agent = _agent_for(key, self.state)
         LOG.info("run_task lane=%s agent=%s", _lane_slug(key), agent)
-        # Acknowledge the incoming user message with a random reaction
-        # emoji — the playful "I got it, I'm on it" signal the bot used
-        # to set before PR #92 swapped it for a "..." placeholder bubble.
-        # The bubble still serves as the streaming target; the reaction
-        # rides on the user's own message and is what they see first.
-        # Failures (rejected emoji, deleted message) are swallowed by
-        # Bot.call so a reaction issue never poisons the dispatch.
-        if reply_to:
-            self.react(chat_id, reply_to, random_thinking_reaction())
+        # The receive-ack reaction is set at enqueue time in handle(), so busy
+        # lanes give immediate feedback before this worker starts.
         # Upfront login gate: a fresh user signing up to bux who texts "hi"
         # before signing into either CLI shouldn't sit through a 5s
         # claude → 401 → fallback dance to discover they need to log in.
@@ -3602,6 +3587,7 @@ class Bot:
                 stderr=subprocess.DEVNULL,
                 text=True,
                 cwd=str(WORKSPACE),
+                start_new_session=True,
             )
         except Exception as e:
             self.react(chat_id, reply_to, EMOJI_ERROR)
@@ -3733,25 +3719,25 @@ class Bot:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 try:
-                    proc.kill()
+                    _kill_inflight_proc(slug, proc, "drain-timeout")
+                    proc.wait(timeout=1)
                 except Exception:
                     pass
             except Exception:
                 pass
 
-            # SIGKILL/SIGTERM means /cancel (or the timeout-kill above) ended
-            # the proc. Reply "🛑 Cancelled." into the lane and SKIP the
-            # no-output fallback — otherwise we'd silently re-run the same
-            # prompt the user just cancelled. A clean exit (rc >= 0) falls
-            # through to the normal fallback path below.
+            # SIGKILL/SIGTERM means this turn was killed. User-visible
+            # cancellation paths already acknowledged the kill, so only emit a
+            # terminal Cancelled bubble for unexpected external termination.
             if proc.returncode in (-9, -15):
-                self.react(chat_id, reply_to, EMOJI_ERROR)
-                self.send(
-                    chat_id,
-                    "🛑 Cancelled.",
-                    reply_to=reply_to,
-                    thread_id=thread_id,
-                )
+                if _inflight_cancel_reasons.get(slug) not in {"user-cancel", "drain-timeout"}:
+                    self.react(chat_id, reply_to, EMOJI_ERROR)
+                    self.send(
+                        chat_id,
+                        "🛑 Cancelled.",
+                        reply_to=reply_to,
+                        thread_id=thread_id,
+                    )
                 return
 
             if not any_text:
@@ -3823,6 +3809,7 @@ class Bot:
             with _inflight_lock:
                 if _inflight_procs.get(slug) is proc:
                     _inflight_procs.pop(slug, None)
+                    _inflight_cancel_reasons.pop(slug, None)
 
     def _run_codex(
         self,
@@ -3932,6 +3919,7 @@ class Bot:
                 stderr=stderr_buf,
                 text=True,
                 cwd=str(WORKSPACE),
+                start_new_session=True,
             )
         except Exception as e:
             # Popen never produced a child — close the stderr tempfile
@@ -4033,25 +4021,25 @@ class Bot:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 try:
-                    proc.kill()
+                    _kill_inflight_proc(slug, proc, "drain-timeout")
+                    proc.wait(timeout=1)
                 except Exception:
                     pass
             except Exception:
                 pass
 
-            # SIGKILL/SIGTERM means /cancel ended the proc. Reply
-            # "🛑 Cancelled." into the lane and SKIP the no-output fallback
-            # so we don't surface a confusing stderr message for a kill the
-            # user explicitly asked for. A clean exit (rc >= 0) falls
-            # through to the normal no-output handling below.
+            # SIGKILL/SIGTERM means this turn was killed. User-visible
+            # cancellation paths already acknowledged the kill, so only emit a
+            # terminal Cancelled bubble for unexpected external termination.
             if proc.returncode in (-9, -15):
-                self.react(chat_id, reply_to, EMOJI_ERROR)
-                self.send(
-                    chat_id,
-                    "🛑 Cancelled.",
-                    reply_to=reply_to,
-                    thread_id=thread_id,
-                )
+                if _inflight_cancel_reasons.get(slug) not in {"user-cancel", "drain-timeout"}:
+                    self.react(chat_id, reply_to, EMOJI_ERROR)
+                    self.send(
+                        chat_id,
+                        "🛑 Cancelled.",
+                        reply_to=reply_to,
+                        thread_id=thread_id,
+                    )
                 return
 
             if not any_text:
@@ -4076,6 +4064,7 @@ class Bot:
             with _inflight_lock:
                 if _inflight_procs.get(slug) is proc:
                     _inflight_procs.pop(slug, None)
+                    _inflight_cancel_reasons.pop(slug, None)
             try:
                 stderr_buf.close()
             except Exception:
@@ -4902,30 +4891,20 @@ class Bot:
             "sender": sender,
             "thinking_emoji": thinking_emoji,
         }
-        depth = _enqueue(slug, job, self._lane_drain)
+        # Immediate receive-ack. The original reaction path lives in
+        # run_task(), which only fires after the lane worker starts this job.
+        # Busy lanes can therefore leave the user staring at their own
+        # message with no "got it" signal. React on enqueue so the ack is
+        # tied to Telegram ingestion, not agent dispatch timing.
+        if isinstance(mid, int):
+            self.react(chat_id, mid, random_thinking_reaction())
+        _enqueue(slug, job, self._lane_drain)
         self.typing(chat_id, thread_id=thread_id)
-        # Auto-steer-on-followup: if there's already an in-flight job in
-        # this lane, kill it and promote the new job to the head of the
-        # queue. The agent's session UUID / codex thread is unchanged, so
-        # `claude -p --resume` on the next dispatch sees all prior tool
-        # history — only the cancelled-turn's prompt is replaced. This
-        # mirrors Claude Code's "Esc to cancel + new message" UX without
-        # requiring a Steer button: every follow-up message implicitly
-        # steers, so a typo / clarification / "actually do this instead"
-        # doesn't have to wait for the long turn to finish.
-        #
-        # Note: existing queued jobs (between the in-flight and this one)
-        # are kept in their original order so they still run after the
-        # promoted job — drop them with /cancel if you want a clean slate.
-        if depth > 1:
-            _lane_promote_to_front(slug, job["id"])
-            with _inflight_lock:
-                proc = _inflight_procs.get(slug)
-                if proc is not None and proc.poll() is None:
-                    try:
-                        proc.kill()
-                    except Exception:
-                        LOG.exception("auto-steer kill of in-flight failed for %s", slug)
+        # Follow-ups are FIFO by default. The bot acknowledges them
+        # immediately, but it must not implicitly kill the in-flight turn:
+        # users often send a quick correction or second instruction and still
+        # expect the first answer to land. Use /cancel for the explicit
+        # hard-stop path.
 
     def _cmd_queue(self, slug: str, chat_id: int, reply_to: int | None, thread_id: int) -> None:
         jobs = _snapshot_lane(slug)
@@ -4969,7 +4948,7 @@ class Bot:
                 proc = _inflight_procs.get(slug)
                 if proc is not None and proc.poll() is None:
                     try:
-                        proc.kill()
+                        _kill_inflight_proc(slug, proc, "user-cancel")
                         killed_in_flight = True
                     except Exception:
                         LOG.exception("failed to kill in-flight agent for lane %s", slug)
@@ -5019,7 +4998,7 @@ class Bot:
                 proc = _inflight_procs.get(slug)
                 if proc is not None and proc.poll() is None:
                     try:
-                        proc.kill()
+                        _kill_inflight_proc(slug, proc, "user-cancel")
                         killed = True
                     except Exception:
                         LOG.exception("failed to kill in-flight agent for lane %s", slug)
@@ -5217,9 +5196,7 @@ class Bot:
                 key: LaneKey = (chat_id, thread_id if isinstance(thread_id, int) else 0)
                 sender = job.get("sender") if isinstance(job.get("sender"), dict) else None
                 # Legacy: clean up any "queued (#N)" Steer-button bubble
-                # that an older bot version may have parked above this
-                # job. New auto-steer-on-followup never creates these,
-                # but they may persist on jobs queued before the upgrade.
+                # that an older bot version may have parked above this job.
                 steer_mid = job.get("steer_msg_id")
                 if isinstance(steer_mid, int):
                     try:
@@ -5960,15 +5937,13 @@ class Bot:
         try:
             data = cb.get("data") or ""
             if data.startswith("steer:"):
-                # Legacy Steer button. Auto-steer-on-followup made this
-                # redundant — every new TG message in an in-flight lane
-                # already kills + promotes. Quiet-toast + strip the
-                # button so old queue-ack bubbles in flight when the bot
-                # upgraded don't look broken.
+                # Legacy Steer button. Follow-ups are now FIFO; explicit
+                # /cancel is the hard-stop path. Quiet-toast + strip the
+                # button so old queue-ack bubbles don't look broken.
                 self.call(
                     "answerCallbackQuery",
                     callback_query_id=cb["id"],
-                    text="auto-steer is on by default — no button needed",
+                    text="queued messages now run in order; use /cancel to stop a turn",
                 )
                 msg = cb.get("message") or {}
                 chat_id = (msg.get("chat") or {}).get("id")
