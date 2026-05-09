@@ -6118,7 +6118,7 @@ class Bot:
                     message_thread_id=work_thread or None,
                     text=(
                         "📋 <b>Running this on your behalf</b>\n"
-                        f"<pre>{_html.escape(action_prompt, quote=False)}</pre>"
+                        f"<blockquote>{_html.escape(action_prompt, quote=False)}</blockquote>"
                     ),
                     parse_mode="HTML",
                 )
