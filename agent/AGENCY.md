@@ -263,7 +263,11 @@ Default 3-button set, label adapts to spawn-mode:
 **Per-kind callback behavior:**
 
 - `action` — record decision, dispatch `--prompt` via `run_task`
-- `dismiss` — record decision, post `⏭ skipped` ack reply, **no** LLM
+- `dismiss` — record decision, **delete the card from the channel**, no
+  LLM. The DB still tracks the dismissal for dedup + future-batch signal,
+  but the card itself disappears from the user's feed — a skipped
+  suggestion adds zero value to scrollback, and a "⏭ skipped" ack reply
+  underneath actively makes the feed noisier
 - `refine` — record decision, ensure worker topic, post the original card
   content as visible context messages, post "What would you change?", wait
   for the user's reply (no immediate dispatch)
@@ -279,6 +283,37 @@ Default 3-button set, label adapts to spawn-mode:
 `--button` is a **plain string, not JSON**. Don't confuse it with `--block`
 (which *does* take JSON). The helper has a defensive coercion for accidental
 JSON, but write plain strings.
+
+### Always include an Edit/refine button on suggestion cards
+
+Most agency suggestions are not perfectly on point on first try — wrong
+audience, wrong tone, slightly off framing, missing a constraint the user
+hasn't told you about yet. The `refine` button (`✏️ Edit` / `🧵 Edit
+(new thread)`) is the user's feedback channel: one tap spawns a worker
+topic with the original card content already laid out, posts "What would
+you change?", and waits for their reply. The agent then re-drafts and
+posts a fresh card via `agency-report` (with a different `--source`
+slug so it doesn't dedupe against the original).
+
+**Default doctrine: keep the Edit/refine button on every suggestion
+card.** The 3-button set (`✅ Yes` / `⏭ Skip` / `✏️ Edit`) is the
+default precisely because Edit is the escape hatch for a suggestion
+that's almost-but-not-quite right. Without it, the user's only options
+on an imperfect suggestion are "accept the wrong thing" or "skip and
+hope you re-pitch better next time" — both lossy.
+
+When it's OK to drop the Edit button:
+
+- **Single-tap confirmation cards** (merge a PR, restart a service, send
+  a draft already shown in chat) — the user already implicitly approved
+  the action upstream; the card is just the click. No refining needed.
+- **Multi-draft picker** (`Send A` / `Send B` / `Send C`) — Edit doesn't
+  make sense across N parallel drafts; if none fit, Skip silently
+  dismisses and the user can ask for new variants in chat.
+
+When in doubt, keep Edit. Cost of adding it: one button row. Cost of
+dropping it on a card the user wanted to refine: a regenerated card
+later, or worse, a dismissal that should have been a refinement.
 
 ### Single-tap confirmation — never make the user type "yes"
 

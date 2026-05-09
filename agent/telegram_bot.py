@@ -6106,37 +6106,41 @@ class Bot:
             self._agency_dispatch_custom(chat_id, target_thread, label, sender)
             return
 
-        # Default kinds (action / dismiss / refine): keep the keyboard
-        # visible so the user can re-tap to change their mind. Reset
-        # any prior pick so only the latest choice is highlighted.
-        # The URL row (if any) is glued in last so the deep-link to the
-        # spawned topic is always one tap away from the card.
+        # Skip / dismiss: just delete the card from the channel. The
+        # decision is already recorded in the DB via record_decision +
+        # set_status — so dedup and "did I weigh in?" tracking still
+        # work — but the card itself disappears from the user's feed.
+        # That's the right shape for a no-op: a skipped card adds zero
+        # value to the channel scrollback, and an "⏭ skipped" ack reply
+        # under it actively makes the feed noisier than not surfacing
+        # it at all.
+        if kind == "dismiss":
+            if msg_id:
+                try:
+                    self.call(
+                        "deleteMessage",
+                        chat_id=chat_id,
+                        message_id=msg_id,
+                    )
+                except Exception:
+                    LOG.exception("agency dismiss deleteMessage failed")
+            try:
+                agency_db.set_status(db, sugg_row["id"], "dismissed")
+            except Exception:
+                LOG.exception("agency_db set_status(dismissed) failed")
+            return
+
+        # Action / refine: keep the keyboard visible so the user can
+        # re-tap to change their mind. Reset any prior pick so only the
+        # latest choice is highlighted. The URL row (if any) is glued
+        # in last so the deep-link to the spawned topic is always one
+        # tap away from the card.
         self._agency_mark_picked(
             chat_id, msg_id, idx, kbd,
             reset_others=True,
             original_labels=original_labels,
             append_url_row=append_url_row,
         )
-
-        if kind == "dismiss":
-            try:
-                self.call(
-                    "sendMessage",
-                    chat_id=chat_id,
-                    message_thread_id=target_thread or None,
-                    text="⏭ skipped",
-                    reply_parameters={
-                        "message_id": msg_id,
-                        "allow_sending_without_reply": True,
-                    },
-                )
-            except Exception:
-                LOG.exception("agency dismiss ack failed")
-            try:
-                agency_db.set_status(db, sugg_row["id"], "dismissed")
-            except Exception:
-                LOG.exception("agency_db set_status(dismissed) failed")
-            return
 
         try:
             agency_db.set_worker_topic(db, sugg_row["id"], work_thread)
