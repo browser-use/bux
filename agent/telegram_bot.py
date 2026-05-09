@@ -1921,23 +1921,25 @@ class ShellSession:
             # Anthropic's OAuth (claude.ai/login?...returnTo=/oauth/authorize)
             # refuses to complete inside Telegram's in-app browser — claude.ai
             # detects the embedded WebKit user-agent and the redirect chain
-            # silently breaks. Tapping the inline [Open] button on iOS opens
-            # in that in-app browser by default, so the user has to copy the
-            # link and paste into a real browser. Lead with that hint and
-            # keep the [Open] button only as a fallback for users who've
-            # set Telegram → Settings → Browser to "Default browser".
+            # silently breaks. The user has to copy the link and paste into
+            # a real browser. Wrap the URL in a fenced code block so TG's
+            # built-in code-block copy icon is right next to it (the inline
+            # [Copy link] button below is a backup; copy_text reply markup
+            # only works on TG clients ≥ Bot API 7.7, and the in-message
+            # copy icon ships with every TG client back to ~2018).
             if "claude.ai/login" in url or "/oauth/authorize" in url:
                 self.bot.send(
                     self.chat_id,
                     "Open this Claude sign-in link:\n"
-                    f"{url}\n\n"
+                    f"```\n{url}\n```\n"
                     "⚠️ Telegram's in-app browser breaks Anthropic's "
-                    "OAuth flow. Tap *Copy link* and paste into Chrome "
-                    "(Safari sometimes shows a stale-cookie error — "
-                    "Chrome is the safe choice).",
+                    "OAuth flow. Tap the copy icon (top-right of the "
+                    "block above) or *Copy link* below, then paste into "
+                    "Chrome (Safari sometimes shows a stale-cookie error "
+                    "— Chrome is the safe choice).",
                     thread_id=self.thread_id,
                     markdown=True,
-                    reply_markup=_url_reply_markup(url),
+                    reply_markup=_oauth_url_reply_markup(url),
                 )
                 continue
             self.bot.send(
@@ -2452,6 +2454,21 @@ def _url_reply_markup(url: str) -> dict:
     }
 
 
+def _oauth_url_reply_markup(url: str) -> dict:
+    """OAuth-flavored variant of _url_reply_markup — Copy first, Open second.
+
+    For Claude's claude.ai/login flow the user almost always needs to copy
+    the URL out of Telegram's in-app browser (which breaks the OAuth
+    redirect chain) and paste into Chrome. Lead with copy.
+    """
+    return {
+        "inline_keyboard": [
+            [{"text": "Copy link", "copy_text": {"text": url}}],
+            [{"text": "Open", "url": url}],
+        ]
+    }
+
+
 def _is_codex_auth_error(text: str) -> bool:
     low = (text or "").lower()
     return (
@@ -2463,11 +2480,28 @@ def _is_codex_auth_error(text: str) -> bool:
 
 def _is_claude_auth_error(text: str) -> bool:
     low = (text or "").lower()
-    return (
+    # First: the explicit "you're not logged in" shapes.
+    if (
         "not logged in" in low
-        or "please run" in low and "claude" in low and "login" in low
+        or ("please run" in low and "claude" in low and "login" in low)
         or "claude auth login" in low
-    )
+    ):
+        return True
+    # Second: 401s from the Anthropic API when the saved credential is
+    # rejected (expired token, revoked key, etc.). Claude prints something
+    # like:
+    #   Failed to authenticate. API Error: 401 {"type":"error","error":
+    #   {"type":"authentication_error","message":"Invalid authentication
+    #   credentials"},"request_id":"req_..."}
+    # The shape is stable across recent CLI versions; match a couple of
+    # independent fingerprints so a wording tweak in one doesn't slip past.
+    if "authentication_error" in low:
+        return True
+    if "invalid authentication credentials" in low:
+        return True
+    if "failed to authenticate" in low and "401" in low:
+        return True
+    return False
 
 
 def _normalize_login_provider_name(name: str) -> str:
