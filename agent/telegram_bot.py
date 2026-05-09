@@ -1936,7 +1936,10 @@ class ShellSession:
                     "OAuth flow. Tap the copy icon (top-right of the "
                     "block above) or *Copy link* below, then paste into "
                     "Chrome (Safari sometimes shows a stale-cookie error "
-                    "— Chrome is the safe choice).",
+                    "— Chrome is the safe choice).\n\n"
+                    "If Claude sign-in keeps failing, switch this topic "
+                    "to Codex with `/codex` and run `/codex login` "
+                    "instead — different auth path, same agent surface.",
                     thread_id=self.thread_id,
                     markdown=True,
                     reply_markup=_oauth_url_reply_markup(url),
