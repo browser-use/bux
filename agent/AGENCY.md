@@ -280,6 +280,49 @@ Default 3-button set, label adapts to spawn-mode:
 (which *does* take JSON). The helper has a defensive coercion for accidental
 JSON, but write plain strings.
 
+### Single-tap confirmation — never make the user type "yes"
+
+If the agent is mid-flight and needs the user to **confirm a small step** —
+"merge it?", "restart bux-tg now?", "ack done?", "send the draft?", "deploy?"
+— do NOT post a question and wait for typed input. Post a card with **one
+button** that captures the entire confirmation:
+
+```bash
+agency-report \
+  --title "Merge PR #119 (image-first doctrine, +68 LOC docs)" \
+  --subhead "skill update on main → next agency batch picks it up" \
+  --image-text "MERGE PR #119\nimage doctrine\non main, +68 LOC" \
+  --button "✅ Yes, merge now" \
+  --source confirm-merge-pr-119 \
+  --prompt "gh -R browser-use/bux pr merge 119 --squash --delete-branch"
+```
+
+**Core principle: each user interaction should cost one tap, not one
+keystroke.** Typing "yes" requires opening the keyboard, switching modes,
+selecting send. A button is a single phone-screen tap. For confirmations
+that have already been spelled out earlier in the conversation, the
+question is already asked — the only thing left is the click.
+
+When to use one-button confirmation cards:
+
+- **Merge a PR** the agent just opened
+- **Restart a service** after a config change
+- **Run a queued action** the user said yes to in chat ("yes, do that next")
+- **Acknowledge a milestone** the agent reports complete
+- **Send a draft** the agent has already shown in plain text
+
+When to keep the default 3-button set instead:
+
+- The card is the **first surface** of a new proposal (yes / skip / refine
+  is the right shape because the user might not be sold yet)
+- Multiple drafts to pick from (use the smart-label pattern above)
+- A no-tap = silently dismiss is meaningful (default `⏭ Skip` carries that)
+
+The `agency-report --button "..."` flag overrides defaults; pass exactly
+**one** `--button` for a single-button card. No `Skip` or `Edit` is added
+when the override is used. If the user taps the button, the `--prompt` is
+dispatched to a worker topic (or in-place if `--no-spawn-topic`).
+
 **Picked-button visual treatment** — bold uppercase + framing arrows:
 
 | Default | After tap |
