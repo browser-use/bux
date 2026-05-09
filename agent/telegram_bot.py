@@ -5805,6 +5805,9 @@ class Bot:
             if data.startswith("agcy:"):
                 self._handle_agency_callback(cb, data)
                 return
+            if data == "close" or data.startswith("close:"):
+                self._handle_close_callback(cb)
+                return
             if data == "codex_login_retry":
                 msg = cb.get("message") or {}
                 chat = msg.get("chat") or {}
@@ -6343,6 +6346,79 @@ class Bot:
             )
         except Exception:
             LOG.exception("agency callback dispatch failed")
+
+    def _handle_close_callback(self, cb: dict) -> None:
+        """Process a Close-topic button tap.
+
+        callback_data: ``close`` (the legacy ``close:<thread>`` form is
+        accepted but ignored — the thread to close is always read from
+        ``cb.message.message_thread_id`` so the button means "close THIS
+        topic where the button lives", not whatever was encoded weeks
+        ago when the button was posted).
+
+        Calls Telegram's ``closeForumTopic``: the topic stays readable
+        but new non-admin posts are blocked, and the user's TG client
+        de-prioritizes closed topics so they fall out of the active
+        list. That matches the user's mental model — "mark this done,
+        I don't want to see it anymore" — without destroying history.
+
+        Owner-only. Requires the bot to be a supergroup admin with
+        ``can_manage_topics`` (asserted at startup via
+        setMyDefaultAdministratorRights). On permission failure the
+        user gets a toast and the button stays tappable so a retry
+        after fixing rights works.
+        """
+        msg = cb.get("message") or {}
+        chat = msg.get("chat") or {}
+        chat_id = chat.get("id")
+        if not chat_id:
+            return
+        sender = cb.get("from") or {}
+        owner = _owner_for(chat_id, self.state)
+        if owner and not _is_owner({"user_id": sender.get("id")}, owner):
+            self.call(
+                "answerCallbackQuery",
+                callback_query_id=cb["id"],
+                text="Only the box owner can close topics.",
+                show_alert=True,
+            )
+            return
+        thread_id = msg.get("message_thread_id") or 0
+        if not thread_id:
+            self.call(
+                "answerCallbackQuery",
+                callback_query_id=cb["id"],
+                text="No topic to close — this isn't a forum topic.",
+                show_alert=True,
+            )
+            return
+        resp = self.call(
+            "closeForumTopic",
+            chat_id=chat_id,
+            message_thread_id=thread_id,
+        )
+        if not resp.get("ok"):
+            desc = (resp.get("description") or "")[:160]
+            self.call(
+                "answerCallbackQuery",
+                callback_query_id=cb["id"],
+                text=f"Couldn't close: {desc or 'check bot admin rights'}",
+                show_alert=True,
+            )
+            return
+        self.call(
+            "answerCallbackQuery",
+            callback_query_id=cb["id"],
+            text="✅ topic closed",
+        )
+        mid = msg.get("message_id")
+        if mid:
+            self.call(
+                "editMessageReplyMarkup",
+                chat_id=chat_id,
+                message_id=mid,
+                reply_markup={"inline_keyboard": []},
+            )
 
 
 def _consume_update_request_lanes() -> set["LaneKey"]:

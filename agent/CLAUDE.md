@@ -265,6 +265,20 @@ claude -p "summarize my email" | tg-send        # the recurring use case
 - Output > 4 KB is truncated with `…(truncated)` so a long claude reply doesn't 400.
 - Honors `TG_THREAD_ID` and `TG_REPLY_TO` from the env. The bot exports these for every agent invocation, so a backgrounded `tg-send` from inside your turn lands back in the same forum topic.
 
+### `tg-done` — finish-and-offer-to-close-the-topic
+
+When the user spun up a forum topic for a discrete task ("draft this email", "fix this bug", "send Charles the decline") and you've actually finished it, end the turn with `tg-done` instead of `tg-send`. It posts your final reply with a single inline button — **🗂 Close topic** — that closes the TG forum topic when tapped. Closed topics stay readable but fall out of the user's active list, so they don't pile up after a string of small completed tasks.
+
+```bash
+tg-done "done — sent the email. log marked status:done."
+echo "all clear" | tg-done
+```
+
+- Forum topic only. Outside a topic (`TG_THREAD_ID` empty or `0`), it falls back to plain `tg-send` — closeForumTopic doesn't apply to the general chat anyway.
+- Owner-gated on tap. Only the bound box owner can actually close.
+- Use it for **completion**, not for "kicked off a background worker" or "asking a follow-up question." If the topic still has live work, `tg-send` is right; `tg-done` says "this thread is done, hide it."
+- It's a one-shot final message, not a replacement for `tg-send` mid-task. Most agent turns should still use `tg-send`.
+
 ### One-shot reminders (`at`)
 
 ```bash

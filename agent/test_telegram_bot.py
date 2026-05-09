@@ -173,3 +173,103 @@ def test_no_owner_env_falls_through_to_token_path(bot, monkeypatch):
     # /start <correct_token> binds
     bot.handle(_msg_private(OWNER_USER_ID, text=f"/start {SETUP_TOKEN}"))
     assert len(bot._bind_calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# Close-topic button callback (tg-done)
+# ---------------------------------------------------------------------------
+
+
+def _cb(data: str, *, chat_id: int, thread_id: int | None, sender_id: int) -> dict:
+    """Synthetic callback_query payload for the close-button tap path."""
+    msg: dict = {
+        "message_id": 42,
+        "chat": {"id": chat_id, "type": "supergroup"},
+    }
+    if thread_id is not None:
+        msg["message_thread_id"] = thread_id
+    return {
+        "id": "cb-1",
+        "data": data,
+        "from": {"id": sender_id, "first_name": "Test"},
+        "message": msg,
+    }
+
+
+@pytest.fixture
+def bot_with_owner(bot, monkeypatch):
+    """Bot bound to a chat with OWNER_USER_ID as the recorded owner."""
+    chat_id = -100200300
+    bot.state["owners"] = {str(chat_id): {"user_id": str(OWNER_USER_ID)}}
+    bot._chat_id = chat_id  # type: ignore[attr-defined]
+    calls: list[tuple[str, dict]] = []
+
+    def _call_spy(self, method, **params):
+        calls.append((method, params))
+        # closeForumTopic + answerCallbackQuery + editMessageReplyMarkup
+        # all return {ok: True} so the handler proceeds through the happy
+        # path. Tests that need the failure branch override this.
+        return {"ok": True}
+
+    monkeypatch.setattr(tb.Bot, "call", _call_spy)
+    bot._call_log = calls  # type: ignore[attr-defined]
+    return bot
+
+
+def test_close_callback_owner_closes_topic_and_strips_button(bot_with_owner):
+    """Owner taps Close topic in a forum topic → bot calls closeForumTopic
+    with the topic's thread_id, acks the tap, and strips the button."""
+    bot = bot_with_owner
+    chat_id = bot._chat_id
+    bot._handle_callback_query(_cb(
+        "close", chat_id=chat_id, thread_id=7, sender_id=OWNER_USER_ID,
+    ))
+    methods = [m for m, _ in bot._call_log]
+    assert "closeForumTopic" in methods
+    close_params = next(p for m, p in bot._call_log if m == "closeForumTopic")
+    assert close_params["chat_id"] == chat_id
+    assert close_params["message_thread_id"] == 7
+    assert any(m == "editMessageReplyMarkup" for m, _ in bot._call_log)
+    assert any(m == "answerCallbackQuery" for m, _ in bot._call_log)
+
+
+def test_close_callback_stranger_blocked(bot_with_owner):
+    """Non-owner taps Close topic → alert toast, no closeForumTopic call."""
+    bot = bot_with_owner
+    bot._handle_callback_query(_cb(
+        "close", chat_id=bot._chat_id, thread_id=7, sender_id=STRANGER_USER_ID,
+    ))
+    methods = [m for m, _ in bot._call_log]
+    assert "closeForumTopic" not in methods
+    answer = next(p for m, p in bot._call_log if m == "answerCallbackQuery")
+    assert answer.get("show_alert") is True
+    assert "owner" in (answer.get("text") or "").lower()
+
+
+def test_close_callback_outside_forum_topic_alerts(bot_with_owner):
+    """Owner taps Close topic in the general chat (no message_thread_id)
+    → alert toast, no closeForumTopic call (would 400 anyway)."""
+    bot = bot_with_owner
+    bot._handle_callback_query(_cb(
+        "close", chat_id=bot._chat_id, thread_id=None, sender_id=OWNER_USER_ID,
+    ))
+    methods = [m for m, _ in bot._call_log]
+    assert "closeForumTopic" not in methods
+    answer = next(p for m, p in bot._call_log if m == "answerCallbackQuery")
+    assert answer.get("show_alert") is True
+    assert "topic" in (answer.get("text") or "").lower()
+
+
+def test_close_callback_legacy_thread_form_accepted(bot_with_owner):
+    """Legacy callback_data `close:<thread>` still routes to the close
+    handler — the encoded thread is ignored in favor of the message's
+    own message_thread_id, but the prefix shouldn't be rejected."""
+    bot = bot_with_owner
+    bot._handle_callback_query(_cb(
+        "close:99", chat_id=bot._chat_id, thread_id=7, sender_id=OWNER_USER_ID,
+    ))
+    methods = [m for m, _ in bot._call_log]
+    assert "closeForumTopic" in methods
+    close_params = next(p for m, p in bot._call_log if m == "closeForumTopic")
+    # message.message_thread_id wins over the callback_data-encoded value.
+    assert close_params["message_thread_id"] == 7

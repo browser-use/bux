@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# tg-done — post a "task complete" message with a "🗂 Close topic" button.
+#
+# Use at the end of an agent turn that finished a discrete task in a forum
+# topic. Tapping the button calls Telegram's closeForumTopic so the topic
+# is marked done — it stays readable but falls out of the user's active
+# list, matching the "I'm done with this, hide it" mental model.
+#
+# Usage:
+#   tg-done "all done — sent the email"        # arg form
+#   echo "all done" | tg-done                  # stdin form
+#
+# Outside a forum topic (TG_THREAD_ID empty / 0), no button is shown — the
+# Bot API rejects closeForumTopic on the general chat anyway, and an
+# unbacked button is worse than no button. Falls back to plain tg-send.
+#
+# Honors TG_CHAT_ID, TG_THREAD_ID, and reads TG_BOT_TOKEN from
+# /etc/bux/tg.env. Owner gating happens on the tap, not here.
+set -euo pipefail
+
+if [ "$#" -eq 0 ]; then
+  text="$(cat)"
+else
+  text="$*"
+fi
+text="${text%$'\n'}"
+[ -n "$text" ] || { echo "tg-done: empty body" >&2; exit 2; }
+
+env_file=/etc/bux/tg.env
+allow_file=/etc/bux/tg-allowed.txt
+[ -r "$env_file" ] || { echo "tg-done: cannot read $env_file" >&2; exit 1; }
+[ -r "$allow_file" ] || { echo "tg-done: no bound chat (run /start in TG first)" >&2; exit 1; }
+
+# shellcheck disable=SC1090
+. "$env_file"
+[ -n "${TG_BOT_TOKEN:-}" ] || { echo "tg-done: TG_BOT_TOKEN missing" >&2; exit 1; }
+
+chat_id="${TG_CHAT_ID:-$(awk 'NF{print; exit}' "$allow_file")}"
+[ -n "$chat_id" ] || { echo "tg-done: empty chat_id" >&2; exit 1; }
+
+thread_id="${TG_THREAD_ID:-0}"
+
+# Outside a forum topic, fall back to plain text — closeForumTopic only
+# works on supergroups with topics enabled.
+if [ -z "$thread_id" ] || [ "$thread_id" = "0" ]; then
+  exec tg-send "$text"
+fi
+
+markup='{"inline_keyboard":[[{"text":"🗂 Close topic","callback_data":"close"}]]}'
+body=$(jq -nc \
+  --arg c "$chat_id" \
+  --arg t "$text" \
+  --argjson th "$thread_id" \
+  --argjson m "$markup" \
+  '{chat_id: ($c|tonumber), message_thread_id: $th, text: $t, reply_markup: $m}')
+
+curl -fsS -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+  --max-time 15 \
+  -H 'Content-Type: application/json' \
+  -d "$body" \
+  > /dev/null
