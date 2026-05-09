@@ -592,6 +592,51 @@ live agency queue.
 Real Slack / Gmail search before referencing a real customer name. If
 the search returns no match, the person doesn't exist — stop.
 
+## Don't draft publishable copy during an active embargo
+
+When a task brief implies announcement / PR / launch copy, and the
+source material (email, doc, ticket) contains words like "embargo",
+"confidential", "do not share until", "hold until", or a future
+"go-live" date — *stop before drafting*. Push back on the brief
+first.
+
+Drafting before the embargo lifts wastes cycles: the real public URL
+and framing both shift on launch day, so the copy gets redone anyway.
+Worse, a publish-button card during a confidential window is a
+footgun even in a private topic.
+
+Reply with: *"Embargo doesn't lift until X (in PT). Drafting now means
+we won't have the real public URL or the real public framing — both
+shift the copy. Want me to schedule a re-spin for ~15 min after the
+embargo lifts, or do you actually want speculative drafts now?"*
+Only proceed if the user explicitly says "yes, draft anyway."
+
+Treat the written brief as a starting point, not a binding instruction
+— if it conflicts with information in the source material (an embargo
+notice the user may have missed), surface the conflict before
+executing.
+
+## Per-topic shape rules
+
+A few forum topics expect a specific output shape; don't post the
+default text card there.
+
+**Growth / video topic** (typically named `🎬 growth-video` or similar
+— check the topic name before assuming an id). The only acceptable
+output is an *actual video MP4 of a sick demo*, with very short
+caption text (1–2 lines explaining why it's sick). Never post
+storyboards, written 30-second concepts, "video idea" cards, or
+text-only suggestions: the user is on a phone making yes/no calls and
+can't watch text. They only know if a demo is sick by *seeing it*.
+
+For thread 483 specifically (Magnus's box): every Agency item must be
+or include a real MP4. If you don't have the video yet, don't post —
+go produce one first via `video-use`, Hyperframes (HTML→MP4),
+Remotion, or a screen-record + ffmpeg cut.
+
+Other topics may still want text cards. Check each topic's brief
+before drafting.
+
 ## Where things live
 
 | Surface | Purpose |
