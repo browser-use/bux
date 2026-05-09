@@ -624,6 +624,27 @@ def main() -> int:
     if args.info_only and args.button:
         sys.exit("agency-report: --info-only and --button are mutually exclusive.")
 
+    # --prompt is required for cards that use the default Yes/Skip/Edit
+    # buttons. Without it, a Yes-tap dispatches the button LABEL itself
+    # ("🧵 Yes (new thread)") as the agent prompt, which is useless. Fail
+    # loudly here so the broken card never gets posted.
+    # --info-only cards have no buttons at all → no dispatch → no prompt
+    # needed. --button (custom) cards use synthesized "[agency-button]
+    # LABEL" dispatch instead of args.prompt → still works without a
+    # prompt, but it's good practice to set one.
+    if not args.info_only and not args.button and not (args.prompt or "").strip():
+        sys.exit(
+            "agency-report: --prompt is required for default-button cards.\n"
+            "It's the action the agent runs when the user taps Yes/Edit.\n"
+            "Without it, the Yes-tap dispatches the button label itself\n"
+            "(e.g. '🧵 Yes (new thread)') as the prompt — useless to the\n"
+            "spawned agent.\n\n"
+            "Pass one of:\n"
+            "  --prompt \"<the action to run on yes-tap>\"  (typical)\n"
+            "  --info-only                                 (FYI cards, no action)\n"
+            "  --button \"...\" --button \"...\"             (custom buttons)"
+        )
+
     db = agency_db.conn()
 
     # spawn_topic auto-default: if the user didn't pass --spawn-topic /
