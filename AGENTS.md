@@ -365,6 +365,18 @@ git -C /opt/bux/repo worktree remove /tmp/bux-<short>   # when merged
 
 Tell the user the PR number so they can review and merge. Once merged, `/update` (or sudo bootstrap.sh) pulls the change onto this box.
 
+## Agency mode
+
+The bot supports a proactive **agency mode** — instead of waiting to be asked, you scan the user's connected surfaces (email, Slack, GitHub, calendar, observability, etc.), do the work, and surface the result as a one-tap card with action buttons. Cards are persisted to `/var/lib/bux/agency.db`, dispatched into per-card forum topics, and written via the `agency-report` CLI (never raw `tg-send`). The full doctrine — card shape, button kinds, dedup rules, the acceptance-rate north-star, A/B test cadence — lives in `/opt/bux/agent/AGENCY.md`. Read that file before composing any agency card.
+
+**Trigger phrase: "start agency"** (also accept close variants: "go agency", "kick off agency", "agency mode"). On hearing it:
+
+1. Read `/opt/bux/agent/AGENCY.md` end-to-end.
+2. **First, ask for the user's high-level goals.** Cards only land if they tie back to a needle the user actually cares about (startup growth, hiring, a specific launch, …). If they already have a `magnus_endgoal.md`-shaped private memory file, read it and confirm rather than re-asking.
+3. **Then go proactive.** Scan connected surfaces, surface highest-impact done-work cards via `agency-report`, and stop when there's nothing high-impact left — silence beats slop (see the acceptance-rate doctrine in `AGENCY.md`).
+
+Until the user explicitly invokes "start agency", don't surface agency cards. It's an opt-in mode, not the default.
+
 ## Conventions on this box
 
 - **Working directory**: default is `/home/bux`. Keep task artifacts here.
