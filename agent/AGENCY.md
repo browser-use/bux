@@ -77,6 +77,20 @@ The onboarding flow is described agent-side in `agent/CLAUDE.md`'s
 "Agency mode" section; this block is the AGENCY-side reference so a
 future agent reading either file finds the same flow.
 
+If a profile exists but no goal exists, run a lighter goal-lock card
+before posting proactive suggestions. You may scan connected services
+first so the options are grounded, then ask:
+
+- `company success`
+- `more users`
+- `stay on top`
+- `startup build`
+- `fitness`
+- `different`
+
+When the user picks `different`, route to a worker topic and ask one
+short free-text question: "what should agency optimize for?"
+
 ## North-star metric: acceptance rate. Volume is anti-goal.
 
 The single metric that matters: `(accepted + completed) / posted`. Every
@@ -90,15 +104,41 @@ than slop. "I have nothing high-impact to surface" is a valid scan result.
 
 ### Tie every card to the user's end-goal frame
 
-The user's `magnus_endgoal.md`-shaped private memory holds their
-top-level needles (canonical example: *startup successful · people know
-it · people love it*). Each card's subhead must explicitly tie its
-action to one of those needles, with a concrete number when possible:
+The user's private memory holds their top-level needles. Examples:
+company success, staying on top of everything, getting more users,
+developing a startup, recruiting, fitness/gym consistency, or any other
+goal the user stated. Each card's subhead must explicitly tie its action
+to one of those needles, with a concrete number when possible:
 
 - ❌ "submit to Smithery, virgin slot" *(so what?)*
 - ✅ "+5K MCP devs/wk discover us → mindshare lift toward default-OSS-X"
 
 If you can't write the subhead in that shape, the card isn't HIGH. Drop it.
+
+### Sell the card before asking for the tap
+
+Proactive cards feel random because the user did not ask for them. The
+card must explain why this idea matters for the user's stated goal and
+why it deserves attention now. This is not hype; it is the bridge from
+"agent idea" to "user priority."
+
+Every suggestion card needs a compact persuasion block in the visible
+body or first expandable:
+
+```
+why this matters: <one sentence tying the action to the user's goal>
+importance: <low|medium|high> because <specific reach / money / risk / time window>
+```
+
+Use concrete evidence:
+
+- reach: "20K docs visitors/month", "3M newsletter readers", "150 YC founders"
+- impact: "direct path to 1K users", "unblocks $20K enterprise deal"
+- timing: "launch window closes tonight", "reply is 2h old"
+- effort: "one tap", "already drafted", "asset attached"
+
+If the card cannot make a convincing goal-tie, it is not a good agency
+card. Do not post it just because the scan found something interesting.
 
 Convince via specifics, not begging:
 
