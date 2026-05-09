@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""
+Post a canonical agency card to Telegram.
+
+Layout (locked):
+  [optional image]
+  emoji + bold headline
+  italic source link · timestamp
+  optional 1-line subhead
+  expandable: draft / actionable content
+  expandable: reasoning / why now
+  buttons: row1 = [primary][skip], row2 = [third]
+
+Reads card spec as JSON from stdin (or --json arg). Posts to chat_id/thread_id
+from the spec, falling back to TG_CHAT_ID / TG_THREAD_ID env. Prints
+{ok, message_id, chat_id} on stdout.
+
+Spec fields (all optional except headline):
+  emoji            — prepended to headline
+  headline         — required, bold
+  source           — short label like "GitHub #347"
+  source_url       — makes the source clickable
+  subhead          — one-line under the source/headline
+  image            — direct URL to image
+  image_text       — alt: shorthand text → auto-generated placehold.co card
+  draft            — goes in first expandable block
+  draft_title      — default "Drafted action"
+  draft_emoji      — default 📝
+  reasoning        — goes in second expandable block
+  reasoning_title  — default "Why"
+  reasoning_emoji  — default 💭
+  primary          — {text, callback_data | url}        row 1 left
+  skip             — {text, callback_data | url}        row 1 right
+  third            — {text, callback_data | url}        row 2 alone
+  chat_id, thread_id — override env
+
+By default, headline / subhead / draft / reasoning / source are HTML-escaped
+(safe for arbitrary user-supplied text). To embed raw HTML formatting, use the
+`_html` suffix on any of those keys: e.g. `draft_html` instead of `draft`.
+URLs are always HTML-escaped.
+
+Image path: if total caption ≤ 1024 chars, sent via sendPhoto. Otherwise
+sent via sendMessage with link_preview_options (large image above text).
+Both render visually identical.
+"""
+import os, sys, json, html, urllib.parse, urllib.request, urllib.error
+
+TOKEN = None
+try:
+    with open("/etc/bux/tg.env") as f:
+        for line in f:
+            if line.startswith("TG_BOT_TOKEN="):
+                TOKEN = line.strip().split("=", 1)[1].strip().strip('"').strip("'")
+                break
+except FileNotFoundError:
+    pass
+if not TOKEN:
+    sys.stderr.write("no TG_BOT_TOKEN in /etc/bux/tg.env\n")
+    sys.exit(1)
+
+API = f"https://api.telegram.org/bot{TOKEN}"
+
+
+def call(method, payload):
+    req = urllib.request.Request(
+        f"{API}/{method}",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return {"ok": False, "error_code": e.code, "description": e.read().decode("utf-8", "replace")}
+
+
+def field(card: dict, key: str, default=None):
+    """Return raw HTML if `<key>_html` is set, else escape `<key>`."""
+    if f"{key}_html" in card:
+        return card[f"{key}_html"]
+    val = card.get(key, default)
+    if val is None:
+        return None
+    return html.escape(val, quote=False)
+
+
+def build_body(card: dict) -> str:
+    parts = []
+    emoji = card.get("emoji", "").strip()
+    headline = field(card, "headline")
+    parts.append(f"{emoji} <b>{headline}</b>".lstrip())
+
+    src = field(card, "source")
+    src_url = card.get("source_url")
+    if src and src_url:
+        parts.append(f'<i>source: <a href="{html.escape(src_url, quote=True)}">{src}</a></i>')
+    elif src:
+        parts.append(f"<i>source: {src}</i>")
+
+    subhead = field(card, "subhead")
+    if subhead:
+        parts.append(subhead)
+
+    draft = field(card, "draft")
+    if draft:
+        t = html.escape(card.get("draft_title", "Drafted action"), quote=False)
+        e = card.get("draft_emoji", "📝")
+        parts.append(f"\n<blockquote expandable>{e} <b>{t}</b>\n{draft}</blockquote>")
+
+    reasoning = field(card, "reasoning")
+    if reasoning:
+        t = html.escape(card.get("reasoning_title", "Why"), quote=False)
+        e = card.get("reasoning_emoji", "💭")
+        parts.append(f"<blockquote expandable>{e} <b>{t}</b>\n{reasoning}</blockquote>")
+
+    return "\n".join(parts)
+
+
+def build_keyboard(card: dict):
+    row1 = []
+    for k in ("primary", "skip"):
+        v = card.get(k)
+        if v and "text" in v:
+            row1.append(v)
+    rows = []
+    if row1:
+        rows.append(row1)
+    third = card.get("third")
+    if third and "text" in third:
+        rows.append([third])
+    return {"inline_keyboard": rows} if rows else None
+
+
+def resolve_image(card: dict):
+    if card.get("image"):
+        return card["image"]
+    text = card.get("image_text")
+    if text:
+        encoded = urllib.parse.quote(text)
+        return f"https://placehold.co/1200x630/2a0a3a/ff66cc/png?text={encoded}"
+    return None
+
+
+def main():
+    if "--json" in sys.argv:
+        idx = sys.argv.index("--json")
+        raw = sys.argv[idx + 1]
+    else:
+        raw = sys.stdin.read()
+    if not raw.strip():
+        sys.stderr.write("agency-card: no JSON input\n")
+        sys.exit(2)
+    try:
+        card = json.loads(raw)
+    except Exception as e:
+        sys.stderr.write(f"agency-card: bad JSON: {e}\n")
+        sys.exit(2)
+    if "headline" not in card:
+        sys.stderr.write("agency-card: headline is required\n")
+        sys.exit(2)
+
+    chat_id = card.get("chat_id") or os.environ.get("TG_CHAT_ID")
+    thread_id = card.get("thread_id") or os.environ.get("TG_THREAD_ID")
+    if not chat_id:
+        sys.stderr.write("agency-card: no chat_id (set TG_CHAT_ID or include in spec)\n")
+        sys.exit(2)
+
+    body = build_body(card)
+    keyboard = build_keyboard(card)
+    image = resolve_image(card)
+
+    base = {"chat_id": int(chat_id), "parse_mode": "HTML"}
+    if thread_id:
+        base["message_thread_id"] = int(thread_id)
+    if keyboard:
+        base["reply_markup"] = keyboard
+
+    if image and len(body) <= 1024:
+        payload = {**base, "photo": image, "caption": body}
+        result = call("sendPhoto", payload)
+    elif image:
+        text = f'<a href="{html.escape(image, quote=True)}">​</a>{body}'
+        payload = {
+            **base,
+            "text": text,
+            "link_preview_options": {
+                "url": image, "prefer_large_media": True, "show_above_text": True
+            },
+        }
+        result = call("sendMessage", payload)
+    else:
+        payload = {**base, "text": body, "disable_web_page_preview": True}
+        result = call("sendMessage", payload)
+
+    if result.get("ok"):
+        msg = result["result"]
+        print(json.dumps({"ok": True, "message_id": msg["message_id"], "chat_id": msg["chat"]["id"]}))
+    else:
+        sys.stderr.write(json.dumps(result) + "\n")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

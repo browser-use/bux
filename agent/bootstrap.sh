@@ -94,6 +94,7 @@ fi
 ln -sfn "$REPO_DIR/agent/tg-send"        /usr/local/bin/tg-send
 ln -sfn "$REPO_DIR/agent/tg-buttons"     /usr/local/bin/tg-buttons
 ln -sfn "$REPO_DIR/agent/agency-report"  /usr/local/bin/agency-report
+ln -sfn "$REPO_DIR/agent/agency-card"    /usr/local/bin/agency-card
 ln -sfn "$REPO_DIR/agent/bux-restart"    /usr/local/bin/bux-restart
 
 # Agency DB lives at /var/lib/bux/agency.db (created by agency_db on
