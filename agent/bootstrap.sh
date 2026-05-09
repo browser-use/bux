@@ -96,6 +96,19 @@ ln -sfn "$REPO_DIR/agent/tg-buttons"     /usr/local/bin/tg-buttons
 ln -sfn "$REPO_DIR/agent/agency-report"  /usr/local/bin/agency-report
 ln -sfn "$REPO_DIR/agent/bux-restart"    /usr/local/bin/bux-restart
 
+# --- ~/AGENTS.md symlink for codex -----------------------------------------
+# install.sh creates `/home/bux/AGENTS.md → /home/bux/CLAUDE.md` on first
+# boot so codex (which reads AGENTS.md from cwd-and-up) inherits the same
+# system prompt as claude. Boxes provisioned BEFORE that line landed in
+# install.sh end up with no AGENTS.md, leaving codex with no operating
+# manual at runtime. Re-assert here on every update so existing boxes
+# self-heal. Idempotent: -f forces replacement if a stale entry exists,
+# -n keeps it from de-referencing through an existing symlink directory.
+if [ -e /home/bux/CLAUDE.md ]; then
+  ln -sfn /home/bux/CLAUDE.md /home/bux/AGENTS.md
+  chown -h bux:bux /home/bux/AGENTS.md
+fi
+
 # Agency DB lives at /var/lib/bux/agency.db (created by agency_db on
 # first use). Make sure the directory is writable by `bux` so any
 # agency-report invocation can init the schema without sudo.

@@ -1663,6 +1663,7 @@ class ShellSession:
         auto_enter_after_input_sec: float | None = None,
         close_on_success_patterns: tuple[str, ...] = (),
         success_message: str | None = None,
+        minimal_login_mode: bool = False,
     ) -> None:
         self.bot = bot
         self.chat_id = chat_id
@@ -1673,6 +1674,15 @@ class ShellSession:
         self.auto_enter_after_input_sec = auto_enter_after_input_sec
         self.close_on_success_patterns = tuple(p.lower() for p in close_on_success_patterns)
         self.success_message = success_message
+        # When True the session is driving an OAuth/device-auth login: the
+        # user only needs the URL out and the code in. Suppress the
+        # terminal preamble, the bash output stream, and the verbose URL
+        # bubble; surface the OAuth URL as a single [📋 Copy link] button
+        # plus a one-line "paste the code here" prompt. The session runs
+        # the same shell underneath — this flag only changes what we
+        # surface back to TG.
+        self.minimal_login_mode = minimal_login_mode
+        self._minimal_paste_prompt_sent = False
         self.master_fd: int | None = None
         self.process: subprocess.Popen | None = None
         self._buffer = bytearray()
@@ -1750,20 +1760,34 @@ class ShellSession:
         with _shell_sessions_lock:
             _shell_sessions[self.slug] = self
 
-        ack_lines = [
-            "💻 *terminal session started*",
-            "_replies go straight to the shell — /interrupt sends Ctrl-C, "
-            "/enter sends a blank Enter, /exit asks bash to close, /cancel hard-kills_",
-        ]
-        if self.initial_cmd:
-            ack_lines.append(f"running: `{self.initial_cmd}`")
-        self.bot.send(
-            self.chat_id,
-            "\n".join(ack_lines),
-            reply_to=self.reply_to,
-            thread_id=self.thread_id,
-            markdown=True,
-        )
+        if self.minimal_login_mode:
+            # Don't dump terminal-session help for an auth flow — the user
+            # never types into the shell directly here, just into TG. One
+            # short progress line is enough; the OAuth URL + paste prompt
+            # do the actual job.
+            self.bot.send(
+                self.chat_id,
+                "🔑 Starting sign-in… you'll get a *Copy link* button "
+                "in a moment.",
+                reply_to=self.reply_to,
+                thread_id=self.thread_id,
+                markdown=True,
+            )
+        else:
+            ack_lines = [
+                "💻 *terminal session started*",
+                "_replies go straight to the shell — /interrupt sends Ctrl-C, "
+                "/enter sends a blank Enter, /exit asks bash to close, /cancel hard-kills_",
+            ]
+            if self.initial_cmd:
+                ack_lines.append(f"running: `{self.initial_cmd}`")
+            self.bot.send(
+                self.chat_id,
+                "\n".join(ack_lines),
+                reply_to=self.reply_to,
+                thread_id=self.thread_id,
+                markdown=True,
+            )
 
         self._reader_thread = threading.Thread(
             target=self._reader,
@@ -1924,46 +1948,73 @@ class ShellSession:
             if "live.browser-use.com" in url:
                 continue
             if "auth.openai.com/codex/device" in url and codex_code:
-                self.bot.send(
-                    self.chat_id,
-                    "Open this Codex device-auth link:\n"
-                    f"{url}\n\n"
-                    "Enter this one-time code:\n"
-                    f"`{codex_code}`\n\n"
-                    "If OpenAI asks you to enable this sign-in method in "
-                    "security settings, enable it there, then press "
-                    "*Retry after enabling* below to restart the flow.",
-                    thread_id=self.thread_id,
-                    markdown=True,
-                    reply_markup=_codex_login_reply_markup(url, codex_code),
-                )
+                if self.minimal_login_mode:
+                    self.bot.send(
+                        self.chat_id,
+                        "🔑 *Sign in to Codex*\n"
+                        "Tap *Copy link* → open in your browser → enter "
+                        "the code, then come back here and paste the "
+                        "result. `/cancel` to abort.",
+                        thread_id=self.thread_id,
+                        markdown=True,
+                        reply_markup=_minimal_codex_login_markup(url, codex_code),
+                    )
+                    self._minimal_paste_prompt_sent = True
+                else:
+                    self.bot.send(
+                        self.chat_id,
+                        "Open this Codex device-auth link:\n"
+                        f"{url}\n\n"
+                        "Enter this one-time code:\n"
+                        f"`{codex_code}`\n\n"
+                        "If OpenAI asks you to enable this sign-in method in "
+                        "security settings, enable it there, then press "
+                        "*Retry after enabling* below to restart the flow.",
+                        thread_id=self.thread_id,
+                        markdown=True,
+                        reply_markup=_codex_login_reply_markup(url, codex_code),
+                    )
                 continue
             # Anthropic's OAuth (claude.ai/login?...returnTo=/oauth/authorize)
             # refuses to complete inside Telegram's in-app browser — claude.ai
             # detects the embedded WebKit user-agent and the redirect chain
             # silently breaks. The user has to copy the link and paste into
-            # a real browser. Wrap the URL in a fenced code block so TG's
-            # built-in code-block copy icon is right next to it (the inline
-            # [Copy link] button below is a backup; copy_text reply markup
-            # only works on TG clients ≥ Bot API 7.7, and the in-message
-            # copy icon ships with every TG client back to ~2018).
+            # a real browser. In minimal_login_mode we hand them just one
+            # button (Copy link) and a one-liner — no URL body, no warning,
+            # no Open button (Open opens in TG's in-app browser by default
+            # which is the broken path; better to not offer it). In normal
+            # mode we keep the verbose treatment for users running
+            # `/terminal claude auth login` directly.
             if "claude.ai/login" in url or "/oauth/authorize" in url:
-                self.bot.send(
-                    self.chat_id,
-                    "Open this Claude sign-in link:\n"
-                    f"```\n{url}\n```\n"
-                    "⚠️ Telegram's in-app browser breaks Anthropic's "
-                    "OAuth flow. Tap the copy icon (top-right of the "
-                    "block above) or *Copy link* below, then paste into "
-                    "Chrome (Safari sometimes shows a stale-cookie error "
-                    "— Chrome is the safe choice).\n\n"
-                    "If Claude sign-in keeps failing, switch this topic "
-                    "to Codex with `/codex` and run `/codex login` "
-                    "instead — different auth path, same agent surface.",
-                    thread_id=self.thread_id,
-                    markdown=True,
-                    reply_markup=_oauth_url_reply_markup(url),
-                )
+                if self.minimal_login_mode:
+                    self.bot.send(
+                        self.chat_id,
+                        "🔑 *Sign in to Claude*\n"
+                        "Tap *Copy link* → open in Chrome → finish "
+                        "sign-in → paste the code back here. `/cancel` "
+                        "to abort.",
+                        thread_id=self.thread_id,
+                        markdown=True,
+                        reply_markup=_minimal_oauth_url_markup(url),
+                    )
+                    self._minimal_paste_prompt_sent = True
+                else:
+                    self.bot.send(
+                        self.chat_id,
+                        "Open this Claude sign-in link:\n"
+                        f"```\n{url}\n```\n"
+                        "⚠️ Telegram's in-app browser breaks Anthropic's "
+                        "OAuth flow. Tap the copy icon (top-right of the "
+                        "block above) or *Copy link* below, then paste into "
+                        "Chrome (Safari sometimes shows a stale-cookie error "
+                        "— Chrome is the safe choice).\n\n"
+                        "If Claude sign-in keeps failing, switch this topic "
+                        "to Codex with `/codex` and run `/codex login` "
+                        "instead — different auth path, same agent surface.",
+                        thread_id=self.thread_id,
+                        markdown=True,
+                        reply_markup=_oauth_url_reply_markup(url),
+                    )
                 continue
             self.bot.send(
                 self.chat_id,
@@ -1971,18 +2022,24 @@ class ShellSession:
                 thread_id=self.thread_id,
                 reply_markup=_url_reply_markup(url),
             )
-        # Split into chunks that fit a TG message; each goes as its own
-        # monospace bubble. Leaves a margin for the ``` fences. Escape
-        # backslashes / backticks per MDV2 code-block rules — pre_rendered
-        # skips the converter so we have to do it ourselves.
-        for chunk in _split_into_code_bubbles(text, max_chars=3500):
-            escaped = _escape_mdv2_code(chunk)
-            self.bot.send(
-                self.chat_id,
-                f"```\n{escaped}\n```",
-                thread_id=self.thread_id,
-                pre_rendered=True,
-            )
+        # In minimal_login_mode the user only needs the OAuth URL out and
+        # the code in — bash prompts, "Paste code here if prompted >",
+        # progress dots, and the like add noise without value. Skip the
+        # code-bubble forwarding loop entirely; URLs above already
+        # surfaced the actionable bit.
+        if not self.minimal_login_mode:
+            # Split into chunks that fit a TG message; each goes as its own
+            # monospace bubble. Leaves a margin for the ``` fences. Escape
+            # backslashes / backticks per MDV2 code-block rules — pre_rendered
+            # skips the converter so we have to do it ourselves.
+            for chunk in _split_into_code_bubbles(text, max_chars=3500):
+                escaped = _escape_mdv2_code(chunk)
+                self.bot.send(
+                    self.chat_id,
+                    f"```\n{escaped}\n```",
+                    thread_id=self.thread_id,
+                    pre_rendered=True,
+                )
         self._maybe_close_after_success(text)
 
     def _maybe_close_after_success(self, text: str) -> None:
@@ -2492,6 +2549,54 @@ def _oauth_url_reply_markup(url: str) -> dict:
     }
 
 
+def _minimal_oauth_url_markup(url: str) -> dict:
+    """Single [📋 Copy link] button — the simplest OAuth UI possible.
+
+    Used in `minimal_login_mode` (auto-triggered login from the picker).
+    No Open button on purpose: Open lands in Telegram's in-app browser
+    which silently breaks claude.ai/login, so giving the user only a
+    Copy button is the safe default. The URL is not rendered in the
+    message body either — the user copies via the button and never
+    sees a wall of OAuth query params eat their phone screen.
+    """
+    return {
+        "inline_keyboard": [
+            [{"text": "📋 Copy link", "copy_text": {"text": url}}],
+        ]
+    }
+
+
+def _minimal_codex_login_markup(url: str, code: str) -> dict:
+    """Two-button minimal layout for Codex device-auth: Copy link + Copy code.
+
+    Same reasoning as `_minimal_oauth_url_markup`: the user copies, opens
+    in their real browser, enters the code, comes back. No Open button
+    (avoid the in-app browser path), no Retry button (the picker
+    callback re-fires the flow if needed).
+    """
+    return {
+        "inline_keyboard": [
+            [{"text": "📋 Copy link", "copy_text": {"text": url}}],
+            [{"text": "📋 Copy code", "copy_text": {"text": code}}],
+        ]
+    }
+
+
+def _login_picker_reply_markup() -> dict:
+    """Two-button picker shown when neither agent is signed in yet.
+
+    Tapping either button starts the corresponding minimal login flow.
+    Callback data shape: `login_pick:<provider>` where provider is
+    `claude` or `codex`. Routed through `_handle_callback_query`.
+    """
+    return {
+        "inline_keyboard": [
+            [{"text": "🟪 Sign in with Claude", "callback_data": "login_pick:claude"}],
+            [{"text": "🟩 Sign in with Codex",  "callback_data": "login_pick:codex"}],
+        ]
+    }
+
+
 def _is_codex_auth_error(text: str) -> bool:
     low = (text or "").lower()
     return (
@@ -2570,6 +2675,66 @@ def _claude_login_status() -> tuple[bool, str]:
     if "command not found" in out.lower():
         return False, "claude CLI not installed"
     return False, out or "not logged in"
+
+
+# --- cached login status -------------------------------------------------
+# `_claude_login_status` and `_CodexProvider.check` shell out to the
+# respective CLIs; each is ~hundreds of ms in the happy path and can hit
+# the 10s timeout if a CLI hangs. run_task wants to know "is this user
+# logged in?" on every dispatch so we can intercept fresh-user "hi" with
+# a sign-in picker instead of running claude → 401 → fallback. Cache the
+# result with a short TTL so the per-message overhead stays negligible
+# without the cache going stale across a logout.
+
+_LOGIN_STATUS_TTL_SEC = 60.0
+_login_status_cache: dict[str, tuple[bool, float]] = {}
+_login_status_lock = threading.Lock()
+
+
+def _login_status_cache_invalidate(provider: str | None = None) -> None:
+    """Drop the cached login state. provider=None clears all entries.
+
+    Called on login-flow start (so the next check goes live), on logout,
+    and when the picker callback fires the actual login. Keeps the
+    "user just signed in, dispatch the next message normally" path fast.
+    """
+    with _login_status_lock:
+        if provider is None:
+            _login_status_cache.clear()
+        else:
+            _login_status_cache.pop(provider, None)
+
+
+def _login_status_cached(provider: str) -> bool:
+    """Return whether `provider` is currently signed in, with a TTL cache.
+
+    On a cache miss / stale entry, runs the provider's check shell-out.
+    On any check failure (timeout, CLI missing, parse error), returns
+    False — the cost of a false-negative is showing the picker once,
+    which is cheap; the cost of a false-positive is dispatching to a
+    logged-out CLI and surfacing a 401 to the user.
+    """
+    now = time.time()
+    with _login_status_lock:
+        cached = _login_status_cache.get(provider)
+    if cached and (now - cached[1]) < _LOGIN_STATUS_TTL_SEC:
+        return cached[0]
+    if provider == "claude":
+        try:
+            ok, _ = _claude_login_status()
+        except Exception:
+            ok = False
+    elif provider == "codex":
+        try:
+            ok, _ = CODEX_AUTH_PROVIDER.check()
+        except Exception:
+            ok = False
+    else:
+        return False
+    with _login_status_lock:
+        _login_status_cache[provider] = (ok, now)
+    return ok
+
 
 AUTH_PROVIDERS: dict[str, object] = {
     "gh": _GhProvider(),
@@ -3373,6 +3538,22 @@ class Bot:
         # Bot.call so a reaction issue never poisons the dispatch.
         if reply_to:
             self.react(chat_id, reply_to, random_thinking_reaction())
+        # Upfront login gate: a fresh user signing up to bux who texts "hi"
+        # before signing into either CLI shouldn't sit through a 5s
+        # claude → 401 → fallback dance to discover they need to log in.
+        # Cached status check (60s TTL) is ~free after the first call,
+        # and on miss it shells out to `claude auth status` /
+        # `codex login status` (~hundreds of ms). If neither agent is
+        # signed in, surface the picker and skip the dispatch entirely.
+        # If at least one is signed in, dispatch normally — the auth-
+        # error fallback below still catches mid-session 401s for an
+        # expired credential.
+        if not _login_status_cached("claude") and not _login_status_cached("codex"):
+            owner = _owner_for(chat_id, self.state) or {}
+            sender_id = (sender or {}).get("user_id")
+            if not owner or not sender_id or _is_owner({"user_id": sender_id}, owner):
+                self._send_login_picker(chat_id, reply_to, thread_id)
+                return
         # Refine-context injection: if the user tapped Edit on an
         # agency card and this is their first reply in the worker
         # topic, look up the suggestion via the DB and prepend its
@@ -3651,21 +3832,13 @@ class Bot:
                     if not out:
                         out = (fb.stderr or "").strip() or f"(no output; rc={fb.returncode})"
                     if _is_claude_auth_error(out):
-                        self.send(
-                            chat_id,
-                            "Claude is not logged in. Starting `/login claude` now.",
-                            reply_to=reply_to,
-                            thread_id=thread_id,
-                            markdown=True,
-                        )
-                        self._cmd_claude_login(
-                            chat_id,
-                            reply_to,
-                            thread_id,
-                            slug,
-                            sender or {},
-                            _owner_for(chat_id, self.state),
-                        )
+                        # Cached status is now stale (a creds-expired 401
+                        # is the canonical "you got logged out" event).
+                        # Bust before showing the picker so subsequent
+                        # checks don't read a now-wrong "still logged in"
+                        # value from cache.
+                        _login_status_cache_invalidate("claude")
+                        self._send_login_picker(chat_id, reply_to, thread_id)
                         return
                     self.send(
                         chat_id,
@@ -3938,21 +4111,8 @@ class Bot:
                     pass
                 self.react(chat_id, reply_to, EMOJI_ERROR)
                 if _is_codex_auth_error(err):
-                    self.send(
-                        chat_id,
-                        "Codex auth failed with a 401. Starting `/codex login` now.",
-                        reply_to=reply_to,
-                        thread_id=thread_id,
-                        markdown=True,
-                    )
-                    self._start_login_provider(
-                        "codex",
-                        CODEX_AUTH_PROVIDER,
-                        chat_id,
-                        reply_to,
-                        thread_id,
-                        force=True,
-                    )
+                    _login_status_cache_invalidate("codex")
+                    self._send_login_picker(chat_id, reply_to, thread_id)
                     return
                 self.send(
                     chat_id,
@@ -4686,7 +4846,8 @@ class Bot:
             action = arg.strip().lower()
             if action in ("login", "auth"):
                 self._start_login_provider(
-                    "codex", CODEX_AUTH_PROVIDER, chat_id, mid, thread_id
+                    "codex", CODEX_AUTH_PROVIDER, chat_id, mid, thread_id,
+                    minimal_login_mode=True,
                 )
                 return
             if action in ("logout", "disconnect"):
@@ -5411,7 +5572,14 @@ class Bot:
                 markdown=True,
             )
             return
-        self._start_login_provider(name, prov, chat_id, reply_to, thread_id)
+        # Codex specifically gets the minimal-mode UI (single Copy
+        # button + paste prompt) regardless of how login is invoked.
+        # gh keeps verbose-mode behavior — its device flow is short
+        # enough that the extra body text doesn't hurt.
+        self._start_login_provider(
+            name, prov, chat_id, reply_to, thread_id,
+            minimal_login_mode=(name == "codex"),
+        )
 
     def _start_login_provider(
         self,
@@ -5421,6 +5589,7 @@ class Bot:
         reply_to: int | None,
         thread_id: int,
         force: bool = False,
+        minimal_login_mode: bool = False,
     ) -> None:
         # If already connected, short-circuit. Saves the user a redundant
         # device-code dance and prevents accidentally rotating their token.
@@ -5436,6 +5605,22 @@ class Bot:
             return
 
         def _on_progress(text: str, url: str | None = None, code: str | None = None) -> None:
+            # Minimal mode for codex: replace the verbose URL+code body
+            # with a short prompt + Copy link + Copy code buttons. The
+            # user never sees the URL or code in the message body — the
+            # buttons carry the payload.
+            if minimal_login_mode and name == "codex" and url and code:
+                self.send(
+                    chat_id,
+                    "🔑 *Sign in to Codex*\n"
+                    "Tap *Copy link* → open in your browser → enter the "
+                    "code, then come back here. `/cancel` to abort.",
+                    reply_to=reply_to,
+                    thread_id=thread_id,
+                    markdown=True,
+                    reply_markup=_minimal_codex_login_markup(url, code),
+                )
+                return
             reply_markup = None
             if name == "codex" and url and code:
                 reply_markup = _codex_login_reply_markup(url, code)
@@ -5449,12 +5634,13 @@ class Bot:
             )
 
         def _runner() -> None:
-            self.send(
-                chat_id,
-                f"Connecting to {prov.label}…",
-                reply_to=reply_to,
-                thread_id=thread_id,
-            )
+            if not minimal_login_mode:
+                self.send(
+                    chat_id,
+                    f"Connecting to {prov.label}…",
+                    reply_to=reply_to,
+                    thread_id=thread_id,
+                )
             try:
                 ok, msg = prov.login(_on_progress)
             except Exception as e:
@@ -5467,16 +5653,55 @@ class Bot:
                     markdown=True,
                 )
                 return
-            icon = "✓" if ok else "❌"
-            self.send(
-                chat_id,
-                f"{icon} `{name}` {msg}",
-                reply_to=reply_to,
-                thread_id=thread_id,
-                markdown=True,
-            )
+            if minimal_login_mode and ok:
+                # User-facing success line per Magnus's UX direction.
+                self.send(
+                    chat_id,
+                    "✅ Logged in! You can now chat with me.",
+                    reply_to=reply_to,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                _login_status_cache_invalidate(name)
+            else:
+                icon = "✓" if ok else "❌"
+                self.send(
+                    chat_id,
+                    f"{icon} `{name}` {msg}",
+                    reply_to=reply_to,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                if ok:
+                    _login_status_cache_invalidate(name)
 
         threading.Thread(target=_runner, name=f"bux-login-{name}", daemon=True).start()
+
+    def _send_login_picker(
+        self,
+        chat_id: int,
+        reply_to: int | None,
+        thread_id: int,
+    ) -> None:
+        """Two-button picker shown when neither agent is signed in.
+
+        Replaces the old "Claude is not logged in. Starting /login claude
+        now." auto-flow which assumed claude as the default. Asking which
+        agent to drive lets the user pick the auth path that works for
+        their account (e.g. they have a ChatGPT subscription but no
+        Anthropic account, or vice versa).
+
+        The buttons fire `login_pick:claude` / `login_pick:codex` callbacks
+        which `_handle_callback_query` routes back to the corresponding
+        minimal-login flow.
+        """
+        self.send(
+            chat_id,
+            "👋 To get started, sign in with one of these:",
+            reply_to=reply_to,
+            thread_id=thread_id,
+            reply_markup=_login_picker_reply_markup(),
+        )
 
     def _cmd_claude_login(
         self,
@@ -5521,12 +5746,11 @@ class Bot:
                     "successfully logged in",
                     "authenticated",
                 ),
-                success_message=(
-                    "✓ Claude login successful. Terminal closed; agent is ready. "
-                    "Send `hi` to start."
-                ),
+                success_message="✅ Logged in! You can now chat with me.",
+                minimal_login_mode=True,
             )
             sess.start()
+            _login_status_cache_invalidate("claude")
         except Exception as e:
             LOG.exception("claude login shell start failed for %s", slug)
             self.send(
@@ -5567,6 +5791,8 @@ class Bot:
                 markdown=True,
             )
             return
+        if ok:
+            _login_status_cache_invalidate(name)
         icon = "✓" if ok else "❌"
         self.send(
             chat_id,
@@ -5613,6 +5839,7 @@ class Bot:
             return
         out = _ANSI_RE.sub("", (r.stdout + r.stderr)).strip()
         if r.returncode == 0:
+            _login_status_cache_invalidate("claude")
             self.send(
                 chat_id,
                 "✓ `claude` logged out" + (f" ({out})" if out else ""),
@@ -5805,6 +6032,9 @@ class Bot:
             if data.startswith("agcy:"):
                 self._handle_agency_callback(cb, data)
                 return
+            if data.startswith("login_pick:"):
+                self._handle_login_picker_callback(cb, data)
+                return
             if data == "codex_login_retry":
                 msg = cb.get("message") or {}
                 chat = msg.get("chat") or {}
@@ -5833,6 +6063,7 @@ class Bot:
                     msg.get("message_id"),
                     int(msg.get("message_thread_id") or 0),
                     force=True,
+                    minimal_login_mode=True,
                 )
                 return
             parts = (cb.get("data") or "").split(":")
@@ -5873,6 +6104,83 @@ class Bot:
                           reply_to_message_id=mid)
         except Exception:
             LOG.exception("callback_query handler failed")
+
+    def _handle_login_picker_callback(self, cb: dict, data: str) -> None:
+        """Process a Sign-in picker tap. callback_data: `login_pick:<provider>`.
+
+        Owner-only — taps from anyone else get an alert toast. On the
+        owner's tap, strip the picker keyboard (so a stale prompt can't
+        be re-tapped after sign-in completes), then fire the chosen
+        provider's minimal login flow.
+        """
+        provider = data.split(":", 1)[1] if ":" in data else ""
+        msg = cb.get("message") or {}
+        chat = msg.get("chat") or {}
+        chat_id = chat.get("id")
+        mid = msg.get("message_id")
+        thread_id = int(msg.get("message_thread_id") or 0)
+        sender = cb.get("from") or {}
+        owner = _owner_for(chat_id, self.state) if chat_id else None
+        if owner and not _is_owner({"user_id": sender.get("id")}, owner):
+            self.call(
+                "answerCallbackQuery",
+                callback_query_id=cb["id"],
+                text="Only the box owner can pick.",
+                show_alert=True,
+            )
+            return
+        if not chat_id:
+            return
+        # Dismiss the spinner + a short toast confirming the pick.
+        label = {"claude": "Claude", "codex": "Codex"}.get(provider, provider)
+        self.call(
+            "answerCallbackQuery",
+            callback_query_id=cb["id"],
+            text=f"Starting {label} sign-in…",
+        )
+        # Strip the keyboard so the picker bubble can't be re-tapped now
+        # that we're already mid-login. We leave the message body in place
+        # ("To get started…") for scrollback context.
+        if mid:
+            try:
+                self.call(
+                    "editMessageReplyMarkup",
+                    chat_id=chat_id,
+                    message_id=mid,
+                    reply_markup={"inline_keyboard": []},
+                )
+            except Exception:
+                LOG.exception("strip login picker keyboard failed")
+        slug = _lane_slug((chat_id, thread_id))
+        sender_dict = {
+            "user_id": str(sender.get("id") or ""),
+            "username": sender.get("username") or "",
+            "name": (sender.get("first_name") or "")
+            + ((" " + sender["last_name"]) if sender.get("last_name") else ""),
+        }
+        if provider == "claude":
+            _login_status_cache_invalidate("claude")
+            self._cmd_claude_login(
+                chat_id, mid, thread_id, slug, sender_dict, owner,
+            )
+        elif provider == "codex":
+            _login_status_cache_invalidate("codex")
+            self._start_login_provider(
+                "codex",
+                CODEX_AUTH_PROVIDER,
+                chat_id,
+                mid,
+                thread_id,
+                force=True,
+                minimal_login_mode=True,
+            )
+        else:
+            self.send(
+                chat_id,
+                f"❌ unknown sign-in provider: `{provider}`",
+                thread_id=thread_id,
+                markdown=True,
+            )
 
     def _handle_agency_callback(self, cb: dict, data: str) -> None:
         """Process an Agency-button tap.
