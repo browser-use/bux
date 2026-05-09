@@ -140,6 +140,11 @@ Use concrete evidence:
 If the card cannot make a convincing goal-tie, it is not a good agency
 card. Do not post it just because the scan found something interesting.
 
+Keep the persuasion out of the image. The image is a billboard, not the
+card body: it should make the user recognize the action area and the goal
+impact at a glance. Put the exact steps, evidence, and "why this matters"
+copy in the title, subhead, body, and expandable.
+
 Convince via specifics, not begging:
 
 - A concrete number ("3.5K stars · maintainer ships PRs in 24h")
@@ -310,12 +315,12 @@ accent ribbon down the left edge, real **color** emoji top-left at ~110px
 required size 109 then resize via `Image.LANCZOS`; loading at any other size
 errors `invalid pixel size` because Noto color emoji is fixed-bitmap), a big
 bold headline (DejaVu Bold, 110pt for short headlines, 56pt when it doesn't
-fit) in white, an optional second line (white, 56pt), and a wrapped subtitle
-bottom-left (24pt white, word-wrap to fit `W - 100` px max width, line-height
-30, bottom-anchored). This is what scans best on a phone in dark / system /
-TG-default themes — the gradient gives depth, color emoji renders as the
-actual color glyph (not an outline), white type holds across both ends of
-the gradient.
+fit) in white, and one optional impact line (white, 56pt). Do not add a
+paragraph subtitle unless it is a screenshot/chart annotation; dense text in
+the image competes with the card body and fails on phone. This is what scans
+best on a phone in dark / system / TG-default themes — the gradient gives
+depth, color emoji renders as the actual color glyph (not an outline), white
+type holds across both ends of the gradient.
 
 `placehold.co` (`--image-text` below) is a fallback for emergency cards
 where a full PIL render isn't worth the budget — flat color, plain text,
@@ -326,34 +331,38 @@ serviceable but not beautiful.
 actual MP4s in topic 483 (growth-video). PIL renders in ~0.2s and produces
 the look Magnus has on file as the "good ones".
 
-### `--image-text` — fallback, 3-line WHAT-WHY shape
+### `--image-text` — fallback, sparse WHAT + IMPACT shape
 
 `agency-report --image-text "..."` auto-renders a placehold.co card
 (1200×630, magenta-on-purple, font Montserrat) with `\n`-separated lines,
-word-wrapped to ≤22 chars per line. Use the **3-line WHAT-WHY shape**:
+word-wrapped to ≤22 chars per line. Use a sparse **WHAT + IMPACT shape**:
 
 ```
-LINE 1 — verb-led WHAT (the action / artifact, in caps for hierarchy)
-LINE 2 — concrete subject or vehicle
-LINE 3 — WHY it matters (the number, the lever, the audience)
+LINE 1 — short WHAT (artifact/channel/lever, in caps)
+LINE 2 — goal impact (number, audience, or direct user-goal lever)
 ```
 
 Worked examples (all rendered placehold.co cards):
 
 | Card | `--image-text` value |
 |---|---|
-| Anthropic Cookbook PR | `"ANTHROPIC COOKBOOK\n+PR canonical tool\n100K Claude devs"` |
-| Lenny Newsletter pitch | `"LENNY'S NEWSLETTER\n3M+ ICP readers\nguest post"` |
-| $25K bounty | `"$25K BOUNTY\n200+ builders\n200+ X posts"` |
-| HF Spaces demo | `"HF SPACES\nbrowser-use demo\n3M MAU homepage"` |
-| 10 evangelists | `"10 EVANGELISTS\nfree lifetime\npublic testimonial"` |
-| Free for OSS | `"FREE FOR OSS\nkills competitor pricing\nforever"` |
+| Anthropic Cookbook PR | `"COOKBOOK PR\n100K dev reach"` |
+| Lenny Newsletter pitch | `"LENNY PITCH\n3M ICP readers"` |
+| $25K bounty | `"$25K BOUNTY\n200 builders"` |
+| HF Spaces demo | `"HF SPACES\n3M MAU"` |
+| 10 evangelists | `"10 EVANGELISTS\ntestimonial engine"` |
+| Free for OSS | `"FREE OSS\nkills price objection"` |
 
 ### Rules of thumb for `--image-text`
 
-- **≤22 chars per line.** Longer lines auto-wrap; single long words pass
-  through unbroken. 22 × 3 is the readability ceiling on a phone render.
-- **Each line earns its place.** No filler. If you can't write a WHY line,
+- **Two lines by default.** Three lines is the hard maximum and only for a
+  very short third token such as `today` or `one tap`.
+- **≤22 chars per line, ≤8 words total.** Longer lines auto-wrap; single
+  long words pass through unbroken. If the action needs a sentence, put that
+  sentence in the card text, not the image.
+- **No labels.** Don't write `I WILL:`, `IMPACT:`, `WHY:`, or `ACTION:` in
+  the image. Labels waste the visual budget.
+- **Each line earns its place.** No filler. If you can't write an impact line,
   the card itself isn't HIGH — drop it.
 - **Caps for the WHAT line, mixed case for WHY.** Visual hierarchy on the
   fixed canvas — the eye lands on caps first.
