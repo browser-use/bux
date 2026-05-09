@@ -46,7 +46,7 @@ of expandable blocks is variable (0, 1, 2, N — your call):
 
 Blocks are specified one of two ways:
   • Legacy 2-block: --draft (becomes "📝 Drafted action") and --reasoning
-    (becomes "💭 Why"). Backward-compatible with the original PR.
+    (becomes "📎 Context"). Backward-compatible with the original PR.
   • Flexible: --block (repeatable, JSON object). Each --block becomes
     one expandable. Use this when you have a different shape — e.g.
     three variants A/B/C, or a single "context" block, or zero blocks
@@ -99,7 +99,7 @@ Field mapping:
                        non-2-block shape.
   --draft              legacy: actionable content (first expandable).
                        Falls back to --prompt when omitted.
-  --reasoning          legacy: why-now / context (second expandable).
+  --reasoning          context block (second expandable, "📎 Context").
                        Falls back to --description when omitted.
   --description        legacy alias for --reasoning (kept for back-compat)
   --prompt             exact action that runs if user taps Yes — also fills
@@ -335,8 +335,8 @@ def _resolve_blocks(args: argparse.Namespace) -> list[dict]:
         reasoning = _esc(args.description)
     if reasoning:
         blocks.append({
-            "emoji": args.reasoning_emoji or "💭",
-            "title": args.reasoning_title or "Why",
+            "emoji": args.reasoning_emoji or "📎",
+            "title": args.reasoning_title or "Context",
             "body_html": reasoning,
         })
     return blocks
@@ -543,9 +543,14 @@ def main() -> int:
     p.add_argument("--draft", help="Actionable content (first expandable).")
     p.add_argument("--draft-title", default="Drafted action", help="Title of the draft block.")
     p.add_argument("--draft-emoji", default="📝", help="Emoji prefix on the draft block.")
-    p.add_argument("--reasoning", help="Why-now / context (second expandable).")
-    p.add_argument("--reasoning-title", default="Why", help="Title of the why block.")
-    p.add_argument("--reasoning-emoji", default="💭", help="Emoji prefix on the why block.")
+    p.add_argument(
+        "--reasoning",
+        help="Context block (second expandable). Provenance, why-now, "
+        "related threads, anything supporting the decision but not "
+        "the action itself.",
+    )
+    p.add_argument("--reasoning-title", default="Context", help="Title of the context block.")
+    p.add_argument("--reasoning-emoji", default="📎", help="Emoji prefix on the context block.")
     p.add_argument("--title-html", help="Raw HTML for the headline (skips escaping).")
     p.add_argument("--source-label-html", help="Raw HTML for the source label.")
     p.add_argument("--subhead-html", help="Raw HTML for the subhead.")
