@@ -186,7 +186,33 @@ real chart, real screenshot — those carry their own visual). The image's job
 is to make the card 2-second-readable on a phone screen: **what** would
 happen if the user taps yes, and **why** it matters.
 
-### `--image-text` — the default, 3-line WHAT-WHY shape
+### Style: gradient + color-emoji is the default. placehold.co is a fallback.
+
+Default look = a 1080×540 PIL render with a vertical linear gradient
+(top-dark → bottom-light, color picked per card mood from a fixed palette:
+blue, purple, pink, red, green, amber, teal, orange, indigo, cyan), an 8px
+accent ribbon down the left edge, real **color** emoji top-left at ~110px
+(via `/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf` — load at the bitmap-
+required size 109 then resize via `Image.LANCZOS`; loading at any other size
+errors `invalid pixel size` because Noto color emoji is fixed-bitmap), a big
+bold headline (DejaVu Bold, 110pt for short headlines, 56pt when it doesn't
+fit) in white, an optional second line (white, 56pt), and a wrapped subtitle
+bottom-left (24pt white, word-wrap to fit `W - 100` px max width, line-height
+30, bottom-anchored). This is what scans best on a phone in dark / system /
+TG-default themes — the gradient gives depth, color emoji renders as the
+actual color glyph (not an outline), white type holds across both ends of
+the gradient.
+
+`placehold.co` (`--image-text` below) is a fallback for emergency cards
+where a full PIL render isn't worth the budget — flat color, plain text,
+serviceable but not beautiful.
+
+**Don't use Remotion for static cards.** Remotion is a video framework
+(React + headless Chrome render farm, ~10s per card). Reserve it for
+actual MP4s in topic 483 (growth-video). PIL renders in ~0.2s and produces
+the look Magnus has on file as the "good ones".
+
+### `--image-text` — fallback, 3-line WHAT-WHY shape
 
 `agency-report --image-text "..."` auto-renders a placehold.co card
 (1200×630, magenta-on-purple, font Montserrat) with `\n`-separated lines,
