@@ -1583,18 +1583,9 @@ def _lane_promote_to_front(slug: str, job_id: str) -> dict | None:
         return None
 
 
-def _lane_set_steer_msg_id(slug: str, job_id: str, msg_id: int) -> None:
-    """Persist the message_id of the queue-ack bubble that hosts the Steer
-    button. The lane drainer reads this when the job naturally starts so
-    it can edit the keyboard off — otherwise a stale Steer tap on a now-
-    running job would no-op (we'd see status=in_flight) but the button
-    would still be visible, which is confusing."""
-    with _lanes_lock:
-        for j in _lanes.get(slug, []):
-            if j.get("id") == job_id:
-                j["steer_msg_id"] = int(msg_id)
-                _save_lanes_to_disk_locked()
-                return
+# `_lane_set_steer_msg_id` was removed when auto-steer-on-followup made the
+# Steer button (and its queue-ack bubble) redundant. The drainer still cleans
+# up any legacy `steer_msg_id` parked on pre-upgrade jobs — no setter needed.
 
 
 # ---------------------------------------------------------------------------
@@ -4800,33 +4791,28 @@ class Bot:
         }
         depth = _enqueue(slug, job, self._lane_drain)
         self.typing(chat_id, thread_id=thread_id)
-        # Only ack when the user is actually queueing behind something —
-        # the typing indicator + the placeholder bubble that StreamingMessage
-        # sends when work actually starts are enough for "I see you".
+        # Auto-steer-on-followup: if there's already an in-flight job in
+        # this lane, kill it and promote the new job to the head of the
+        # queue. The agent's session UUID / codex thread is unchanged, so
+        # `claude -p --resume` on the next dispatch sees all prior tool
+        # history — only the cancelled-turn's prompt is replaced. This
+        # mirrors Claude Code's "Esc to cancel + new message" UX without
+        # requiring a Steer button: every follow-up message implicitly
+        # steers, so a typo / clarification / "actually do this instead"
+        # doesn't have to wait for the long turn to finish.
         #
-        # The ack carries an inline-keyboard "🚀 Steer" button (owner-only).
-        # Tapping it kills the in-flight job and promotes this one to the
-        # head of the queue — the new prompt then runs against the same
-        # session UUID / codex thread so the agent keeps its prior tool
-        # history and only the cancelled-turn's prompt is replaced.
-        # Mirrors Claude Code's "Esc to cancel + new message" UX so a
-        # typo / clarification doesn't have to wait for a long turn.
+        # Note: existing queued jobs (between the in-flight and this one)
+        # are kept in their original order so they still run after the
+        # promoted job — drop them with /cancel if you want a clean slate.
         if depth > 1:
-            steer_kbd = {
-                "inline_keyboard": [[{
-                    "text": "🚀 Steer",
-                    "callback_data": f"steer:{slug}:{job['id']}",
-                }]],
-            }
-            steer_mid = self.send_returning_id(
-                chat_id,
-                f"{thinking_emoji} queued (#{depth})",
-                reply_to=mid,
-                thread_id=thread_id,
-                reply_markup=steer_kbd,
-            )
-            if isinstance(steer_mid, int):
-                _lane_set_steer_msg_id(slug, job["id"], steer_mid)
+            _lane_promote_to_front(slug, job["id"])
+            with _inflight_lock:
+                proc = _inflight_procs.get(slug)
+                if proc is not None and proc.poll() is None:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        LOG.exception("auto-steer kill of in-flight failed for %s", slug)
 
     def _cmd_queue(self, slug: str, chat_id: int, reply_to: int | None, thread_id: int) -> None:
         jobs = _snapshot_lane(slug)
@@ -5117,29 +5103,22 @@ class Bot:
                     continue
                 key: LaneKey = (chat_id, thread_id if isinstance(thread_id, int) else 0)
                 sender = job.get("sender") if isinstance(job.get("sender"), dict) else None
-                # If this job was queued behind something and we exposed
-                # a "queued (#N)" ack bubble with a Steer button, delete
-                # that whole bubble now that work is starting — the
-                # placeholder bubble StreamingMessage is about to send
-                # (with the thinking emoji) supersedes it, and leaving
-                # the stale "queued" line above the live bubble made it
-                # harder to scan which message is actually being worked
-                # on. Falls back to stripping the keyboard if delete
-                # fails (TG's 48h delete window, etc.) so a stale Steer
-                # tap can't kill its own job.
+                # Legacy: clean up any "queued (#N)" Steer-button bubble
+                # that an older bot version may have parked above this
+                # job. New auto-steer-on-followup never creates these,
+                # but they may persist on jobs queued before the upgrade.
                 steer_mid = job.get("steer_msg_id")
                 if isinstance(steer_mid, int):
                     try:
                         self.call("deleteMessage", chat_id=chat_id,
                                   message_id=steer_mid)
                     except Exception:
-                        LOG.exception("delete queued ack for %s failed; stripping keyboard instead", job_id)
                         try:
                             self.call("editMessageReplyMarkup", chat_id=chat_id,
                                       message_id=steer_mid,
                                       reply_markup={"inline_keyboard": []})
                         except Exception:
-                            LOG.exception("strip steer keyboard for %s failed", job_id)
+                            pass
                 try:
                     self.typing(chat_id, thread_id=key[1])
                     self.run_task(
@@ -5802,7 +5781,26 @@ class Bot:
         try:
             data = cb.get("data") or ""
             if data.startswith("steer:"):
-                self._handle_steer_callback(cb, data)
+                # Legacy Steer button. Auto-steer-on-followup made this
+                # redundant — every new TG message in an in-flight lane
+                # already kills + promotes. Quiet-toast + strip the
+                # button so old queue-ack bubbles in flight when the bot
+                # upgraded don't look broken.
+                self.call(
+                    "answerCallbackQuery",
+                    callback_query_id=cb["id"],
+                    text="auto-steer is on by default — no button needed",
+                )
+                msg = cb.get("message") or {}
+                chat_id = (msg.get("chat") or {}).get("id")
+                mid = msg.get("message_id")
+                if chat_id and mid:
+                    try:
+                        self.call("editMessageReplyMarkup", chat_id=chat_id,
+                                  message_id=mid,
+                                  reply_markup={"inline_keyboard": []})
+                    except Exception:
+                        LOG.exception("strip legacy steer keyboard failed")
                 return
             if data.startswith("agcy:"):
                 self._handle_agency_callback(cb, data)
@@ -5875,83 +5873,6 @@ class Bot:
                           reply_to_message_id=mid)
         except Exception:
             LOG.exception("callback_query handler failed")
-
-    def _handle_steer_callback(self, cb: dict, data: str) -> None:
-        """Process a Steer-button tap from a queue-ack bubble.
-
-        callback_data shape: `steer:<lane_slug>:<job_id>`.
-
-        Semantics: kill whatever's in_flight in the lane and promote the
-        tapped job to the head of the queue, so the worker drains it
-        next. The agent's session UUID / codex thread is unchanged, so
-        the new prompt runs with the prior turn's tool history intact —
-        only the cancelled prompt is replaced. Mirrors Claude Code's
-        Esc-to-cancel-and-resend UX.
-
-        Owner-only. A stale tap (job already in_flight, or already gone)
-        gets a quiet toast + button-strip; we never kill an unrelated
-        job by mistake.
-        """
-        msg = cb.get("message") or {}
-        chat = msg.get("chat") or {}
-        chat_id = chat.get("id")
-        mid = msg.get("message_id")
-        sender = cb.get("from") or {}
-        parts = data.split(":", 2)
-        if len(parts) != 3 or not chat_id:
-            self.call("answerCallbackQuery", callback_query_id=cb["id"],
-                      text="bad steer payload", show_alert=False)
-            return
-        slug, job_id = parts[1], parts[2]
-
-        owner = _owner_for(int(chat_id), self.state)
-        if not _is_owner({"user_id": sender.get("id")}, owner):
-            self.call(
-                "answerCallbackQuery",
-                callback_query_id=cb["id"],
-                text="Only the box owner can steer.",
-                show_alert=True,
-            )
-            return
-
-        moved = _lane_promote_to_front(slug, job_id)
-        if moved is None:
-            # Job is already in_flight or completed — strip the keyboard
-            # so the bubble stops looking actionable, and toast quietly.
-            if mid:
-                try:
-                    self.call("editMessageReplyMarkup", chat_id=chat_id,
-                              message_id=mid,
-                              reply_markup={"inline_keyboard": []})
-                except Exception:
-                    LOG.exception("strip stale steer keyboard failed")
-            self.call(
-                "answerCallbackQuery",
-                callback_query_id=cb["id"],
-                text="already running or finished",
-            )
-            return
-
-        with _inflight_lock:
-            proc = _inflight_procs.get(slug)
-            if proc is not None and proc.poll() is None:
-                try:
-                    proc.kill()
-                except Exception:
-                    LOG.exception("steer kill of in-flight failed for %s", slug)
-
-        if mid:
-            try:
-                self.call("editMessageReplyMarkup", chat_id=chat_id,
-                          message_id=mid,
-                          reply_markup={"inline_keyboard": []})
-            except Exception:
-                LOG.exception("steer keyboard strip failed")
-        self.call(
-            "answerCallbackQuery",
-            callback_query_id=cb["id"],
-            text="🚀 steered — running this next",
-        )
 
     def _handle_agency_callback(self, cb: dict, data: str) -> None:
         """Process an Agency-button tap.
