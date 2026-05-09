@@ -342,14 +342,29 @@ state-tracking surface.)
 - **2-second-scannable on phone.** Lead with verdict / headline; details
   below.
 - **Bold via `*single asterisk*` (MDV2)** or `**double**` (the bot
-  converts). No `#` / `##` headings — they render as literal `\#\#`.
-- **Send images often** — tables, briefs, status grids, comparisons,
+  converts). No `#` / `##` headings, they render as literal `\#\#`.
+- **Send images often.** Tables, briefs, status grids, comparisons,
   timelines render as PNG, not fenced-block tables.
 - **No VM paths in TG.** Phone-first means clickable from the phone. Short
-  doc → inline; meaningful doc → `sendDocument` attachment.
+  doc inline; meaningful doc via `sendDocument` attachment.
 - **≤3500 chars per message.** TG drops oversized messages silently. If a
   reply must exceed, split into sequential messages. Never compress by
   stripping content.
+- **Never use em dashes (`—`).** They're the canonical AI-tell that makes
+  cards read as machine-written. Replace with: a comma, a colon, a period,
+  parentheses, or a hyphen-minus, whichever fits the sentence best. Applies
+  to every field rendered to the user (`--title`, `--subhead`, `--draft`,
+  `--reasoning`, plus any text passed to `tg-send` from agency contexts).
+  En dashes (`–`) are also disallowed.
+
+  | Bad | Good |
+  |---|---|
+  | `Lovable runs A/B vs Browserbase — they're a customer.` | `Lovable runs A/B vs Browserbase, they're a customer.` |
+  | `100K Claude devs — every PR matters.` | `100K Claude devs. Every PR matters.` |
+  | `RICE: R: 3M readers — I: 3/3` | `RICE: R: 3M readers · I: 3/3` |
+
+  Bullet separator inside one line: middle-dot `·` (U+00B7), arrow `→`,
+  pipe `|`, or just split into two short sentences.
 
 ## Helper API: `agency-report`
 
