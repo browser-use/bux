@@ -233,12 +233,35 @@ def _resolve_image_url(args: argparse.Namespace) -> str | None:
     return None
 
 
+def _coerce_button_label(raw: str) -> str:
+    """Defensively coerce a --button value to a label string.
+
+    Some agents call --button with a JSON object like
+    `{"text":"❌ No","value":"no"}` (mistaking the API for --block, which
+    *does* take JSON). Without this guard the entire JSON blob ends up
+    as the rendered button label — visible noise in TG, broken card.
+    Coerce: if the raw value parses as a dict with a `text`/`label`/
+    `name` field, use that. Otherwise pass through unchanged."""
+    if not raw or raw[:1] not in ("{", "["):
+        return raw
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return raw
+    if isinstance(parsed, dict):
+        for key in ("text", "label", "name"):
+            v = parsed.get(key)
+            if isinstance(v, str) and v.strip():
+                return v
+    return raw
+
+
 def _resolve_buttons(args: argparse.Namespace) -> list[tuple[str, str]]:
     """Returns list of (label, kind). Custom buttons all get kind='custom'.
     Default-set labels reflect --spawn-topic so the user can tell from
     the button alone whether tapping will run here or fork a topic."""
     if args.button:
-        return [(label, "custom") for label in args.button]
+        return [(_coerce_button_label(label), "custom") for label in args.button]
     return list(DEFAULT_BUTTONS_SPAWN if args.spawn_topic else DEFAULT_BUTTONS_INPLACE)
 
 
@@ -551,7 +574,11 @@ def main() -> int:
         "--button",
         action="append",
         default=None,
-        help="Custom button label. Repeatable. Each gets kind=custom.",
+        help="Custom button LABEL (plain string). Repeatable. Each gets "
+        "kind=custom. Pass the visible text only — e.g. --button \"❌ No\". "
+        "NOT JSON. (--block takes JSON; --button does not.) "
+        "Defensive: a JSON object with a `text` field is coerced to its "
+        "text, but write plain strings to be safe.",
     )
     p.add_argument(
         "--info-only",
