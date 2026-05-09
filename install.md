@@ -149,4 +149,3 @@ sudo userdel -r bux
 
 - [SKILL.md](SKILL.md) — how claude uses the browser (auto-loaded as `CLAUDE.md` context)
 - [browser-harness](https://github.com/browser-use/browser-harness) — the CDP skill powering the browser
-- [docs/recipes/](docs/recipes/) — provider-specific deploy notes

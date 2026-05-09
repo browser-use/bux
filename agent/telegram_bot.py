@@ -721,65 +721,17 @@ def _read_kv(path: Path) -> dict[str, str]:
     return out
 
 
-def _load_openai_key() -> str | None:
-    """Read OPENAI_API_KEY from /home/bux/.secrets/openai.env.
-
-    The file is mode 600 owned by bux; we run as root so we can read it.
-    Returns None if missing/unset so callers can degrade gracefully (e.g.
-    voice transcription answers "unavailable" rather than crashing the worker).
-    """
-    if not OPENAI_ENV.exists():
-        return None
-    return _read_kv(OPENAI_ENV).get("OPENAI_API_KEY") or None
-
-
-def _extract_media(msg: dict) -> tuple[str | None, str, int]:
-    """If `msg` carries a voice / audio / video_note, return
-    (file_id, suggested_filename, file_size). Otherwise (None, '', 0).
-
-    Whisper sniffs by extension, so we pick a plausible one based on which
-    field carried the file: voice notes are opus-in-ogg, video_notes are
-    mp4, audio uses whatever mime_type Telegram surfaced (with .mp3 as a
-    safe default).
-    """
-    if "voice" in msg and isinstance(msg["voice"], dict):
-        v = msg["voice"]
-        return v.get("file_id"), "voice.ogg", int(v.get("file_size") or 0)
-    if "video_note" in msg and isinstance(msg["video_note"], dict):
-        v = msg["video_note"]
-        return v.get("file_id"), "video_note.mp4", int(v.get("file_size") or 0)
-    if "audio" in msg and isinstance(msg["audio"], dict):
-        a = msg["audio"]
-        fname = a.get("file_name") or ""
-        mime = a.get("mime_type") or ""
-        if fname and "." in fname:
-            ext = fname.rsplit(".", 1)[1].lower()
-        elif "mpeg" in mime or "mp3" in mime:
-            ext = "mp3"
-        elif "mp4" in mime or "m4a" in mime or "aac" in mime:
-            ext = "m4a"
-        elif "ogg" in mime or "opus" in mime:
-            ext = "ogg"
-        elif "wav" in mime:
-            ext = "wav"
-        else:
-            ext = "mp3"
-        return a.get("file_id"), f"audio.{ext}", int(a.get("file_size") or 0)
-    return None, "", 0
-
-
 # ---------------------------------------------------------------------------
 # Allow-list + binding (verbatim from legacy bot).
 # ---------------------------------------------------------------------------
 
 
 def _load_openai_key() -> str | None:
-    """Read OPENAI_API_KEY from /etc/bux/openai.env.
+    """Read OPENAI_API_KEY from /home/bux/.secrets/openai.env.
 
-    Kept out of the systemd EnvironmentFile so it can be rotated without
-    a service restart. Returns None when the file or key is missing so
-    callers can degrade gracefully (friendly TG reply) instead of crashing
-    the worker thread.
+    Kept out of the systemd EnvironmentFile so it can be rotated without a
+    service restart. Returns None when the file or key is missing so callers
+    can degrade gracefully (friendly TG reply) instead of crashing the worker.
     """
     if not OPENAI_ENV.exists():
         return None

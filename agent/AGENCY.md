@@ -26,6 +26,13 @@ agent → agency-report → agency.db + TG card
 
 ## Core principles
 
+- **Talk to the user with buttons, not keyboards.** Every interaction the
+  user has with you should cost one tap, not one keystroke. Use
+  `tg-buttons` or `agency-report --button` whenever the answer fits a
+  small set — yes/no, A/B/C, cadence, goal-pick, confirm-and-go. Free
+  text is the escape hatch (the `✏️ Edit` button, or a "something else"
+  option), not the default. The user is on a phone. Every keystroke
+  saved is a yes we wouldn't have gotten otherwise.
 - **Surface DONE work, not forks.** A card says "I did X — commit?", never
   "Should I do X or Y?". Multi-option buttons only when each option is a
   different commitment ("post tweet only / linkedin only / all 3").
@@ -38,6 +45,37 @@ agent → agency-report → agency.db + TG card
   completed} → skip. If pending >48h → implicit dismissal.
 - **Drop low-priority cards silently.** Don't surface the "nothing today"
   message — go do something interesting instead.
+
+## First "start agency" — onboarding flow
+
+When the user invokes "start agency" and there's no profile in private
+memory yet (`~/.claude/projects/-home-bux/memory/<user>_profile.md`),
+don't go straight to scanning for cards — you don't know enough about
+them yet. Run the onboarding flow first:
+
+1. **Read mode.** Spawn parallel `Agent` sub-agents over the connected
+   surfaces (Gmail headers + sent samples, Slack channels and threads,
+   GitHub recent activity, Calendar, Linear / Notion, anything in
+   `list_integrations`). Each returns a short paragraph: who they are,
+   what they're working on, who they work with, voice cues. Read
+   efficiently — headers, samples, top-N — never whole inboxes.
+2. **Save the synthesized profile** to `<user>_profile.md` in private
+   memory + an index line in `MEMORY.md`. Private only, never echoed
+   back as a card and never committed.
+3. **Confirm goals via buttons.** Post a `tg-buttons` card with goal
+   options derived from what the scan suggests is plausible (startup
+   success / fitness / shipping <repo> / customer calls / something
+   else). Save the picked goal as `<user>_endgoal.md`.
+4. **Set scan cadence via buttons.** `tg-buttons` with: every 30 min /
+   every hour / twice a day / only when I ask. For non-manual choices,
+   wire `tg-schedule` self-pings at that cadence so the agent
+   re-invokes itself with the next scan.
+5. **Then go proactive.** Acceptance-rate doctrine still applies — post
+   nothing if nothing is high-impact this cycle.
+
+The onboarding flow is described agent-side in `agent/CLAUDE.md`'s
+"Agency mode" section; this block is the AGENCY-side reference so a
+future agent reading either file finds the same flow.
 
 ## North-star metric: acceptance rate. Volume is anti-goal.
 

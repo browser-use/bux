@@ -53,9 +53,8 @@ Three small services under systemd. Agent state lives in `/home/bux`, so reboots
 
 ## Docs
 
-- [install.md](install.md) — full install guide, troubleshooting, recipes
+- [install.md](install.md) — full install guide and troubleshooting
 - [agent/CLAUDE.md](agent/CLAUDE.md) — the context claude loads on every session
-- [docs/recipes/](docs/recipes/) — provider-specific deploy notes
 
 ## Managed offering
 
@@ -63,7 +62,7 @@ If you'd rather not run your own VPS: [cloud.browser-use.com](https://cloud.brow
 
 ## Contributing
 
-PRs welcome — **[deploy recipes](docs/recipes/)** are the highest-leverage contribution (one `.md` per provider). Bug fixes and docs tweaks equally welcome.
+PRs welcome — bug fixes, docs tweaks, and new features all appreciated. Open an issue first if you're planning something larger.
 
 ## License
 
