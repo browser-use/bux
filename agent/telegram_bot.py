@@ -47,6 +47,7 @@ import logging
 import os
 import pty
 import pwd
+import random
 import re
 import secrets
 import select
@@ -159,10 +160,38 @@ EMOJI_ERROR = "💔"
 # is typing" mental model.
 THINKING_PLACEHOLDER = "..."
 
+# Curated pool of reaction-allowlist emojis used as a per-turn ack on the
+# user's incoming message. Goes through Bot.react → setMessageReaction;
+# Telegram's free-tier allowlist drops anything outside its set, so the
+# picks here are deliberately limited to ones that have been verified to
+# stick. The vibe is "got it, I'm on it" across acknowledgement / warmth /
+# thinking / playful — kept off food, weather, and seasonal emojis so the
+# feel stays "agent is on it" rather than wandering. Excludes 💔, which is
+# reserved for EMOJI_ERROR so the per-turn pick never overlaps with the
+# failure signal.
+THINKING_REACTIONS = (
+    # acknowledgement / on-it
+    "👍", "👌", "🙏", "🤝", "✍️", "🫡", "🆒", "💯",
+    # warmth / approval
+    "❤️", "🥰", "🤗", "👏", "🤩", "🎉", "💘",
+    # thinking / observing
+    "🤔", "🤨", "🤓", "👀", "👨‍💻",
+    # playful
+    "😁", "😎", "🔥", "🤣", "🤪", "👻", "🦄", "🗿", "💅",
+    # surprise at scope
+    "🤯",
+)
+
 
 def random_thinking_emoji() -> str:
     """Placeholder string for a fresh turn. Name kept for call-site stability."""
     return THINKING_PLACEHOLDER
+
+
+def random_thinking_reaction() -> str:
+    """Pick one TG reaction emoji per turn — set on the user's message as
+    an immediate ack that the bot received their prompt and is on it."""
+    return random.choice(THINKING_REACTIONS)
 
 # Recognised agents per lane. Values double as PATH binary names.
 AGENT_CLAUDE = "claude"
@@ -3344,6 +3373,15 @@ class Bot:
         chat_id, thread_id = key
         agent = _agent_for(key, self.state)
         LOG.info("run_task lane=%s agent=%s", _lane_slug(key), agent)
+        # Acknowledge the incoming user message with a random reaction
+        # emoji — the playful "I got it, I'm on it" signal the bot used
+        # to set before PR #92 swapped it for a "..." placeholder bubble.
+        # The bubble still serves as the streaming target; the reaction
+        # rides on the user's own message and is what they see first.
+        # Failures (rejected emoji, deleted message) are swallowed by
+        # Bot.call so a reaction issue never poisons the dispatch.
+        if reply_to:
+            self.react(chat_id, reply_to, random_thinking_reaction())
         # Refine-context injection: if the user tapped Edit on an
         # agency card and this is their first reply in the worker
         # topic, look up the suggestion via the DB and prepend its
