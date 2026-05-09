@@ -168,16 +168,52 @@ the channel is to keep posting after the user stops engaging.
    matters" header. Prose.
 3. **One expandable for the draft**, default `📝 Drafted action`. Don't
    label it "Variant A" unless B and C actually exist with buttons to pick.
-4. **Optional `📎 Context`** for provenance / related threads / why this
+4. **Multi-variant cards: one expandable per variant, NOT all variants
+   crammed into a single block.** When a brief offers genuine A/B/C
+   alternatives, each variant gets its own collapsible header — e.g.
+   `📝 Variant A · founder DM`, `📝 Variant B · forward to Saurav`,
+   `📝 Variant C · escalate`. The user opens only the one they're
+   considering. Stuffing all three into a single `Drafted action`
+   expandable defeats the point of the collapse.
+5. **Optional `📎 Context`** for provenance / related threads / why this
    is distinct. Skip when nothing useful. Empty expandables are worse than
-   no expandable.
-5. **Buttons in a 2+1 grid.** Row 1 = primary + Skip. Row 2 = third
+   no expandable. **Don't put internal log-entry numbers (`N=145`,
+   `N=146`) in here** — they're agency-cron bookkeeping the user
+   doesn't read. Drop the "X cards pending" framing too. The Context
+   block is ≤2 short prose lines or it doesn't ship.
+6. **Buttons in a 2+1 grid.** Row 1 = primary + Skip. Row 2 = third
    button alone.
-6. **Per-card-type tweaks override**:
+7. **Per-card-type tweaks override**:
    - PR / merge → primary expandable is the diff or PR link
    - Video / demo → MP4 is the surface; no drafted-text expandable
    - Status / FYI → sometimes no expandable at all is right
-7. **Resist filling out a fixed schema.** Let card type drive shape.
+8. **Resist filling out a fixed schema.** Let card type drive shape.
+
+### Pre-build the asset before posting — don't ask permission to create
+
+If a card's action is "make a video / chart / screenshot / image / draft
+that requires building something", **build it first**, attach it to the
+card, and ask Yes/No on whether to *post / send / ship* it. Never ask
+"should I make a video?" or "want me to draft this?" — by the time the
+card lands, the asset must already exist.
+
+The user sees the artifact, judges it, taps yes/no on the visible
+boundary (publish to X, send the email, post in #channel). Building the
+artifact is internal-zone work and doesn't need permission. Asking
+beforehand burns a slot for nothing — the user can't decide without
+seeing the thing.
+
+If the brief says "consider making a video about X", the card is `📹 Made
+a 30s demo of X — post to @mamagnus00? [yes / no / regen]` with the MP4
+attached, **not** `Make a video about X — yes/no?`. Same for charts
+(render the chart and attach), images (render and attach), email drafts
+(save to Gmail Drafts and surface the draft URL), Slack DMs (write the
+exact paste-ready text in the expandable).
+
+The only exception: when *building* the asset is itself irreversible or
+expensive (e.g. minting an NFT, sending a paid SMS, calling a $100/run
+API). Then ask first. For free internal work — render, draft, scrape,
+preview — just do it.
 
 ## Image-first
 
