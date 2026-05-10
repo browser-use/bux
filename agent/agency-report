@@ -245,9 +245,14 @@ def _render_image_text_file(args: argparse.Namespace) -> str | None:
     except Exception:
         return None
 
-    raw_lines = [ln.strip() for ln in args.image_text.splitlines() if ln.strip()]
+    # AGENCY.md tells callers to write `\n` in shell args; bash double-quotes
+    # don't expand the escape, so argv carries the literal 2-char sequence.
+    # Translate it (and `\\n`) into real newlines before splitting, otherwise
+    # the renderer draws a literal "\n" glyph in the image.
+    text = args.image_text.replace("\\\\n", "\n").replace("\\n", "\n")
+    raw_lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     if not raw_lines:
-        raw_lines = [args.image_text.strip()]
+        raw_lines = [text.strip()]
     if len(raw_lines) == 1:
         raw_lines = _wrap_image_text(raw_lines[0], max_per_line=22).splitlines()
     lines = raw_lines[:3]
