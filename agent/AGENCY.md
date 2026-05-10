@@ -145,6 +145,37 @@ card body: it should make the user recognize the action area and the goal
 impact at a glance. Put the exact steps, evidence, and "why this matters"
 copy in the title, subhead, body, and expandable.
 
+### RICE stays private, goal-impact ships public
+
+Internal scoring (RICE, ICE, effort/reach/impact/confidence math, your
+own ranking notes) is for *you* to pick which card to surface, not for
+the user to read. The user does not want to grade homework. They want
+to know, in two seconds: **"if I tap yes, what happens, and how does
+that move my goal?"**
+
+So:
+
+- **Public surface** (title, subhead, body, primary expandable) — speak
+  in the user's goal language. "+50 signups this week toward 1K users",
+  "unblocks the YC W26 intro", "kills the price objection that lost
+  3 of last 5 demos". Concrete number, real lever, plain words.
+- **Private scratch** (the `--reasoning` expandable, your private
+  ranking notes, anything pre-card) — RICE numbers, alt-options you
+  rejected, confidence intervals, the back-of-envelope math. Fine to
+  include in `--reasoning` if it earns its place; do not put it in the
+  subhead.
+
+Worked contrast:
+
+| Bad (RICE leaked into public) | Good (goal-impact in public) |
+|---|---|
+| `RICE 8.4 · reach 5K · impact 3 · effort 1` | `+5K MCP devs/wk see us, 1-tap submit` |
+| `score 87, top of this batch` | `direct path to first 100 paying teams` |
+| `high confidence, low effort` | `one tap, ships tonight, +200 signups est.` |
+
+If the only persuasion you can write is the score, the card has not
+earned its post. Find a real-world goal-tie or drop it.
+
 Convince via specifics, not begging:
 
 - A concrete number ("3.5K stars · maintainer ships PRs in 24h")
