@@ -251,21 +251,26 @@ the channel is to keep posting after the user stops engaging.
    matters" header. Prose.
 3. **One expandable for the draft**, default `📝 Drafted action`. Don't
    label it "Variant A" unless B and C actually exist with buttons to pick.
-4. **Multi-variant cards: one expandable per variant, NOT all variants
-   crammed into a single block.** When a brief offers genuine A/B/C
-   alternatives, each variant gets its own collapsible header — e.g.
-   `📝 Variant A · founder DM`, `📝 Variant B · forward to Saurav`,
-   `📝 Variant C · escalate`. The user opens only the one they're
-   considering. Stuffing all three into a single `Drafted action`
-   expandable defeats the point of the collapse.
+4. **Multi-variant cards: one expandable per variant, and one button per
+   variant.** When a brief offers genuine A/B/C alternatives, each variant
+   gets its own collapsible header — e.g. `📝 Variant A · founder DM`,
+   `📝 Variant B · forward to Saurav`, `📝 Variant C · escalate` — and the
+   keyboard gets matching direct-choice buttons: `🅰️ Send A`,
+   `🅱️ Send B`, `🅲 Send C`. The user opens only the variant they're
+   considering, then taps the matching button. Don't cram all three drafts
+   into one `Drafted action` expandable, and don't use generic `✅ Yes /
+   ⏭ Skip / ✏️ Edit` buttons when the whole point of the card is choosing
+   among variants.
 5. **Optional `📎 Context`** for provenance / related threads / why this
    is distinct. Skip when nothing useful. Empty expandables are worse than
    no expandable. **Don't put internal log-entry numbers (`N=145`,
    `N=146`) in here** — they're agency-cron bookkeeping the user
    doesn't read. Drop the "X cards pending" framing too. The Context
    block is ≤2 short prose lines or it doesn't ship.
-6. **Buttons in a 2+1 grid.** Row 1 = primary + Skip. Row 2 = third
-   button alone.
+6. **Buttons in a 2+1 grid unless it is a variant-choice card.** Row 1 =
+   primary + Skip. Row 2 = third button alone. For A/B/C variant-choice
+   cards, the three buttons are the three choices; no extra Skip/Edit button
+   unless the card has a separate fourth action worth the added friction.
 7. **Per-card-type tweaks override**:
    - PR / merge → primary expandable is the diff or PR link
    - Video / demo → MP4 is the surface; no drafted-text expandable
@@ -428,6 +433,11 @@ Default 3-button set, label adapts to spawn-mode:
 - Three reply drafts → `🅰️ Send A` / `🅱️ Send B` / `🅲 Send C`
 - Architectural choice → `Pick A` / `Pick B` / `Pick C`
 - High-uncertainty draft → `✅ Send` / `🔁 More variants` / `⏭ Skip`
+
+For three-variant cards, custom buttons are not optional. Use `--block`
+once per variant and `--button` once per direct choice. The tapped label
+must be enough for the worker to know exactly which variant to execute
+without asking a follow-up.
 
 `--button` is a **plain string, not JSON**. Don't confuse it with `--block`
 (which *does* take JSON). The helper has a defensive coercion for accidental
