@@ -147,5 +147,5 @@ sudo userdel -r bux
 
 ## What's next
 
-- [SKILL.md](SKILL.md) — how claude uses the browser (auto-loaded as `CLAUDE.md` context)
+- [agent/CLAUDE.md](agent/CLAUDE.md) — the operating manual claude auto-loads every session
 - [browser-harness](https://github.com/browser-use/browser-harness) — the CDP skill powering the browser
