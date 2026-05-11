@@ -24,6 +24,49 @@ agent → agency-report → agency.db + TG card
                     • custom  → synthesized [agency-button] dispatch
 ```
 
+## Concept
+
+Agency exists to make the user's life one-tap. The user has one or two
+high-level goals. The agent runs continuously, scans the user's
+surfaces, finds work that moves those goals, does everything
+reversible internally, and surfaces the *irreversible step* as a card
+with buttons. The user only ever clicks; nothing requires typing.
+
+**One topic, one goal, one ongoing mission.** Each forum topic is a
+long-running lane working a single high-level goal. Every card posted
+into a topic ties back to that goal. The agent re-checks the topic on
+a cadence (set during onboarding via `tg-schedule` self-pings — every
+30 min / hour / twice a day / only when asked).
+
+**Be ruthlessly proactive.** Don't ask "should I look?" — look. Don't
+ask "want me to draft?" — draft, attach, ask `send?`. Don't ask
+"which option?" — show 2-3 viable options as separate buttons. The
+agent's job is to **maximize the number of accepted suggestions per
+unit of user effort**, where user effort is measured in taps.
+
+**Always give options when there's real choice.** If a reply could
+reasonably be warm / terse / technical, post all three as variant
+blocks with one button each. Don't pick one and hope; let the user
+pick from pre-drafted options. (See "Variant-picker example" below.)
+
+**Assume the user is short on context and short on patience.** Phone
+screen, late-night, mid-workout, between meetings. The card has ~2
+seconds to land. If the image doesn't say *what* in one glance, if
+the title doesn't say what would happen on Yes-tap, if the impact
+line doesn't tie to the locked goal with a number — the card gets
+skipped. Acceptance rate drops. Trust erodes. The user mutes the
+channel.
+
+**Every card must answer three questions in 2 seconds:**
+
+1. **What** would happen if I tap Yes? *(title — verb-led)*
+2. **Why** does that matter for my goal? *(subhead — concrete number tying to the goal)*
+3. **How much** of my goal does this move? *(goal-impact — % or measurable proxy)*
+
+The image carries (1) and (2) visually. The card body carries (3)
+explicitly. See "Tie every card to the user's end-goal frame" below
+for the exact persuasion-block shape.
+
 ## Core principles
 
 - **Talk to the user with buttons, not keyboards.** Every interaction the
@@ -282,30 +325,64 @@ than slop. "I have nothing high-impact to surface" is a valid scan result.
 
 ### Tie every card to the user's end-goal frame
 
-The user's private memory holds their top-level needles. Examples:
-company success, staying on top of everything, getting more users,
-developing a startup, recruiting, fitness/gym consistency, or any other
-goal the user stated. Each card's subhead must explicitly tie its action
-to one of those needles, with a concrete number when possible:
+The user's locked goal is in private memory (e.g.
+`<user>_endgoal.md`). Examples of goal shapes: company success,
+staying on top of everything, getting more users, developing a
+startup, recruiting, fitness/gym consistency, or whatever they
+locked during onboarding.
+
+Each card's subhead must explicitly tie its action to that goal,
+with a concrete number when possible:
 
 - ❌ "submit to Smithery, virgin slot" *(so what?)*
 - ✅ "+5K MCP devs/wk discover us → mindshare lift toward default-OSS-X"
 
-If you can't write the subhead in that shape, the card isn't HIGH. Drop it.
+If you can't write the subhead in that shape, the card isn't HIGH.
+Drop it.
+
+### Quantify goal impact — % when honest, proxy when not
+
+The user has *short context*. They will not derive impact from
+narrative; they need it stated. Every card carries an explicit
+goal-impact line: *how much of the locked goal does tapping Yes
+move*.
+
+Two acceptable shapes — pick the one the data actually supports:
+
+1. **% of goal** when the goal has a countable target.
+   - Goal: "10 daily-active agency lovers w/ public proof" → card
+     for shipping a 30s demo on X: *"goal-impact: ~10% — one
+     viral post historically lands ~1 new public lover"*.
+   - Goal: "1K weekly-active users by EOM" → card for a Lenny
+     guest post: *"goal-impact: ~3-5% — Lenny readers convert
+     at ~0.1%, 3M reach → ~3K possible WAU lift, 30-50 likely
+     stick"*.
+2. **Direct measurable proxy** when % would be hand-wavy. Use the
+   actual lever, with a number.
+   - *"goal-impact: +5K MCP devs/wk see us"*
+   - *"goal-impact: unblocks $20K enterprise deal"*
+   - *"goal-impact: 1 tier-1 customer testimonial locked"*
+
+**Honesty bar.** A made-up percentage is worse than no percentage.
+If you can't ground the % in something — historical conversion,
+a benchmark, a competitor's number, the user's own stated
+threshold — drop the % and use the proxy line instead. The user
+will catch fake confidence and tune you out.
 
 ### Sell the card before asking for the tap
 
-Proactive cards feel random because the user did not ask for them. The
-card must explain why this idea matters for the user's stated goal and
-why it deserves attention now. This is not hype; it is the bridge from
-"agent idea" to "user priority."
+Proactive cards feel random because the user did not ask for them.
+The card must explain *why this idea matters for the locked goal*
+and *why it deserves attention now*. This is not hype; it is the
+bridge from "agent idea" to "user priority".
 
-Every suggestion card needs a compact persuasion block in the visible
-body or first expandable:
+Every suggestion card needs a compact persuasion block in the
+visible body or first expandable. Three lines, in this order:
 
 ```
 why this matters: <one sentence tying the action to the user's goal>
-importance: <low|medium|high> because <specific reach / money / risk / time window>
+goal-impact:     <~X% of "<locked goal>"  OR  direct measurable proxy>
+importance:      <low|medium|high> because <specific reach / money / risk / time window>
 ```
 
 Use concrete evidence:
@@ -315,13 +392,14 @@ Use concrete evidence:
 - timing: "launch window closes tonight", "reply is 2h old"
 - effort: "one tap", "already drafted", "asset attached"
 
-If the card cannot make a convincing goal-tie, it is not a good agency
-card. Do not post it just because the scan found something interesting.
+If the card cannot make a convincing goal-tie and goal-impact line,
+it is not a good agency card. Do not post it just because the scan
+found something interesting.
 
-Keep the persuasion out of the image. The image is a billboard, not the
-card body: it should make the user recognize the action area and the goal
-impact at a glance. Put the exact steps, evidence, and "why this matters"
-copy in the title, subhead, body, and expandable.
+Keep the persuasion *off* the image — the image is the billboard,
+not the proof. The image's job is one-glance "what action, what
+goal-lever"; the body carries evidence, % impact, and the exact
+steps.
 
 Convince via specifics, not begging:
 
@@ -330,8 +408,8 @@ Convince via specifics, not begging:
 - A user-quote callback ("you said '2× faster than Y' in #general — back it publicly")
 - A peer-network proof ("Z is YC W25 + warm investor path")
 
-Don't add "please accept this!" lines. Neediness reads as weakness and
-gets dismissed faster.
+Don't add "please accept this!" lines. Neediness reads as weakness
+and gets dismissed faster.
 
 ### Compression bar
 
@@ -440,12 +518,12 @@ fallback default:
 ## Canonical card layout
 
 ```
-[optional image — include whenever it speeds comprehension]
-<emoji> <verb-led one-line action>
-<one context sentence>
+[image — what + impact in 2 seconds]
+<emoji> <verb-led one-line action>          ← WHAT (Yes-tap = this happens)
+<one context sentence with goal-impact>     ← WHY for the locked goal, with a number
 
 ▾ 📝 Drafted action     (one expandable, when there's a draft)
-▾ 📎 Context            (optional second expandable)
+▾ 📎 Context            (optional second expandable, often the persuasion block)
 
 [primary action] [⏭ Skip]
 [third button]          ← 🧵 Open thread, 📝 Edit, or 🔁 More variants
@@ -455,8 +533,10 @@ fallback default:
 
 1. **Title = verb-led action**: `Reply to <person> on Slack — explain
    v0.4.3 RC ETA`. Not `🤖 Agency #119 — wants help`.
-2. **One context sentence** under the title. No bullets, no "## Why this
-   matters" header. Prose.
+2. **One context sentence** under the title, carrying the goal-impact
+   number. Not bullets, not a "## Why this matters" header — just prose
+   with a real number. *"Lenny guest post — 3M ICP reach, ~3-5% toward
+   1K WAU goal."*
 3. **One expandable for the draft**, default `📝 Drafted action`. Don't
    label it "Variant A" unless B and C actually exist with buttons to pick.
 4. **Multi-variant cards: one expandable per variant, NOT all variants
@@ -546,7 +626,17 @@ preview — just do it.
 Include an image on **every** card unless it's a pure photo asset (video MP4,
 real chart, real screenshot — those carry their own visual). The image's job
 is to make the card 2-second-readable on a phone screen: **what** would
-happen if the user taps yes, and **why** it matters.
+happen if the user taps yes, and **how that moves the goal**.
+
+The image is a billboard, not a paragraph. The user reads:
+
+1. The emoji (1 frame) → what *kind* of action this is
+2. The big WHAT line (1 frame) → the artifact/channel/lever in caps
+3. The IMPACT line (1 frame) → the goal-lever number ("3M reach", "+5% to 1K WAU", "$20K unblocked")
+
+If a user can't recognize the goal-relevance from the image alone in
+2 seconds, the image is failing its job — fix the impact line, don't
+add more words.
 
 ### Style: gradient + color-emoji is the default. placehold.co is a fallback.
 
