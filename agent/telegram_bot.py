@@ -213,6 +213,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("agent", "switch this topic's agent (claude|codex)"),
     ("claude", "switch/login/logout Claude"),
     ("codex", "switch/login/logout Codex"),
+    ("miniapp", "open the goal card feed"),
     ("live", "live-view URL of the active browser"),
     ("queue", "pending tasks in this topic"),
     ("cancel", "kill the running task + drop pending"),
@@ -4743,6 +4744,7 @@ class Bot:
                 "/claude login — sign in Claude through a terminal flow\n"
                 "/claude logout — sign out Claude\n"
                 "/agent claude|codex — switch this topic to a different agent\n"
+                "/miniapp — open the goal card feed\n"
                 "/live — live-view URL of the active browser\n"
                 "/queue — pending tasks in this topic\n"
                 "/cancel — kill the running task / terminal + drop "
@@ -4757,6 +4759,54 @@ class Bot:
                 reply_to=mid,
                 thread_id=thread_id,
             )
+            return
+        if cmd == "/miniapp":
+            if not owner or not _is_owner(sender, owner):
+                self.send(
+                    chat_id,
+                    "Mini App is owner-only.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                )
+                return
+            url = os.environ.get("BUX_MINIAPP_PUBLIC_URL", "").strip()
+            if not url:
+                self.send(
+                    chat_id,
+                    "Mini App backend is running locally on the box. Set "
+                    "`BUX_MINIAPP_PUBLIC_URL` to an HTTPS URL to open it in Telegram.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
+            if not url.startswith("https://"):
+                self.send(
+                    chat_id,
+                    "`BUX_MINIAPP_PUBLIC_URL` must start with https:// for Telegram.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
+            separator = "&" if "?" in url else "?"
+            url = f"{url}{separator}v=20260512x6"
+            owner_chat = int(owner.get("user_id") or chat_id)
+            target_chat = owner_chat if chat_id != owner_chat else chat_id
+            self.send(
+                target_chat,
+                "Open your goal feed.",
+                reply_markup={
+                    "inline_keyboard": [[{"text": "Open Mini App", "web_app": {"url": url}}]]
+                },
+            )
+            if target_chat != chat_id:
+                self.send(
+                    chat_id,
+                    "Sent the secure Mini App button to your DM.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                )
             return
         if cmd == "/whoami":
             who_label = _sender_label(sender) or "(unknown)"

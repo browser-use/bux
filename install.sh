@@ -568,12 +568,12 @@ fi
 # install.sh wrote them via heredoc and bootstrap.sh immediately
 # replaced those with symlinks — pure dead code that had also drifted
 # from the source-of-truth repo files.
-for unit in bux-browser-keeper.service bux-ttyd.service bux-tg.service; do
+for unit in bux-browser-keeper.service bux-ttyd.service bux-tg.service bux-miniapp.service; do
 	ln -sfn "$REPO_DIR/agent/$unit" "/etc/systemd/system/$unit"
 done
 
 systemctl daemon-reload
-systemctl enable bux-browser-keeper.service bux-ttyd.service >/dev/null
+systemctl enable bux-browser-keeper.service bux-ttyd.service bux-miniapp.service >/dev/null
 
 # --- optional: Telegram bot setup -----------------------------------------
 if [ -n "$TG_BOT_TOKEN" ]; then
@@ -599,8 +599,8 @@ EOF
 	# can't spam arbitrary users.
 	chmod 640 /etc/bux/tg.env
 	chown root:bux /etc/bux/tg.env
-	systemctl enable bux-tg.service >/dev/null
-	systemctl restart bux-tg.service
+	systemctl enable bux-tg.service bux-miniapp.service >/dev/null
+	systemctl restart bux-tg.service bux-miniapp.service
 
 	# Resolve bot username for the user-facing instructions.
 	bot_username=$(curl -fsSL "https://api.telegram.org/bot${TG_BOT_TOKEN}/getMe" | jq -r '.result.username' 2>/dev/null || echo '')

@@ -78,9 +78,13 @@ for the exact persuasion-block shape.
 - **Surface DONE work, not forks.** A card says "I did X — commit?", never
   "Should I do X or Y?". Multi-option buttons only when each option is a
   different commitment ("post tweet only / linkedin only / all 3").
-- **Card body is short.** Verb-led one-line action + one context sentence.
-  Detailed framing belongs in expandables (collapsed) or in `--prompt`
-  (only the worker agent sees that).
+- **Card body is short and Mini-App-safe.** Think X.com post, not report:
+  verb-led headline, 1 visible reason line, optional image, then collapsed
+  Context / Draft / Evidence blocks. Never put raw investigation notes,
+  long IDs, timestamps, parent IDs, or multi-paragraph provenance in
+  `--description`; that field is visible in the Mini App and must stay
+  under about 240 characters. Detailed framing belongs in expandables
+  (collapsed) or in `--prompt` (only the worker agent sees that).
 - **Always via `agency-report`.** Never raw `tg-send` for an agency card.
 - **Dedup via `--source <slug> --skip-if-exists`.** Same signal → same
   slug → same row. If status ∈ {accepted, dismissed, regenerated, expired,
@@ -384,17 +388,34 @@ and gets dismissed faster.
 The card must be 2-second-readable on a phone screen, sometimes late-
 night, sometimes mid-workout. Specifics:
 
-- Title ≤ 80 chars.
+- Title ≤ 90 chars. Verb-led, human-readable, no internal numbering,
+  "SUPERSEDE", parent IDs, or long handles.
+- Visible body / `--description` ≤ 240 chars. 1-2 natural sentences:
+  what matters and why now. Put proof, names, dates, IDs, and raw
+  provenance in collapsed blocks, never in the visible body.
 - Subhead ≤ 100 chars and contains the impact phrase.
 - Draft expandable: 3-5 lines of paste-ready text. No reasoning, no
   preamble.
 - Reasoning expandable: optional, max 3 sentences, only if it adds
   urgency or unblocks a question the user would actually ask.
+- Context / Evidence expandables: collapsed by default. Keep each one
+  skimmable; if it is longer than ~8 phone lines, summarize harder.
 - No bullet trees nested >1 level.
 - No URL pasted bare — always `[label](url)`. Place URLs inside
   `--source-label` / `--source-url` for the canonical clickable header.
 - Image (`--image-text` or `--image-file`): default ON unless the card
   type is genuinely text-only (e.g. a benchmark number table).
+- Mini App compatibility: cards render like an X.com feed item: compact
+  app/source icon, source handle, timestamp/age, short post text, media,
+  and a sparse action row. The default expanded sections are `Draft /
+  idea`, `Why it matters`, and `Source`. Do not add a generic "Context"
+  block unless it names the real human, app, company, or thread that
+  supplies the context. Scrolling advances past a card; don't depend on a
+  visible Skip button in the Mini App. If your `agency-report` call would
+  look ugly in that shape, rewrite the card before posting.
+- The visible reason must say why this matters for the current goal in
+  plain language. Do not write generic "moves the goal forward" copy.
+  Name the concrete outcome, risk, or leverage.
 
 ### Track signal, adapt over time
 
@@ -490,20 +511,23 @@ fallback default:
 <emoji> <verb-led one-line action>
 <one context sentence>
 
-▾ 📝 Drafted action     (one expandable, when there's a draft)
-▾ 📎 Context            (optional second expandable)
+▾ 📝 Draft / idea       (one expandable, when there's a draft)
+▾ 💥 Why it matters     (impact, risk, upside)
+▾ 🔗 Source             (app/person/link, no raw IDs)
 
-[primary action] [⏭ Skip]
+[primary action] [optional secondary action]
 [third button]          ← 🧵 Open thread, 📝 Edit, or 🔁 More variants
 ```
 
 **Rules:**
 
 1. **Title = verb-led action**: `Reply to <person> on Slack — explain
-   v0.4.3 RC ETA`. Not `🤖 Agency #119 — wants help`.
+   v0.4.3 RC ETA`. Not `🤖 Agency #119 — wants help`. Never include
+   long IDs, log numbers, opaque hashes, or raw counters in the title.
 2. **One context sentence** under the title. No bullets, no "## Why this
-   matters" header. Prose.
-3. **One expandable for the draft**, default `📝 Drafted action`. Don't
+   matters" header. Prose. It must explain why this matters for the
+   user's active goal without using the phrase "moves the goal forward".
+3. **One expandable for the draft**, default `📝 Draft / idea`. Don't
    label it "Variant A" unless B and C actually exist with buttons to pick.
 4. **Multi-variant cards: one expandable per variant, NOT all variants
    crammed into a single block.** When a brief offers genuine A/B/C
@@ -512,19 +536,24 @@ fallback default:
    `📝 Variant C · escalate`. The user opens only the one they're
    considering. Stuffing all three into a single `Drafted action`
    expandable defeats the point of the collapse.
-5. **Optional `📎 Context`** for provenance / related threads / why this
-   is distinct. Skip when nothing useful. Empty expandables are worse than
-   no expandable. **Don't put internal log-entry numbers (`N=145`,
-   `N=146`) in here** — they're agency-cron bookkeeping the user
-   doesn't read. Drop the "X cards pending" framing too. The Context
-   block is ≤2 short prose lines or it doesn't ship.
-6. **Buttons in a 2+1 grid.** Row 1 = primary + Skip. Row 2 = third
-   button alone.
-7. **Per-card-type tweaks override**:
+5. **Source and why are not dumps.** Source is app/person/link, not raw
+   telemetry. Why is the impact or risk in one or two plain sentences.
+   **Don't put internal log-entry numbers (`N=145`, `N=146`), long
+   numeric IDs, raw counters, or hashes anywhere visible** — they're
+   agency-cron bookkeeping the user doesn't read. Drop the "X cards
+   pending" framing too.
+6. **Buttons are sparse.** Telegram cards may still include `⏭ Skip`, but
+   the Mini App shows only Comment + Start. The card must still make sense
+   when a user scrolls past it instead of tapping Skip.
+7. **Image generation is deliberate.** Prefer `agency-report --image-file`
+   with a real screenshot/chart/generated PNG when the visual teaches
+   something. Use `agency-report --image-text` only as a sparse fallback:
+   1-3 words for the object/source or outcome, not a copy of the title.
+8. **Per-card-type tweaks override**:
    - PR / merge → primary expandable is the diff or PR link
    - Video / demo → MP4 is the surface; no drafted-text expandable
    - Status / FYI → sometimes no expandable at all is right
-8. **Resist filling out a fixed schema.** Let card type drive shape.
+9. **Resist filling out a fixed schema.** Let card type drive shape.
 
 ### Common block patterns
 

@@ -1,0 +1,651 @@
+#!/opt/bux/venv/bin/python
+"""Per-box Telegram Mini App backend.
+
+Runs on the user's own box and serves a small mobile card feed. Auth is
+Telegram Mini App initData validated with this box's TG_BOT_TOKEN; access is
+then restricted to the box owner. The frontend is static and every API request
+sends initData in X-Telegram-Init-Data.
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import hashlib
+import hmac
+import html
+import json
+import os
+import re
+import sqlite3
+import sys
+import threading
+import time
+import urllib.parse
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+
+REPO_AGENT = Path(__file__).resolve().parent
+STATIC_DIR = REPO_AGENT / "mini_app_static"
+TG_ENV = Path("/etc/bux/tg.env")
+TG_STATE = Path("/etc/bux/tg-state.json")
+TG_ALLOWED = Path("/etc/bux/tg-allowed.txt")
+MINI_DB = Path(os.environ.get("BUX_MINIAPP_DB", "/var/lib/bux/miniapp.db"))
+HOST = os.environ.get("BUX_MINIAPP_HOST", "127.0.0.1")
+PORT = int(os.environ.get("BUX_MINIAPP_PORT", "8787"))
+AUTH_MAX_AGE_SEC = int(os.environ.get("BUX_MINIAPP_AUTH_MAX_AGE", "86400"))
+
+sys.path.insert(0, str(REPO_AGENT))
+import agency_db  # noqa: E402
+
+
+def _read_kv(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    try:
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            out[key.strip()] = value.strip().strip('"').strip("'")
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def _tg_env() -> dict[str, str]:
+    env = _read_kv(TG_ENV)
+    env.update({k: v for k, v in os.environ.items() if k.startswith("TG_")})
+    return env
+
+
+def _box_owner_id() -> str:
+    env = _tg_env()
+    if env.get("TG_OWNER_ID"):
+        return str(env["TG_OWNER_ID"])
+    try:
+        state = json.loads(TG_STATE.read_text())
+    except Exception:
+        state = {}
+    owner = state.get("box_owner") or {}
+    if owner.get("user_id"):
+        return str(owner["user_id"])
+    owners = state.get("owners") or {}
+    for rec in owners.values():
+        if isinstance(rec, dict) and rec.get("user_id"):
+            return str(rec["user_id"])
+    try:
+        for raw in TG_ALLOWED.read_text().split():
+            chat_id = int(raw.strip())
+            if chat_id > 0:
+                return str(chat_id)
+    except Exception:
+        pass
+    return ""
+
+
+def _bot_token() -> str:
+    token = _tg_env().get("TG_BOT_TOKEN", "")
+    if not token:
+        raise PermissionError("TG_BOT_TOKEN missing")
+    return token
+
+
+def _default_chat_id() -> int:
+    try:
+        for raw in TG_ALLOWED.read_text().split():
+            raw = raw.strip()
+            if raw:
+                return int(raw)
+    except Exception:
+        return 0
+    return 0
+
+
+def _validate_init_data(init_data: str) -> dict[str, Any]:
+    """Validate Telegram Mini App initData and return the decoded user."""
+    if os.environ.get("BUX_MINIAPP_DEV") == "1" and init_data == "dev":
+        owner_id = _box_owner_id() or "1234567890"
+        return {
+            "id": int(owner_id),
+            "first_name": "Dev",
+            "username": "dev",
+        }
+    parsed = urllib.parse.parse_qsl(init_data, keep_blank_values=True)
+    values = dict(parsed)
+    received_hash = values.pop("hash", "")
+    if not received_hash:
+        raise PermissionError("missing Telegram initData hash")
+    data_check = "\n".join(f"{key}={value}" for key, value in sorted(values.items()))
+    secret = hmac.new(b"WebAppData", _bot_token().encode(), hashlib.sha256).digest()
+    expected = hmac.new(secret, data_check.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, received_hash):
+        raise PermissionError("invalid Telegram initData signature")
+    auth_date = int(values.get("auth_date") or "0")
+    if auth_date and time.time() - auth_date > AUTH_MAX_AGE_SEC:
+        raise PermissionError("Telegram initData expired")
+    try:
+        user = json.loads(values.get("user") or "{}")
+    except json.JSONDecodeError as exc:
+        raise PermissionError("invalid Telegram user payload") from exc
+    owner_id = _box_owner_id()
+    if owner_id and str(user.get("id") or "") != owner_id:
+        raise PermissionError("not this box owner")
+    return user
+
+
+def _mini_conn() -> sqlite3.Connection:
+    MINI_DB.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(str(MINI_DB))
+    db.row_factory = sqlite3.Row
+    db.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS goals (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          context TEXT NOT NULL DEFAULT '',
+          cadence TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'active',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS card_comments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          suggestion_id INTEGER NOT NULL,
+          body TEXT NOT NULL,
+          telegram_user_id TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS card_events (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          suggestion_id INTEGER NOT NULL,
+          event TEXT NOT NULL,
+          detail TEXT NOT NULL DEFAULT '',
+          telegram_user_id TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        );
+        """
+    )
+    db.commit()
+    return db
+
+
+def _now() -> int:
+    return int(time.time())
+
+
+def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: Any) -> None:
+    data = json.dumps(payload, ensure_ascii=False).encode()
+    handler.send_response(status)
+    handler.send_header("Content-Type", "application/json; charset=utf-8")
+    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("Content-Length", str(len(data)))
+    handler.end_headers()
+    handler.wfile.write(data)
+
+
+def _text_response(handler: BaseHTTPRequestHandler, status: int, body: bytes, content_type: str) -> None:
+    handler.send_response(status)
+    handler.send_header("Content-Type", content_type)
+    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def _read_json(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    length = int(handler.headers.get("Content-Length") or "0")
+    if length <= 0:
+        return {}
+    raw = handler.rfile.read(min(length, 1024 * 1024))
+    if not raw:
+        return {}
+    return json.loads(raw.decode())
+
+
+def _auth_user(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    parsed = urllib.parse.urlparse(handler.path)
+    query = urllib.parse.parse_qs(parsed.query)
+    init_data = (
+        handler.headers.get("X-Telegram-Init-Data", "")
+        or query.get("initData", [""])[0]
+    )
+    return _validate_init_data(init_data)
+
+
+def _first_goal(db: sqlite3.Connection) -> dict[str, Any] | None:
+    row = db.execute(
+        "SELECT * FROM goals WHERE status = 'active' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _image_data_url(path_value: str | None) -> str:
+    if not path_value:
+        return ""
+    path = Path(path_value).expanduser()
+    try:
+        resolved = path.resolve()
+        if not resolved.exists() or resolved.stat().st_size > 2_000_000:
+            return ""
+        content_type = "image/png"
+        if resolved.suffix.lower() in {".jpg", ".jpeg"}:
+            content_type = "image/jpeg"
+        elif resolved.suffix.lower() == ".webp":
+            content_type = "image/webp"
+        elif resolved.suffix.lower() == ".svg":
+            content_type = "image/svg+xml"
+        data = base64.b64encode(resolved.read_bytes()).decode()
+        return f"data:{content_type};base64,{data}"
+    except Exception:
+        return ""
+
+
+def _card_visual(row: dict[str, Any]) -> dict[str, str]:
+    image_url = (row.get("image_url") or "").strip()
+    image_data_url = _image_data_url(row.get("image_file"))
+    if image_data_url:
+        return {"kind": "image", "src": image_data_url}
+    if image_url.startswith(("https://", "http://")):
+        return {"kind": "image", "src": image_url}
+    palettes = {
+        "high": "linear-gradient(135deg,#121212,#e84a5f)",
+        "med": "linear-gradient(135deg,#16213e,#2ab7ca)",
+        "low": "linear-gradient(135deg,#233142,#84a98c)",
+    }
+    return {
+        "kind": "generated",
+        "gradient": palettes.get(row.get("importance") or "med", palettes["med"]),
+        "label": (row.get("title") or "Action")[:80],
+    }
+
+
+def _clip_text(value: str, limit: int) -> str:
+    text = " ".join((value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+_VISIBLE_ID_RE = re.compile(r"\b[A-Z0-9_:-]{10,}\b|\b\d{5,}\b")
+_RAW_COUNTER_RE = re.compile(r"\b(?:N|id|ID|parent|thread)[=#:]?\d+\b")
+_FILE_URL_RE = re.compile(r"file://\S+")
+_LOCAL_PATH_RE = re.compile(r"(?<!https:)(?<!http:)(?:^|\s)/(?:[\w.-]+/)*[\w.-]+")
+_BRACKET_TAG_RE = re.compile(r"\[[^\]]{1,80}\]")
+_LONG_SLUG_RE = re.compile(r"\b(?=[A-Za-z0-9_-]{24,}\b)(?=.*[-_])[A-Za-z0-9_-]+\b")
+
+
+def _clean_mobile_text(value: str) -> str:
+    text = _BRACKET_TAG_RE.sub("", value or "")
+    text = _FILE_URL_RE.sub(" ", text)
+    text = _LOCAL_PATH_RE.sub(" ", text)
+    text = _RAW_COUNTER_RE.sub("", text)
+    text = _VISIBLE_ID_RE.sub("", text)
+    text = _LONG_SLUG_RE.sub("", text)
+    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
+    text = re.sub(r"([([{])\s+", r"\1", text)
+    text = re.sub(r"\s+([)\]}])", r"\1", text)
+    return " ".join(text.split())
+
+
+def _goal_context() -> dict[str, Any] | None:
+    with _mini_conn() as db:
+        return _first_goal(db)
+
+
+def _cards(limit: int = 30) -> list[dict[str, Any]]:
+    with agency_db.conn() as db:
+        rows = agency_db.list_recent(db, status="pending", limit=limit)
+    with _mini_conn() as mdb:
+        comments = {
+            int(row["suggestion_id"]): int(row["n"])
+            for row in mdb.execute(
+                "SELECT suggestion_id, COUNT(*) AS n FROM card_comments GROUP BY suggestion_id"
+            )
+        }
+    cards: list[dict[str, Any]] = []
+    for row in rows:
+        prompt = _clean_mobile_text((row.get("prompt") or "").strip())
+        why = _clip_text(_clean_mobile_text((row.get("description") or "").strip()), 240)
+        title = _clip_text(_clean_mobile_text(row.get("title") or "Untitled action"), 92)
+        cards.append(
+            {
+                "id": int(row["id"]),
+                "title": title,
+                "why": why,
+                "importance": row.get("importance") or "med",
+                "action": prompt or row.get("title") or "",
+                "source": row.get("source") or "",
+                "created_at": row.get("created_at"),
+                "comments": comments.get(int(row["id"]), 0),
+                "visual": _card_visual(row),
+            }
+        )
+    return cards
+
+
+def _stats() -> dict[str, int]:
+    with agency_db.conn() as db:
+        rows = db.execute(
+            "SELECT status, COUNT(*) AS n FROM suggestions GROUP BY status"
+        ).fetchall()
+    out = {str(row["status"]): int(row["n"]) for row in rows}
+    out["open"] = out.get("pending", 0)
+    out["done"] = out.get("accepted", 0) + out.get("completed", 0)
+    with _mini_conn() as db:
+        out["goals"] = int(db.execute("SELECT COUNT(*) AS n FROM goals").fetchone()["n"])
+        out["comments"] = int(
+            db.execute("SELECT COUNT(*) AS n FROM card_comments").fetchone()["n"]
+        )
+    return out
+
+
+def _write_setting(key: str, value: str, user: dict[str, Any]) -> None:
+    with _mini_conn() as db:
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+              key TEXT PRIMARY KEY,
+              value TEXT NOT NULL,
+              updated_by TEXT NOT NULL,
+              updated_at INTEGER NOT NULL
+            )
+            """
+        )
+        db.execute(
+            """
+            INSERT INTO settings (key, value, updated_by, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+              value = excluded.value,
+              updated_by = excluded.updated_by,
+              updated_at = excluded.updated_at
+            """,
+            (key, value, str(user.get("id") or ""), _now()),
+        )
+        db.commit()
+
+
+def _settings() -> dict[str, str]:
+    with _mini_conn() as db:
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+              key TEXT PRIMARY KEY,
+              value TEXT NOT NULL,
+              updated_by TEXT NOT NULL,
+              updated_at INTEGER NOT NULL
+            )
+            """
+        )
+        return {str(row["key"]): str(row["value"]) for row in db.execute("SELECT * FROM settings")}
+
+
+def _append_event(suggestion_id: int, event: str, user: dict[str, Any], detail: str = "") -> None:
+    with _mini_conn() as db:
+        db.execute(
+            """
+            INSERT INTO card_events (suggestion_id, event, detail, telegram_user_id, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (suggestion_id, event, detail, str(user.get("id") or ""), _now()),
+        )
+        db.commit()
+
+
+def _find_suggestion(suggestion_id: int) -> dict[str, Any] | None:
+    with agency_db.conn() as db:
+        row = db.execute("SELECT * FROM suggestions WHERE id = ?", (suggestion_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def _start_agent_work(suggestion_id: int, user: dict[str, Any]) -> dict[str, Any]:
+    row = _find_suggestion(suggestion_id)
+    if not row:
+        return {"started": False, "error": "card not found"}
+    prompt = (row.get("prompt") or row.get("title") or "").strip()
+    if not prompt:
+        return {"started": False, "error": "card has no action prompt"}
+    try:
+        import telegram_bot
+
+        env = _tg_env()
+        bot = telegram_bot.Bot(env["TG_BOT_TOKEN"], env.get("TG_SETUP_TOKEN", ""))
+        chat_id = int(row.get("tg_chat_id") or 0) or _default_chat_id()
+        if not chat_id:
+            return {"started": False, "error": "no Telegram chat bound"}
+        thread_id = int(row.get("tg_thread_id") or 0)
+        work_thread = thread_id
+        topic_created = False
+        topic_name = (row.get("title") or "Mini App task")[:128]
+        res = bot.call("createForumTopic", chat_id=chat_id, name=topic_name)
+        if res.get("ok"):
+            work_thread = int(res["result"].get("message_thread_id") or thread_id)
+            topic_created = True
+        with agency_db.conn() as db:
+            if row.get("tg_chat_id") and row.get("tg_message_id"):
+                agency_db.record_decision(
+                    db,
+                    int(row.get("tg_chat_id") or 0),
+                    int(row.get("tg_message_id") or 0),
+                    "Mini App Start",
+                )
+            agency_db.set_status(db, suggestion_id, "accepted")
+            if work_thread:
+                agency_db.set_worker_topic(db, suggestion_id, work_thread)
+        bot.call(
+            "sendMessage",
+            chat_id=chat_id,
+            message_thread_id=work_thread or None,
+            text=(
+                "📋 <b>Started from Mini App</b>\n"
+                f"<b>{html.escape(row.get('title') or 'Action', quote=False)}</b>\n"
+                f"<blockquote>{html.escape(prompt, quote=False)}</blockquote>"
+            ),
+            parse_mode="HTML",
+        )
+
+        def run() -> None:
+            try:
+                bot.run_task(
+                    (chat_id, work_thread),
+                    prompt,
+                    reply_to=None,
+                    sender={
+                        "user_id": str(user.get("id") or ""),
+                        "username": user.get("username") or "",
+                        "name": user.get("first_name") or "",
+                    },
+                )
+            except Exception:
+                print("bux-miniapp: agent dispatch failed", file=sys.stderr)
+
+        threading.Thread(
+            target=run, name=f"miniapp-card-{suggestion_id}", daemon=True
+        ).start()
+        return {
+            "started": True,
+            "chat_id": chat_id,
+            "thread_id": work_thread,
+            "topic_created": topic_created,
+        }
+    except Exception as exc:
+        print(f"bux-miniapp: start failed: {exc}", file=sys.stderr)
+        return {"started": False, "error": str(exc)}
+
+
+class MiniAppHandler(BaseHTTPRequestHandler):
+    server_version = "bux-miniapp/0.1"
+
+    def log_message(self, fmt: str, *args: Any) -> None:
+        sys.stderr.write("bux-miniapp " + fmt % args + "\n")
+
+    def do_GET(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        if path == "/health":
+            _json_response(self, 200, {"ok": True})
+            return
+        if path == "/api/me":
+            try:
+                user = _auth_user(self)
+                _json_response(
+                    self,
+                    200,
+                    {
+                        "user": user,
+                        "owner_id": _box_owner_id(),
+                        "settings": _settings(),
+                    },
+                )
+            except PermissionError as exc:
+                _json_response(self, 401, {"error": str(exc)})
+            return
+        if path == "/api/goals":
+            try:
+                _auth_user(self)
+                with _mini_conn() as db:
+                    goals = [dict(row) for row in db.execute("SELECT * FROM goals ORDER BY id DESC")]
+                _json_response(self, 200, {"goals": goals})
+            except PermissionError as exc:
+                _json_response(self, 401, {"error": str(exc)})
+            return
+        if path == "/api/settings":
+            try:
+                _auth_user(self)
+                _json_response(self, 200, {"settings": _settings()})
+            except PermissionError as exc:
+                _json_response(self, 401, {"error": str(exc)})
+            return
+        if path == "/api/cards":
+            try:
+                _auth_user(self)
+                _json_response(self, 200, {"cards": _cards()})
+            except PermissionError as exc:
+                _json_response(self, 401, {"error": str(exc)})
+            return
+        if path == "/api/stats":
+            try:
+                _auth_user(self)
+                _json_response(self, 200, {"stats": _stats()})
+            except PermissionError as exc:
+                _json_response(self, 401, {"error": str(exc)})
+            return
+        if path == "/":
+            path = "/index.html"
+        if path == "/favicon.ico":
+            self.send_response(204)
+            self.send_header("Cache-Control", "max-age=86400")
+            self.end_headers()
+            return
+        target = (STATIC_DIR / path.lstrip("/")).resolve()
+        if not str(target).startswith(str(STATIC_DIR.resolve())) or not target.exists():
+            _json_response(self, HTTPStatus.NOT_FOUND, {"error": "not found"})
+            return
+        content_type = "text/plain"
+        if target.suffix == ".html":
+            content_type = "text/html; charset=utf-8"
+        elif target.suffix == ".css":
+            content_type = "text/css; charset=utf-8"
+        elif target.suffix == ".js":
+            content_type = "application/javascript; charset=utf-8"
+        _text_response(self, 200, target.read_bytes(), content_type)
+
+    def do_POST(self) -> None:
+        try:
+            user = _auth_user(self)
+            body = _read_json(self)
+            parsed = urllib.parse.urlparse(self.path)
+            path = parsed.path.strip("/").split("/")
+            if parsed.path == "/api/goals":
+                title = (body.get("title") or "").strip()
+                context = (body.get("context") or "").strip()
+                cadence = (body.get("cadence") or "").strip()
+                if not title:
+                    _json_response(self, 400, {"error": "title required"})
+                    return
+                now = _now()
+                with _mini_conn() as db:
+                    cur = db.execute(
+                        """
+                        INSERT INTO goals (title, context, cadence, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (title, context, cadence, now, now),
+                    )
+                    db.commit()
+                    goal_id = int(cur.lastrowid)
+                _json_response(self, 200, {"ok": True, "goal_id": goal_id})
+                return
+            if parsed.path == "/api/settings":
+                provider = (body.get("provider") or "").strip().lower()
+                if provider and provider not in {"codex", "claude"}:
+                    _json_response(self, 400, {"error": "provider must be codex or claude"})
+                    return
+                if provider:
+                    _write_setting("provider", provider, user)
+                _json_response(self, 200, {"ok": True, "settings": _settings()})
+                return
+            if len(path) >= 4 and path[:2] == ["api", "cards"]:
+                suggestion_id = int(path[2])
+                action = path[3]
+                if not _find_suggestion(suggestion_id):
+                    _json_response(self, 404, {"error": "card not found"})
+                    return
+                if action == "comment":
+                    comment = (body.get("comment") or "").strip()
+                    if not comment:
+                        _json_response(self, 400, {"error": "comment required"})
+                        return
+                    with _mini_conn() as db:
+                        db.execute(
+                            """
+                            INSERT INTO card_comments
+                              (suggestion_id, body, telegram_user_id, created_at)
+                            VALUES (?, ?, ?, ?)
+                            """,
+                            (suggestion_id, comment, str(user.get("id") or ""), _now()),
+                        )
+                        db.commit()
+                    _append_event(suggestion_id, "comment", user, comment)
+                    _json_response(self, 200, {"ok": True})
+                    return
+                if action == "dismiss":
+                    with agency_db.conn() as db:
+                        agency_db.set_status(db, suggestion_id, "dismissed")
+                    _append_event(suggestion_id, "dismiss", user)
+                    _json_response(self, 200, {"ok": True})
+                    return
+                if action == "different":
+                    detail = (body.get("comment") or "").strip()
+                    with agency_db.conn() as db:
+                        agency_db.set_status(db, suggestion_id, "differently")
+                    _append_event(suggestion_id, "different", user, detail)
+                    _json_response(self, 200, {"ok": True})
+                    return
+                if action == "start":
+                    _append_event(suggestion_id, "start", user)
+                    result = _start_agent_work(suggestion_id, user)
+                    status = 200 if result.get("started") else 409
+                    _json_response(self, status, {"ok": bool(result.get("started")), **result})
+                    return
+            _json_response(self, 404, {"error": "not found"})
+        except PermissionError as exc:
+            _json_response(self, 401, {"error": str(exc)})
+        except Exception as exc:
+            _json_response(self, 500, {"error": str(exc)})
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--host", default=HOST)
+    parser.add_argument("--port", type=int, default=PORT)
+    args = parser.parse_args()
+    server = ThreadingHTTPServer((args.host, args.port), MiniAppHandler)
+    print(f"bux-miniapp listening on http://{args.host}:{args.port}", flush=True)
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

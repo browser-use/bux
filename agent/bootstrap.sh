@@ -237,10 +237,11 @@ polkit.addRule(function(action, subject) {
         // bux-tg: agent restarts after writing /etc/bux/tg.env on install.
         // box-agent: agent restarts itself at the tail of self-update so
         //   the new code takes effect.
-        // bux-browser-keeper / bux-ttyd: same self-update path.
+        // bux-browser-keeper / bux-ttyd / bux-miniapp: same self-update path.
         if (unit == "bux-tg.service" ||
             unit == "box-agent.service" ||
             unit == "bux-browser-keeper.service" ||
+            unit == "bux-miniapp.service" ||
             unit == "bux-ttyd.service") {
             return polkit.Result.YES;
         }
@@ -252,7 +253,7 @@ chmod 644 /etc/polkit-1/rules.d/50-bux-chat.rules
 # --- systemd units --------------------------------------------------------
 # Symlink rather than copy so a `git pull` propagates without re-running
 # bootstrap. systemd reads via the symlink fine.
-for unit in box-agent.service bux-ttyd.service bux-browser-keeper.service bux-tg.service; do
+for unit in box-agent.service bux-ttyd.service bux-browser-keeper.service bux-tg.service bux-miniapp.service; do
   ln -sf "$AGENT_DIR/$unit" "/etc/systemd/system/$unit"
 done
 
@@ -272,7 +273,7 @@ cat > /etc/systemd/system/bux-boot-update.service <<'UNITEOF'
 Description=bux boot-time git pull + bootstrap
 After=network-online.target
 Wants=network-online.target
-Before=box-agent.service bux-tg.service bux-browser-keeper.service bux-ttyd.service
+Before=box-agent.service bux-tg.service bux-browser-keeper.service bux-ttyd.service bux-miniapp.service
 
 [Service]
 Type=oneshot
@@ -307,9 +308,10 @@ systemctl enable box-agent.service
 systemctl enable bux-ttyd.service
 systemctl enable bux-browser-keeper.service
 
-# bux-tg stays enabled-but-conditional — only runs once /etc/bux/tg.env
+# bux-tg and bux-miniapp stay enabled-but-conditional — only run once /etc/bux/tg.env
 # is written by the agent's tg_install handler.
 systemctl enable bux-tg.service
+systemctl enable bux-miniapp.service
 
 # Boot-time pull runs ahead of the others on every reboot.
 systemctl enable bux-boot-update.service
@@ -333,6 +335,9 @@ systemctl restart box-agent.service 2>/dev/null || true
 # bux-tg only restarts if it was already running (not started on first boot).
 if systemctl is-active --quiet bux-tg.service; then
   systemctl restart bux-tg.service
+fi
+if systemctl is-active --quiet bux-miniapp.service; then
+  systemctl restart bux-miniapp.service
 fi
 if systemctl is-active --quiet bux-browser-keeper.service; then
   systemctl restart bux-browser-keeper.service

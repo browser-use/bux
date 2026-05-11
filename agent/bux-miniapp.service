@@ -1,0 +1,19 @@
+[Unit]
+Description=bux Telegram Mini App (localhost card feed)
+After=network-online.target
+ConditionPathExists=/etc/bux/tg.env
+
+[Service]
+Type=simple
+User=bux
+Group=bux
+EnvironmentFile=/etc/bux/tg.env
+WorkingDirectory=/opt/bux/agent
+ExecStart=/opt/bux/venv/bin/python /opt/bux/agent/mini_app.py --host 127.0.0.1 --port 8787
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/bux/miniapp.log
+StandardError=append:/var/log/bux/miniapp.log
+
+[Install]
+WantedBy=multi-user.target

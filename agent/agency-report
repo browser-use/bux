@@ -747,6 +747,11 @@ def main() -> int:
 
     buttons = _resolve_buttons(args)
     button_labels_for_db = [label for label, _ in buttons]
+    generated_image_file = None
+    if args.image_text and not args.image and not args.image_file:
+        generated_image_file = _render_image_text_file(args)
+    image_url = None if generated_image_file else _resolve_image_url(args)
+    stored_image_file = args.image_file or generated_image_file
 
     if args.skip_if_exists and args.source:
         prior = agency_db.exists(db, args.source)
@@ -766,16 +771,14 @@ def main() -> int:
         source=args.source,
         prompt=args.prompt,
         buttons=button_labels_for_db,
+        image_url=image_url,
+        image_file=stored_image_file,
         chat_id=chat_id(),
         thread_id=args.thread_id,
         spawn_topic=args.spawn_topic,
     )
 
     body = _build_body(args)
-    generated_image_file = None
-    if args.image_text and not args.image and not args.image_file:
-        generated_image_file = _render_image_text_file(args)
-    image_url = None if generated_image_file else _resolve_image_url(args)
     keyboard = (
         None
         if args.info_only
@@ -788,7 +791,7 @@ def main() -> int:
         thread=args.thread_id,
         body=body,
         image_url=image_url,
-        image_file=args.image_file or generated_image_file,
+        image_file=stored_image_file,
         keyboard=keyboard,
     )
     agency_db.update_message(db, sugg_id, msg_id)

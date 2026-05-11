@@ -57,6 +57,8 @@ def init_schema(db: sqlite3.Connection) -> None:
           source          TEXT,                  -- e.g. slack-c-foo, gmail-thread-19df, gh-pr-78
           prompt          TEXT,                  -- the action that would run if user says yes
           buttons_json    TEXT,                  -- JSON list of the labels shown
+          image_url       TEXT,
+          image_file      TEXT,
           tg_chat_id      INTEGER,
           tg_thread_id    INTEGER,
           tg_message_id   INTEGER,
@@ -88,6 +90,10 @@ def init_schema(db: sqlite3.Connection) -> None:
          "ALTER TABLE suggestions ADD COLUMN spawn_topic INTEGER NOT NULL DEFAULT 0"),
         ("refine_context_injected",
          "ALTER TABLE suggestions ADD COLUMN refine_context_injected INTEGER NOT NULL DEFAULT 0"),
+        ("image_url",
+         "ALTER TABLE suggestions ADD COLUMN image_url TEXT"),
+        ("image_file",
+         "ALTER TABLE suggestions ADD COLUMN image_file TEXT"),
     ):
         try:
             db.execute(ddl)
@@ -110,6 +116,8 @@ def insert(
     source: str | None = None,
     prompt: str | None = None,
     buttons: list[str] | None = None,
+    image_url: str | None = None,
+    image_file: str | None = None,
     chat_id: int | None = None,
     thread_id: int | None = None,
     spawn_topic: bool = False,
@@ -117,9 +125,9 @@ def insert(
     cur = db.execute(
         """
         INSERT INTO suggestions (
-          title, description, importance, source, prompt, buttons_json,
+          title, description, importance, source, prompt, buttons_json, image_url, image_file,
           tg_chat_id, tg_thread_id, spawn_topic
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             title,
@@ -128,6 +136,8 @@ def insert(
             source,
             prompt,
             json.dumps(buttons) if buttons is not None else None,
+            image_url,
+            image_file,
             chat_id,
             thread_id,
             1 if spawn_topic else 0,
