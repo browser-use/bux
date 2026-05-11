@@ -57,14 +57,13 @@ line doesn't tie to the locked goal with a number — the card gets
 skipped. Acceptance rate drops. Trust erodes. The user mutes the
 channel.
 
-**Every card must answer three questions in 2 seconds:**
+**Every card must answer two questions in 2 seconds:**
 
 1. **What** would happen if I tap Yes? *(title — verb-led)*
 2. **Why** does that matter for my goal? *(subhead — concrete number tying to the goal)*
-3. **How much** of my goal does this move? *(goal-impact — % or measurable proxy)*
 
-The image carries (1) and (2) visually. The card body carries (3)
-explicitly. See "Tie every card to the user's end-goal frame" below
+The image carries both visually; the card body backs them up with
+evidence. See "Tie every card to the user's end-goal frame" below
 for the exact persuasion-block shape.
 
 ## Core principles
@@ -340,35 +339,6 @@ with a concrete number when possible:
 If you can't write the subhead in that shape, the card isn't HIGH.
 Drop it.
 
-### Quantify goal impact — % when honest, proxy when not
-
-The user has *short context*. They will not derive impact from
-narrative; they need it stated. Every card carries an explicit
-goal-impact line: *how much of the locked goal does tapping Yes
-move*.
-
-Two acceptable shapes — pick the one the data actually supports:
-
-1. **% of goal** when the goal has a countable target.
-   - Goal: "10 daily-active agency lovers w/ public proof" → card
-     for shipping a 30s demo on X: *"goal-impact: ~10% — one
-     viral post historically lands ~1 new public lover"*.
-   - Goal: "1K weekly-active users by EOM" → card for a Lenny
-     guest post: *"goal-impact: ~3-5% — Lenny readers convert
-     at ~0.1%, 3M reach → ~3K possible WAU lift, 30-50 likely
-     stick"*.
-2. **Direct measurable proxy** when % would be hand-wavy. Use the
-   actual lever, with a number.
-   - *"goal-impact: +5K MCP devs/wk see us"*
-   - *"goal-impact: unblocks $20K enterprise deal"*
-   - *"goal-impact: 1 tier-1 customer testimonial locked"*
-
-**Honesty bar.** A made-up percentage is worse than no percentage.
-If you can't ground the % in something — historical conversion,
-a benchmark, a competitor's number, the user's own stated
-threshold — drop the % and use the proxy line instead. The user
-will catch fake confidence and tune you out.
-
 ### Sell the card before asking for the tap
 
 Proactive cards feel random because the user did not ask for them.
@@ -377,12 +347,11 @@ and *why it deserves attention now*. This is not hype; it is the
 bridge from "agent idea" to "user priority".
 
 Every suggestion card needs a compact persuasion block in the
-visible body or first expandable. Three lines, in this order:
+visible body or first expandable:
 
 ```
 why this matters: <one sentence tying the action to the user's goal>
-goal-impact:     <~X% of "<locked goal>"  OR  direct measurable proxy>
-importance:      <low|medium|high> because <specific reach / money / risk / time window>
+importance:       <low|medium|high> because <specific reach / money / risk / time window>
 ```
 
 Use concrete evidence:
@@ -392,14 +361,13 @@ Use concrete evidence:
 - timing: "launch window closes tonight", "reply is 2h old"
 - effort: "one tap", "already drafted", "asset attached"
 
-If the card cannot make a convincing goal-tie and goal-impact line,
-it is not a good agency card. Do not post it just because the scan
-found something interesting.
+If the card cannot make a convincing goal-tie, it is not a good
+agency card. Do not post it just because the scan found something
+interesting.
 
 Keep the persuasion *off* the image — the image is the billboard,
 not the proof. The image's job is one-glance "what action, what
-goal-lever"; the body carries evidence, % impact, and the exact
-steps.
+goal-lever"; the body carries evidence and the exact steps.
 
 Convince via specifics, not begging:
 
@@ -518,12 +486,12 @@ fallback default:
 ## Canonical card layout
 
 ```
-[image — what + impact in 2 seconds]
-<emoji> <verb-led one-line action>          ← WHAT (Yes-tap = this happens)
-<one context sentence with goal-impact>     ← WHY for the locked goal, with a number
+[optional image — include whenever it speeds comprehension]
+<emoji> <verb-led one-line action>
+<one context sentence>
 
 ▾ 📝 Drafted action     (one expandable, when there's a draft)
-▾ 📎 Context            (optional second expandable, often the persuasion block)
+▾ 📎 Context            (optional second expandable)
 
 [primary action] [⏭ Skip]
 [third button]          ← 🧵 Open thread, 📝 Edit, or 🔁 More variants
@@ -533,10 +501,8 @@ fallback default:
 
 1. **Title = verb-led action**: `Reply to <person> on Slack — explain
    v0.4.3 RC ETA`. Not `🤖 Agency #119 — wants help`.
-2. **One context sentence** under the title, carrying the goal-impact
-   number. Not bullets, not a "## Why this matters" header — just prose
-   with a real number. *"Lenny guest post — 3M ICP reach, ~3-5% toward
-   1K WAU goal."*
+2. **One context sentence** under the title. No bullets, no "## Why this
+   matters" header. Prose.
 3. **One expandable for the draft**, default `📝 Drafted action`. Don't
    label it "Variant A" unless B and C actually exist with buttons to pick.
 4. **Multi-variant cards: one expandable per variant, NOT all variants
@@ -626,17 +592,7 @@ preview — just do it.
 Include an image on **every** card unless it's a pure photo asset (video MP4,
 real chart, real screenshot — those carry their own visual). The image's job
 is to make the card 2-second-readable on a phone screen: **what** would
-happen if the user taps yes, and **how that moves the goal**.
-
-The image is a billboard, not a paragraph. The user reads:
-
-1. The emoji (1 frame) → what *kind* of action this is
-2. The big WHAT line (1 frame) → the artifact/channel/lever in caps
-3. The IMPACT line (1 frame) → the goal-lever number ("3M reach", "+5% to 1K WAU", "$20K unblocked")
-
-If a user can't recognize the goal-relevance from the image alone in
-2 seconds, the image is failing its job — fix the impact line, don't
-add more words.
+happen if the user taps yes, and **why** it matters.
 
 ### Style: gradient + color-emoji is the default. placehold.co is a fallback.
 
