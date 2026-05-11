@@ -109,6 +109,19 @@ if [ -e /home/bux/CLAUDE.md ]; then
   chown -h bux:bux /home/bux/AGENTS.md
 fi
 
+# --- agency skill stub for Claude Code -------------------------------------
+# Claude Code auto-loads skills from ~/.claude/skills/<name>/SKILL.md and
+# surfaces their trigger phrases to the skill picker. The agency skill's
+# canonical doctrine lives in agent/AGENCY.md; agent/agency-skill.md is a
+# thin stub that just owns the trigger phrases ("start agency", "scan
+# everything", etc.) and points back at AGENCY.md. We symlink the stub
+# into place so a `git pull` to a newer AGENCY.md propagates without
+# re-running bootstrap, and so the stub itself stays under version
+# control instead of drifting on-disk per-box.
+install -d -o bux -g bux -m 0755 /home/bux/.claude/skills/agency
+ln -sfn "$AGENT_DIR/agency-skill.md" /home/bux/.claude/skills/agency/SKILL.md
+chown -h bux:bux /home/bux/.claude/skills/agency/SKILL.md
+
 # Agency DB lives at /var/lib/bux/agency.db (created by agency_db on
 # first use). Make sure the directory is writable by `bux` so any
 # agency-report invocation can init the schema without sudo.
