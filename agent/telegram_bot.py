@@ -1923,20 +1923,22 @@ class ShellSession:
             # refuses to complete inside Telegram's in-app browser — claude.ai
             # detects the embedded WebKit user-agent and the redirect chain
             # silently breaks. The user has to copy the link and paste into
-            # a real browser. In minimal_login_mode we hand them just one
-            # button (Copy link) and a one-liner — no URL body, no warning,
-            # no Open button (Open opens in TG's in-app browser by default
-            # which is the broken path; better to not offer it). In normal
-            # mode we keep the verbose treatment for users running
-            # `/terminal claude auth login` directly.
+            # a real browser. In minimal_login_mode we lead with the Copy
+            # button and also include the raw URL in a code block as a
+            # fallback for Telegram clients / Bot API paths that fail to
+            # render copy_text buttons. In normal mode we keep the verbose
+            # treatment for users running `/terminal claude auth login`
+            # directly.
             if "claude.ai/login" in url or "/oauth/authorize" in url:
                 if self.minimal_login_mode:
                     self.bot.send(
                         self.chat_id,
                         "🔑 *Sign in to Claude*\n"
                         "Tap *Copy link* → open in Chrome → finish "
-                        "sign-in → paste the code back here. `/cancel` "
-                        "to abort.",
+                        "sign-in → paste the code back here.\n\n"
+                        "If the button is missing, copy this link:\n"
+                        f"```\n{url}\n```\n\n"
+                        "`/cancel` to abort.",
                         thread_id=self.thread_id,
                         markdown=True,
                         reply_markup=_minimal_oauth_url_markup(url),
@@ -3772,11 +3774,23 @@ class Bot:
                     if _is_claude_auth_error(out):
                         # Cached status is now stale (a creds-expired 401
                         # is the canonical "you got logged out" event).
-                        # Bust before showing the picker so subsequent
-                        # checks don't read a now-wrong "still logged in"
-                        # value from cache.
+                        # Bust before starting login so subsequent checks
+                        # don't read a now-wrong "still logged in" value
+                        # from cache. This error came from the Claude lane,
+                        # so don't show the generic provider picker — start
+                        # Claude's OAuth flow directly and replace any stale
+                        # login terminal in this topic.
                         _login_status_cache_invalidate("claude")
-                        self._send_login_picker(chat_id, reply_to, thread_id)
+                        owner = _owner_for(chat_id, self.state)
+                        self._cmd_claude_login(
+                            chat_id,
+                            reply_to,
+                            thread_id,
+                            slug,
+                            sender or {},
+                            owner,
+                            force_existing=True,
+                        )
                         return
                     self.send(
                         chat_id,
@@ -5640,6 +5654,7 @@ class Bot:
         slug: str,
         sender: dict,
         owner: dict | None,
+        force_existing: bool = False,
     ) -> None:
         if not _is_owner(sender, owner):
             self.send(
@@ -5652,10 +5667,26 @@ class Bot:
             return
         existing = _get_shell_session(slug)
         if existing is not None:
+            if force_existing:
+                existing.kill(reason="restart-login")
+                deadline = time.time() + 2.0
+                while _get_shell_session(slug) is not None and time.time() < deadline:
+                    time.sleep(0.05)
+            else:
+                self.send(
+                    chat_id,
+                    "💻 terminal session already running here. Paste into it, or use "
+                    "/interrupt, /exit, or /cancel first.",
+                    reply_to=reply_to,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
+        if _get_shell_session(slug) is not None:
             self.send(
                 chat_id,
-                "💻 terminal session already running here. Paste into it, or use "
-                "/interrupt, /exit, or /cancel first.",
+                "💻 terminal session is still shutting down. Try `/claude login` "
+                "again in a moment, or use `/cancel` first.",
                 reply_to=reply_to,
                 thread_id=thread_id,
                 markdown=True,
