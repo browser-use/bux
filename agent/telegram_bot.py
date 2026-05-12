@@ -4830,7 +4830,7 @@ class Bot:
                 )
                 return
             separator = "&" if "?" in url else "?"
-            url = f"{url}{separator}v=20260512x36"
+            url = f"{url}{separator}v=20260512x37"
             self.send(
                 chat_id,
                 "Open Agency.",

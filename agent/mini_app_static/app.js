@@ -182,7 +182,7 @@ function renderCard(card, index) {
         ${action ? detailHtml(detailLabel(action), action) : ""}
         ${mediaHtml(card)}
         ${commentPanelHtml(card, meta)}
-        <div class="post-actions ${actionButtons.length ? "" : "no-primary"}">
+        <div class="post-actions ${actionButtons.length ? "" : "no-primary"} ${actionButtons.length > 1 ? "stack-primary" : ""}">
           <div class="secondary-actions">
             <button class="icon-action skip icon-only" data-delete="${card.id}" type="button" aria-label="Skip" title="Skip">${skipSvg()}</button>
             <button class="icon-action" data-context="${card.id}" type="button" aria-label="Refine">${replySvg()}<span>Refine</span></button>

@@ -619,6 +619,17 @@ button {
   min-width: min(100%, 174px);
 }
 
+.post-actions.stack-primary .primary-actions {
+  order: 1;
+  flex: 0 0 100%;
+  justify-content: flex-start;
+  min-width: 100%;
+}
+
+.post-actions.stack-primary .secondary-actions {
+  order: 2;
+}
+
 .post-actions .start-inline {
   min-height: 28px;
   width: auto;
