@@ -1,7 +1,8 @@
 # Browser Use Box ♞
 
-<img src="docs/hero.jpg" alt="Browser Use Box hero" width="100%" />
-
+<p align="center">
+  <img src="docs/hero.gif" alt="Bux is the CEO. You're just the thumb." width="320" />
+</p>
 
 ## Your 24/7 Claude Code agent with a real browser, on any box you own.
 
@@ -50,6 +51,24 @@ SSH into it (I'll paste the host below), run install.sh with my BROWSER_USE_API_
 ```
 
 Three small services under systemd. Agent state lives in `/home/bux`, so reboots keep your cookies, skills, and chat history.
+
+## Agency mode
+
+Text `start agency` to your bot and bux flips from reactive to proactive: it scans your connected surfaces — email, Slack, GitHub, calendar, observability — pre-does the reversible work, and surfaces the *irreversible step* as a one-tap card.
+
+```
+┌─────────────────────────────────────────┐
+│ 📨 Reply to Saurav — n8n nudge          │
+│ verified npm 0.1.6, no provenance,      │
+│ promo tweet 10m ago. draft attached.    │
+│                                         │
+│  [ ✅ Send ]  [ ✏️ Edit ]  [ ⏭ Skip ]    │
+└─────────────────────────────────────────┘
+```
+
+One topic per ongoing goal. Each card ties back to that goal with an impact line and a screenshot. Default is silence — cards land only when there's something high-impact to do. You're the thumb; bux is the rest.
+
+See [agent/AGENCY.md](agent/AGENCY.md) for the full doctrine — card shape, button kinds, dedup rules, and the acceptance-rate north star.
 
 ## Docs
 
