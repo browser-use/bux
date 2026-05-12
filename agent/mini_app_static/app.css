@@ -237,6 +237,7 @@ button {
 
 .post-main {
   min-width: 0;
+  position: relative;
 }
 
 .tweet-head {
@@ -246,6 +247,7 @@ button {
   width: 100%;
   min-width: 0;
   margin-bottom: 2px;
+  padding-right: 34px;
 }
 
 .app-icon {
@@ -372,7 +374,7 @@ button {
 
 .post-text a,
 .tweet-detail a,
-.post-source a {
+.post-source {
   color: #1d9bf0;
   text-decoration: none;
 }
@@ -431,27 +433,11 @@ button {
 }
 
 .post-source {
-  flex: 0 0 auto;
-  min-width: 0;
-  max-width: 34%;
-  color: #71767b;
-  font-size: 13px;
-  overflow: hidden;
-  text-align: right;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: #1d9bf0;
+  text-decoration: none;
 }
 
-.post-source a,
-.post-source span {
-  display: block;
-  overflow: hidden;
-  color: #71767b;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.post-source a::after {
+.post-source::after {
   content: " ↗";
   font-size: 11px;
 }
@@ -518,20 +504,12 @@ button {
 
 .post-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px 14px;
+  justify-content: flex-end;
+  gap: 10px;
   min-height: 42px;
   margin-top: 14px;
-}
-
-.post-actions.no-primary {
-  justify-content: flex-start;
-}
-
-.post-actions.no-primary .primary-actions {
-  display: none;
 }
 
 .comment-panel {
@@ -602,16 +580,8 @@ button {
   font-weight: 700;
 }
 
-.secondary-actions {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 44px;
-}
-
 .primary-actions {
-  flex: 1 1 174px;
+  flex: 1 1 auto;
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
@@ -621,13 +591,9 @@ button {
 
 .post-actions.stack-primary .primary-actions {
   order: 1;
-  flex: 0 0 100%;
+  flex: 1 1 auto;
   justify-content: flex-start;
-  min-width: 100%;
-}
-
-.post-actions.stack-primary .secondary-actions {
-  order: 2;
+  min-width: 0;
 }
 
 .post-actions .start-inline {
@@ -665,6 +631,38 @@ button {
 .icon-action.icon-only svg {
   width: 23px;
   height: 23px;
+}
+
+.card-dismiss {
+  position: absolute;
+  top: -2px;
+  right: -4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 999px;
+  color: #71767b;
+  background: transparent;
+}
+
+.card-dismiss svg {
+  width: 21px;
+  height: 21px;
+}
+
+.comment-action {
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  justify-content: center;
+}
+
+.comment-action svg {
+  width: 21px;
+  height: 21px;
 }
 
 .end-card {

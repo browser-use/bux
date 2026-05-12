@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Agency Tinder</title>
+    <link rel="stylesheet" href="/tinder.css?v=20260512x1" />
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="goal-rail" id="goalRail" aria-label="Goals"></aside>
+      <section class="deck-shell">
+        <header class="topbar">
+          <div>
+            <strong>Agency</strong>
+            <span id="deckMeta">0 cards</span>
+          </div>
+          <button id="moreButton" type="button">More</button>
+        </header>
+        <section id="deck" class="deck" aria-live="polite"></section>
+      </section>
+      <dialog id="contextSheet" class="context-sheet">
+        <form id="contextForm" method="dialog">
+          <label for="contextInput">Context</label>
+          <textarea id="contextInput" rows="5" placeholder="Tell the agent what changed or what to optimize for."></textarea>
+          <div class="context-actions">
+            <button id="voiceButton" type="button">Mic</button>
+            <button value="cancel" type="button" data-close-context>Cancel</button>
+            <button value="send" type="submit">Send</button>
+          </div>
+        </form>
+      </dialog>
+      <div id="toast" class="toast" role="status"></div>
+    </main>
+    <script src="/tinder.js?v=20260512x1" type="module"></script>
+  </body>
+</html>

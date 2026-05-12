@@ -174,12 +174,12 @@ function renderCard(card, index) {
         ${appIconHtml(meta)}
       </div>
       <div class="post-main">
+        <button class="card-dismiss" data-delete="${card.id}" type="button" aria-label="Skip" title="Skip">${skipSvg()}</button>
         <header class="tweet-head">
           <div>
             <strong>${escapeHtml(meta.name)}</strong>
-            <span>${escapeHtml(subtitle)}</span>
+            <span>${escapeHtml(subtitle)}${sourceInline(card)}</span>
           </div>
-          ${sourceLine(card, meta)}
         </header>
         <div class="post-body">
           <div class="post-text ${needsExpand ? "collapsed" : ""}">${postText}</div>
@@ -188,11 +188,8 @@ function renderCard(card, index) {
         ${action ? detailHtml(detailLabel(action), action) : ""}
         ${mediaHtml(card)}
         ${commentPanelHtml(card, meta)}
-        <div class="post-actions ${actionButtons.length ? "" : "no-primary"} ${actionButtons.length > 1 ? "stack-primary" : ""}">
-          <div class="secondary-actions">
-            <button class="icon-action skip icon-only" data-delete="${card.id}" type="button" aria-label="Skip" title="Skip">${skipSvg()}</button>
-            <button class="icon-action" data-context="${card.id}" type="button" aria-label="Refine">${replySvg()}<span>Refine</span></button>
-          </div>
+        <div class="post-actions ${actionButtons.length > 1 ? "stack-primary" : ""}">
+          <button class="icon-action comment-action icon-only" data-context="${card.id}" type="button" aria-label="Comment" title="Comment">${replySvg()}</button>
           <div class="primary-actions">
             ${actionButtons.map((label) => `<button class="start-inline" data-start="${card.id}" data-button="${escapeAttr(label.raw)}" title="${escapeAttr(label.text)}" type="button">${escapeHtml(label.text)}</button>`).join("")}
           </div>
@@ -223,14 +220,11 @@ function detailHtml(label, text) {
   `;
 }
 
-function sourceLine(card, meta) {
+function sourceInline(card) {
   const url = card.source_url || firstUrl([card.title, card.why].join(" "));
   if (!url) return "";
   const label = card.source_label || "Source";
-  const body = url
-    ? `<a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label || "Source")}</a>`
-    : `<span>${escapeHtml(label)}</span>`;
-  return `<div class="post-source">${body}</div>`;
+  return ` · <a class="post-source" href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label || "Source")}</a>`;
 }
 
 function firstUrl(value) {
@@ -246,7 +240,7 @@ function commentPanelHtml(card, meta) {
       <div class="comment-row">
         ${appIconHtml(meta, "small")}
         <div>
-          <strong>Magnus</strong>
+          <strong>You</strong>
           <span>${escapeHtml(relativeAge(comment.created_at))}</span>
           <p>${renderRichText(comment.body)}</p>
         </div>

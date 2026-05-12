@@ -992,6 +992,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
             return
         if path == "/":
             path = "/index.html"
+        if path == "/tinder":
+            path = "/tinder.html"
         if path == "/favicon.ico":
             self.send_response(204)
             self.send_header("Cache-Control", "max-age=86400")
@@ -1143,7 +1145,7 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 dispatched = _dispatch_topic_context(
                     chat_id,
                     0,
-                    _goal_agent_prompt("General Agency feed", "Generate fresh action items for Magnus.", mode="more"),
+                    _goal_agent_prompt("General Agency feed", "Generate fresh action items for the user.", mode="more"),
                     user,
                     heading="Mini App generate more",
                 )

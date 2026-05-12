@@ -1508,6 +1508,29 @@ def _enqueue(slug: str, job: dict, run_drain) -> int:
     return depth
 
 
+def _lane_promote_to_front(slug: str, job_id: str) -> dict | None:
+    """Move a queued follow-up to run right after the in-flight turn exits."""
+    with _lanes_lock:
+        q = _lanes.get(slug, [])
+        for i, job in enumerate(q):
+            if job.get("id") != job_id:
+                continue
+            if job.get("status") != "queued":
+                return None
+            target = 0
+            for k, queued in enumerate(q):
+                if queued.get("status") == "in_flight":
+                    target = k + 1
+                    break
+            if i == target:
+                return job
+            q.pop(i)
+            q.insert(target, job)
+            _save_lanes_to_disk_locked()
+            return job
+    return None
+
+
 def _resume_pending_workers(run_drain) -> int:
     """Spawn drain threads for every lane that already has queued work.
 
@@ -3819,7 +3842,7 @@ class Bot:
             # cancellation paths already acknowledged the kill, so only emit a
             # terminal Cancelled bubble for unexpected external termination.
             if proc.returncode in (-9, -15):
-                if _inflight_cancel_reasons.get(slug) not in {"user-cancel", "drain-timeout"}:
+                if _inflight_cancel_reasons.get(slug) not in {"user-cancel", "drain-timeout", "followup-steer"}:
                     self.react(chat_id, reply_to, EMOJI_ERROR)
                     self.send(
                         chat_id,
@@ -4161,7 +4184,7 @@ class Bot:
             # cancellation paths already acknowledged the kill, so only emit a
             # terminal Cancelled bubble for unexpected external termination.
             if proc.returncode in (-9, -15):
-                if _inflight_cancel_reasons.get(slug) not in {"user-cancel", "drain-timeout"}:
+                if _inflight_cancel_reasons.get(slug) not in {"user-cancel", "drain-timeout", "followup-steer"}:
                     self.react(chat_id, reply_to, EMOJI_ERROR)
                     self.send(
                         chat_id,
@@ -4476,7 +4499,7 @@ class Bot:
             return None, f"❌ Whisper transcription failed: {e}"
 
     def _extract_attachment(self, msg: dict) -> tuple[str | None, str]:
-        """Return (path-on-disk, prompt-prefix) for any image/doc attachment."""
+        """Return (path-on-disk, prompt-prefix) for any image/doc/video attachment."""
         photos = msg.get("photo") or []
         if photos:
             file_id = photos[-1].get("file_id")
@@ -4484,6 +4507,23 @@ class Bot:
                 path = self._download_telegram_file(file_id, ".jpg")
                 if path:
                     return path, f"User sent an image at {path}. "
+        video = msg.get("video") or {}
+        if video.get("file_id"):
+            fname = video.get("file_name") or ""
+            mime = video.get("mime_type") or ""
+            if "." in fname:
+                suffix = "." + fname.rsplit(".", 1)[1].lower()
+            elif "quicktime" in mime:
+                suffix = ".mov"
+            elif "webm" in mime:
+                suffix = ".webm"
+            elif "x-matroska" in mime or "matroska" in mime:
+                suffix = ".mkv"
+            else:
+                suffix = ".mp4"
+            path = self._download_telegram_file(video["file_id"], suffix)
+            if path:
+                return path, f"User sent a video at {path}. "
         doc = msg.get("document") or {}
         if doc.get("file_id"):
             fname = doc.get("file_name") or ""
@@ -4909,7 +4949,7 @@ class Bot:
                 )
                 return
             separator = "&" if "?" in url else "?"
-            url = f"{url}{separator}v=20260512x37"
+            url = f"{url}{separator}v=20260512x40"
             self.send(
                 chat_id,
                 "Open Agency.",
@@ -5016,7 +5056,7 @@ class Bot:
         # inject a path reference into the prompt so the agent can read it.
         attachment_path, attach_prefix = self._extract_attachment(msg)
         if attachment_path is None and not text:
-            has_attachment = bool(msg.get("photo") or msg.get("document"))
+            has_attachment = bool(msg.get("photo") or msg.get("video") or msg.get("document"))
             if has_attachment:
                 self.send(
                     chat_id,
@@ -5032,7 +5072,7 @@ class Bot:
             # actual file behind it.
             self.send(
                 chat_id,
-                "I don't know how to handle that — text, photos, documents, and voice notes only.",
+                "I don't know how to handle that — text, photos, videos, documents, and voice notes only.",
                 reply_to=mid,
                 thread_id=thread_id,
             )
@@ -5074,13 +5114,17 @@ class Bot:
         # tied to Telegram ingestion, not agent dispatch timing.
         if isinstance(mid, int):
             self.react(chat_id, mid, random_thinking_reaction())
-        _enqueue(slug, job, self._lane_drain)
+        depth = _enqueue(slug, job, self._lane_drain)
         self.typing(chat_id, thread_id=thread_id)
-        # Follow-ups are FIFO by default. The bot acknowledges them
-        # immediately, but it must not implicitly kill the in-flight turn:
-        # users often send a quick correction or second instruction and still
-        # expect the first answer to land. Use /cancel for the explicit
-        # hard-stop path.
+        # Follow-ups steer the lane immediately: the new message is promoted
+        # to run next, the current process group is killed, and the same
+        # agent session resumes with prior thread context plus the new prompt.
+        if depth > 1:
+            _lane_promote_to_front(slug, job["id"])
+            with _inflight_lock:
+                proc = _inflight_procs.get(slug)
+                if proc is not None and proc.poll() is None:
+                    _kill_inflight_proc(slug, proc, "followup-steer")
 
     def _cmd_queue(self, slug: str, chat_id: int, reply_to: int | None, thread_id: int) -> None:
         jobs = _snapshot_lane(slug)
@@ -6130,13 +6174,12 @@ class Bot:
         try:
             data = cb.get("data") or ""
             if data.startswith("steer:"):
-                # Legacy Steer button. Follow-ups are now FIFO; explicit
-                # /cancel is the hard-stop path. Quiet-toast + strip the
-                # button so old queue-ack bubbles don't look broken.
+                # Legacy Steer button. Follow-up messages now steer
+                # automatically; explicit /cancel remains the hard-stop path.
                 self.call(
                     "answerCallbackQuery",
                     callback_query_id=cb["id"],
-                    text="queued messages now run in order; use /cancel to stop a turn",
+                    text="send a follow-up to steer; use /cancel to stop",
                 )
                 msg = cb.get("message") or {}
                 chat_id = (msg.get("chat") or {}).get("id")
