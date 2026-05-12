@@ -59,6 +59,12 @@ Yes-tap routing — auto-default by thread context:
   • If there is no current forum topic, --spawn-topic defaults to ON so
     the accepted work gets a lane.
 
+Routing policy:
+  • Default in forum topics: in-place "✅ Yes" for short work.
+  • Use --spawn-topic / "🧵 Yes (new thread)" only for bigger projects:
+    recurring monitors, multi-step investigations, work likely to take
+    >10 tool calls, or anything that will produce multiple follow-ups.
+
 Override the auto-default with:
   • --spawn-topic    — force spawn (always create a new topic on Yes/Edit)
   • --no-spawn-topic — force in-place (always run in the current thread)

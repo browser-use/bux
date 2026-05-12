@@ -321,6 +321,8 @@ Each interaction costs one tap, not one keystroke. `--button` overrides defaults
 
 Override with `--spawn-topic` / `--no-spawn-topic`. Use `--spawn-topic` only when the card truly needs a separate lane; Mini App cards are rendered inside one goal section and should stay in that goal by default.
 
+Policy: default to in-place `✅ Yes` for short work. If the accepted action is likely one small action or a few tool calls, keep it in the current topic/session. Use `🧵 Yes (new thread)` / `--spawn-topic` only for bigger projects: recurring monitors, multi-step investigations, work likely to take >10 tool calls, or anything that will produce multiple follow-ups over time.
+
 **Multi-tap dedupes the worker topic.** Tapping Yes twice doesn't spawn two; subsequent taps reuse the first `worker_topic_id`.
 
 **Deep-link glued to the card.** A `🧵 Open thread` URL row is appended to the original card's keyboard so the link survives newer cards.
@@ -412,7 +414,7 @@ Check each topic's brief before drafting.
 
 `/miniapp` opens the per-box Telegram Mini App. "Agency start <goal>" or a new Mini App goal creates/uses one Telegram topic as the goal lane, records context there, and asks the agent to generate initial cards. "Generate more" means: continue from that topic's current context and produce more high-signal action cards, not a new goal. Cards should use short, phone-readable copy, clickable sources, real images/videos when available, and no internal IDs.
 
-When a Mini App card is accepted, run it in the same goal topic/session by default. If the user accepts 10 cards from one goal, push all 10 into that goal's agent session. The agent can create sub-agents or new Telegram topics later only when it is clearly useful.
+When a Mini App card is accepted, run it in the same goal topic/session by default. If the user accepts 10 cards from one goal, push all 10 into that goal's agent session. The agent can create sub-agents or new Telegram topics later only when it is clearly useful: recurring monitor, larger project, or >10-tool-call investigation.
 
 When you receive an accepted Mini App card, treat the card as a full ticket. Read the title, why-it-matters sentence, source, expandable sections, and picked button before acting. If the ticket is a bigger project or recurring monitor, create a dedicated Telegram topic and send the agent there; otherwise keep working in the current goal session.
 
