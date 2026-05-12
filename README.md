@@ -1,8 +1,6 @@
 # Browser Use Box ♞
 
-<p align="center">
-  <img src="docs/hero.gif" alt="Bux is the CEO. You're just the thumb." width="320" />
-</p>
+<img src="docs/hero.jpg" alt="Browser Use Box hero" width="100%" />
 
 ## Your 24/7 Claude Code agent with a real browser, on any box you own.
 
