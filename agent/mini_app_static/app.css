@@ -55,8 +55,7 @@ button {
   left: 0;
   right: 0;
   display: grid;
-  grid-template-columns: 44px 1fr 44px;
-  gap: 10px;
+  grid-template-columns: 1fr;
   align-items: center;
   padding: calc(env(safe-area-inset-top) + 10px) 14px 10px;
   pointer-events: none;
@@ -101,6 +100,10 @@ button {
   backdrop-filter: blur(18px);
   font-size: 20px;
   font-weight: 900;
+}
+
+.chrome .icon-button {
+  display: none;
 }
 
 .feed {
@@ -185,6 +188,24 @@ button {
   white-space: nowrap;
   font-size: 13px;
   font-weight: 800;
+}
+
+.goal-tabs .topic-create-tab {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  width: 46px;
+  max-width: 46px;
+  min-height: 48px;
+  padding: 0;
+  color: #1d9bf0;
+  background: #050608;
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.goal-tabs .topic-create-tab::after {
+  display: none;
 }
 
 .goal-tabs button.active {
@@ -817,14 +838,26 @@ button {
   font-weight: 950;
 }
 
+.sheet-primary {
+  width: auto;
+  min-height: 36px;
+  margin-left: auto;
+  padding: 0 18px;
+  border-radius: 999px;
+  color: #fff;
+  background: #1d9bf0;
+  font-size: 14px;
+  font-weight: 800;
+}
+
 .sheet {
   width: min(calc(100vw - 28px), 500px);
   margin: auto auto 16px;
   padding: 0;
-  border: 1px solid var(--line);
-  border-radius: 22px;
+  border: 1px solid #2f3336;
+  border-radius: 20px;
   color: var(--ink);
-  background: #10131a;
+  background: #000;
 }
 
 .sheet::backdrop {
@@ -833,45 +866,64 @@ button {
 
 .sheet form,
 .stats-sheet {
-  padding: 18px;
+  padding: 16px;
+}
+
+.sheet h2 {
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.2;
 }
 
 .sheet textarea {
   width: 100%;
-  margin: 14px 0;
-  padding: 14px;
-  border: 1px solid var(--line);
-  border-radius: 16px;
+  min-height: 128px;
+  margin: 10px 0 12px;
+  padding: 8px 0;
+  border: 0;
+  border-bottom: 1px solid #2f3336;
+  border-radius: 0;
   color: var(--ink);
-  background: rgba(255, 255, 255, 0.06);
+  background: transparent;
+  font-size: 20px;
+  line-height: 1.35;
   resize: vertical;
 }
 
 .record-button {
-  width: 100%;
-  min-height: 118px;
-  border: 1px solid rgba(98, 213, 255, 0.42);
-  border-radius: 20px;
-  color: #061015;
-  background: linear-gradient(135deg, var(--blue), #a0ffcf);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: auto;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid #1d9bf0;
+  border-radius: 999px;
+  color: #1d9bf0;
+  background: transparent;
+  font-size: 14px;
+  font-weight: 800;
 }
 
 .compact-record {
-  min-height: 76px;
+  min-height: 36px;
   margin-top: 14px;
 }
 
 .record-button span {
   display: block;
-  font-size: 42px;
+  font-size: 13px;
+  line-height: 1;
 }
 
 .record-button.compact-record span {
-  font-size: 26px;
+  font-size: 13px;
 }
 
 .record-button.recording {
-  background: linear-gradient(135deg, #ff5f6f, #ffd36b);
+  color: #fff;
+  background: #f4212e;
+  border-color: #f4212e;
 }
 
 .context-sheet {
@@ -941,27 +993,37 @@ button {
 }
 
 .empty {
-  display: grid;
-  place-items: center;
-  height: 100svh;
-  padding: 24px;
-  text-align: center;
-  background:
-    radial-gradient(circle at 50% 22%, rgba(98, 213, 255, 0.28), transparent 30%),
-    #07080a;
+  display: block;
+  min-height: 100svh;
+  padding: calc(env(safe-area-inset-top) + 136px) 28px 32px;
+  color: #e7e9ea;
+  text-align: left;
+  background: #000;
 }
 
 .empty h1 {
-  margin: 0 0 12px;
-  font-size: 38px;
-  line-height: 0.96;
+  margin: 0 0 8px;
+  font-size: 22px;
+  line-height: 1.18;
 }
 
 .empty p {
-  margin: 0 auto 22px;
+  margin: 0 0 18px;
   max-width: 32ch;
-  color: var(--muted);
-  line-height: 1.4;
+  color: #71767b;
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.empty .create-goal {
+  width: auto;
+  min-height: 36px;
+  padding: 0 18px;
+  border-radius: 999px;
+  color: #fff;
+  background: #1d9bf0;
+  font-size: 14px;
+  font-weight: 800;
 }
 
 .toast {

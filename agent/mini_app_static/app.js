@@ -538,12 +538,13 @@ function renderGoalTabs() {
     ...state.goals.map((item) => ({ id: String(item.id), title: item.title, count: goalCardCount(item.id) })),
     ...topics,
   ];
-  els.goalTabs.innerHTML = tabs
+  els.goalTabs.innerHTML = `<button class="topic-create-tab" type="button" data-open-goal aria-label="Create topic">+</button>` + tabs
     .map((item) => {
       const active = String(item.id) === String(state.activeGoalId) ? "active" : "";
       return `<button class="${active}" type="button" data-goal="${escapeHtml(item.id)}">${escapeHtml(item.title)} <span>${item.count}</span></button>`;
     })
     .join("");
+  els.goalTabs.querySelector("[data-open-goal]")?.addEventListener("click", openGoal);
   els.goalTabs.querySelectorAll("[data-goal]").forEach((button) => {
     button.addEventListener("click", () => selectGoal(button.dataset.goal || "all"));
   });
