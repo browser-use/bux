@@ -4040,19 +4040,11 @@ class Bot:
                                 reply_to=reply_to,
                                 sender=sender,
                             )
-                        # Codex isn't authed either → fall back to the
-                        # original Claude OAuth flow so the user can
-                        # actually sign in.
-                        owner = _owner_for(chat_id, self.state)
-                        self._cmd_claude_login(
-                            chat_id,
-                            reply_to,
-                            thread_id,
-                            slug,
-                            sender or {},
-                            owner,
-                            force_existing=True,
-                        )
+                        # Neither agent is authed. Do not dump raw
+                        # "not logged in; run login" CLI text into Telegram:
+                        # show the same two-button agent picker used for a
+                        # fresh box so the user can choose Codex or Claude.
+                        self._send_login_picker(chat_id, reply_to, thread_id)
                         return
                     self.send(
                         chat_id,
@@ -4435,13 +4427,8 @@ class Bot:
             f"Chat id: {chat_id}\n\n"
             "🔒 This bot is now locked to this chat only. Every other chat is "
             "silently dropped — even if someone discovers the bot handle.\n\n"
-            "Pick an agent to drive — `/claude login` for Claude (default), "
-            "or `/codex login` for Codex. The box also works without either "
-            "if you only need browser tools / Composio integrations.\n\n"
-            "Text me anything once you're signed in and I'll run it on your "
-            "bux. Want parallel work? Turn on Topics in this chat and each "
-            "topic becomes a separate agent session. Use `/codex` per-topic "
-            "to switch from claude.",
+            "Pick the agent you want to drive this box:",
+            reply_markup=_login_picker_reply_markup(),
         )
 
     def _auto_allow_chat(
@@ -6041,7 +6028,7 @@ class Bot:
         """
         self.send(
             chat_id,
-            "👋 To get started, sign in with one of these:",
+            "Not signed in yet. Pick an agent to connect:",
             reply_to=reply_to,
             thread_id=thread_id,
             reply_markup=_login_picker_reply_markup(),
