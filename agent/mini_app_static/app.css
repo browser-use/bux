@@ -330,6 +330,13 @@ button {
   overflow-wrap: anywhere;
 }
 
+.post-text.collapsed {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
+}
+
 .post-text strong {
   font-weight: 850;
 }
@@ -338,6 +345,16 @@ button {
 .tweet-detail a {
   color: #1d9bf0;
   text-decoration: none;
+}
+
+.show-more {
+  margin: 5px 0 0;
+  padding: 0;
+  border: 0;
+  color: #1d9bf0;
+  background: transparent;
+  font-size: 15px;
+  font-weight: 700;
 }
 
 .tweet-detail {
@@ -547,8 +564,8 @@ button {
   width: 100%;
   padding: 0 18px;
   border-radius: 999px;
-  color: #fff;
-  background: #1d9bf0;
+  color: #050608;
+  background: #eff3f4;
   font-size: 16px;
   font-weight: 800;
 }

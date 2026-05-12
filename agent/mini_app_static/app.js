@@ -146,6 +146,7 @@ function renderCard(card, index) {
   const actionButtons = cardActionButtons(card);
   const subtitle = meta.brand ? relativeAge(card.created_at) : `@${meta.handle} · ${relativeAge(card.created_at)}`;
   const postText = renderPostText(card);
+  const needsExpand = plainPostText(card).length > 360;
   const article = document.createElement("article");
   article.className = "story";
   article.dataset.index = String(index);
@@ -163,9 +164,10 @@ function renderCard(card, index) {
           </div>
         </header>
         <div class="post-body">
-          <div class="post-text">${postText}</div>
+          <div class="post-text ${needsExpand ? "collapsed" : ""}">${postText}</div>
+          ${needsExpand ? `<button class="show-more" type="button" data-expand-text>Show more</button>` : ""}
         </div>
-        ${action ? detailHtml("Show draft", action) : ""}
+        ${action ? detailHtml(detailLabel(action), action) : ""}
         ${mediaHtml(card)}
         ${commentPanelHtml(card, meta)}
         <div class="post-actions ${actionButtons.length ? "" : "no-primary"}">
@@ -186,6 +188,11 @@ function renderCard(card, index) {
     button.addEventListener("click", () => startCard(card.id, button.dataset.button || ""));
   });
   article.querySelector("[data-inline-context-form]")?.addEventListener("submit", submitInlineContext);
+  article.querySelector("[data-expand-text]")?.addEventListener("click", (event) => {
+    const text = article.querySelector(".post-text");
+    text?.classList.toggle("collapsed");
+    event.currentTarget.textContent = text?.classList.contains("collapsed") ? "Show more" : "Show less";
+  });
   return article;
 }
 
@@ -228,6 +235,14 @@ function plainPostText(card) {
   const title = String(card.title || "").trim();
   const why = String(card.why || "").trim();
   return why && why !== title ? `${title}\n${why}` : title || why || "Ready when you are.";
+}
+
+function detailLabel(text) {
+  const value = String(text || "").toLowerCase();
+  if (value.includes("draft") || value.includes("reply") || value.includes("send")) return "Draft";
+  if (value.includes("variant")) return "Variants";
+  if (value.includes("screenshot") || value.includes("verify") || value.includes("run ")) return "Plan";
+  return "Details";
 }
 
 function renderPostText(card) {
@@ -556,9 +571,6 @@ function removeCardNow(id) {
     state.currentIndex = Math.max(0, cards.length - 1);
   }
   render();
-  if (visibleCards()[state.currentIndex]) {
-    document.querySelector(`[data-index="${state.currentIndex}"]`)?.scrollIntoView();
-  }
 }
 
 async function startCard(id, button = "") {
@@ -572,7 +584,6 @@ async function startCurrent(button = "") {
   if (!card) return;
   els.startButton.disabled = true;
   removeCurrent();
-  requestAnimationFrame(() => document.querySelector(`[data-index="${state.currentIndex}"]`)?.scrollIntoView({ block: "start" }));
   try {
     const result = await api(`/api/cards/${card.id}/start`, {
       method: "POST",
