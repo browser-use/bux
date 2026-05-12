@@ -185,6 +185,7 @@ function renderCard(card, index) {
           <div class="post-text ${needsExpand ? "collapsed" : ""}">${postText}</div>
           ${needsExpand ? `<button class="show-more" type="button" data-expand-text>Show more</button>` : ""}
         </div>
+        ${blocksHtml(card)}
         ${action ? detailHtml(detailLabel(action), action) : ""}
         ${mediaHtml(card)}
         ${commentPanelHtml(card, meta)}
@@ -218,6 +219,14 @@ function detailHtml(label, text) {
       <div>${renderRichText(text)}</div>
     </details>
   `;
+}
+
+function blocksHtml(card) {
+  const blocks = Array.isArray(card.blocks) ? card.blocks : [];
+  return blocks.map((block) => {
+    const label = `${block.emoji ? `${block.emoji} ` : ""}${block.title || "Details"}`;
+    return detailHtml(label, block.body || "");
+  }).join("");
 }
 
 function sourceInline(card) {

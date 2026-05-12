@@ -53,12 +53,11 @@ Blocks are specified one of two ways:
     (--info-only with just headline + source link).
 
 Yes-tap routing — auto-default by thread context:
-  • If the current thread is already a worker_topic for some prior
-    card, --spawn-topic defaults to OFF — Yes/Edit dispatch in the
-    same thread. We're already deep in one task; don't fork another.
-  • Otherwise (main agency feed, fresh chat, etc.), --spawn-topic
-    defaults to ON — each Yes/Edit forks a fresh forum topic so
-    suggestions don't pile up in one scroll.
+  • If the card is posted inside any forum topic, --spawn-topic defaults
+    to OFF — Yes/Edit dispatch in the same goal/topic. The agent may
+    create subtopics later if the work genuinely needs fan-out.
+  • If there is no current forum topic, --spawn-topic defaults to ON so
+    the accepted work gets a lane.
 
 Override the auto-default with:
   • --spawn-topic    — force spawn (always create a new topic on Yes/Edit)
@@ -733,20 +732,15 @@ def main() -> int:
 
     db = agency_db.conn()
 
-    # spawn_topic auto-default: if the user didn't pass --spawn-topic /
-    # --no-spawn-topic explicitly, infer from thread context.
-    #
-    #   - thread is already a worker_topic for some other card → in-place
-    #     (we're deep in one task; don't fork another)
-    #   - thread is the main feed / a fresh chat → spawn
-    #     (each suggestion gets its own topic)
-    #
-    # Explicit flags always win over the auto-detected default.
+    # spawn_topic auto-default: forum topics are goal/session lanes, so
+    # accepted cards stay in that lane unless the card explicitly asks
+    # to spawn. A non-topic chat still gets a worker topic.
     if args.spawn_topic is None:
-        args.spawn_topic = not agency_db.is_worker_topic(db, args.thread_id)
+        args.spawn_topic = not bool(args.thread_id)
 
     buttons = [] if args.info_only else _resolve_buttons(args)
     button_labels_for_db = [label for label, _ in buttons]
+    blocks = _resolve_blocks(args)
     generated_image_file = None
     if args.image_text and not args.image and not args.image_file:
         generated_image_file = _render_image_text_file(args)
@@ -771,6 +765,7 @@ def main() -> int:
         source=args.source,
         prompt=args.prompt,
         buttons=button_labels_for_db,
+        blocks=blocks,
         image_url=image_url,
         image_file=stored_image_file,
         source_label=args.source_label,

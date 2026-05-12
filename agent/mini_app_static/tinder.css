@@ -33,10 +33,14 @@ button {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
+  grid-template-columns: 230px minmax(0, 1fr);
   height: 100vh;
   height: 100dvh;
   background: #000;
+}
+
+body.rail-collapsed .app-shell {
+  grid-template-columns: 54px minmax(0, 1fr);
 }
 
 .goal-rail {
@@ -46,12 +50,19 @@ button {
   overflow-y: auto;
 }
 
+.rail-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
 .goal-rail button {
   width: 100%;
-  min-height: 40px;
+  min-height: 38px;
   margin-bottom: 6px;
   padding: 0 12px;
-  border: 0;
+  border: 1px solid transparent;
   border-radius: 999px;
   color: var(--ink);
   background: transparent;
@@ -61,10 +72,64 @@ button {
   text-overflow: ellipsis;
 }
 
+.new-goal {
+  border-color: #eff3f4 !important;
+  color: #0f1419 !important;
+  background: #eff3f4 !important;
+  font-weight: 850;
+  text-align: center !important;
+}
+
+.collapse-rail {
+  padding: 0 !important;
+  display: grid;
+  place-items: center;
+  border-color: var(--line) !important;
+  border-radius: 50% !important;
+  text-align: center !important;
+}
+
+.collapse-rail svg {
+  display: block;
+}
+
+.goal-tabs button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.goal-tabs span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.goal-tabs small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .goal-rail button.active {
-  background: #eff3f4;
-  color: #0f1419;
+  border-color: var(--line);
+  background: #16181c;
+  color: var(--ink);
   font-weight: 800;
+}
+
+body.rail-collapsed .new-goal,
+body.rail-collapsed .goal-tabs {
+  display: none;
+}
+
+body.rail-collapsed .rail-actions {
+  grid-template-columns: 1fr;
+}
+
+body.rail-collapsed .goal-rail {
+  padding-left: 9px;
+  padding-right: 9px;
 }
 
 .deck-shell {
@@ -92,6 +157,11 @@ button {
   font-size: 13px;
 }
 
+.top-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .topbar button {
   height: 34px;
   padding: 0 14px;
@@ -115,7 +185,7 @@ button {
   position: relative;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
-  width: min(100%, 520px);
+  width: min(100%, 560px);
   height: min(100%, 760px);
   max-height: 100%;
   border: 1px solid var(--line);
@@ -145,9 +215,9 @@ button {
 .card-head {
   position: relative;
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr) 34px;
+  grid-template-columns: 42px minmax(0, 1fr);
   gap: 10px;
-  align-items: start;
+  align-items: center;
   padding: 14px 14px 8px;
 }
 
@@ -158,14 +228,19 @@ button {
   place-items: center;
   border-radius: 50%;
   background: #2f3336;
-  color: #fff;
-  font-weight: 900;
 }
 
 .avatar img {
   width: 100%;
   height: 100%;
+  display: block;
   border-radius: 50%;
+  object-fit: cover;
+}
+
+.avatar-empty {
+  border: 1px solid var(--line);
+  background: #111418;
 }
 
 .headline {
@@ -175,7 +250,6 @@ button {
 .headline strong,
 .headline span {
   display: inline;
-  white-space: nowrap;
 }
 
 .headline span {
@@ -204,15 +278,20 @@ button {
   background: transparent;
 }
 
+.close-card:hover {
+  color: var(--red);
+  background: rgba(244, 33, 46, 0.12);
+}
+
 .card-body {
   min-height: 0;
   overflow-y: auto;
-  padding: 0 14px 10px 66px;
+  padding: 0 14px 12px 66px;
 }
 
 .post-text {
   margin: 0;
-  font-size: 17px;
+  font-size: 16px;
   line-height: 1.38;
   overflow-wrap: anywhere;
 }
@@ -241,21 +320,67 @@ button {
 details {
   margin-top: 12px;
   color: #c9d1d9;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #080a0d;
 }
 
 summary {
-  width: fit-content;
-  color: var(--muted);
+  width: 100%;
+  list-style: none;
+  padding: 10px 12px;
+  color: var(--ink);
   cursor: pointer;
+  font-weight: 750;
+}
+
+summary::-webkit-details-marker {
+  display: none;
+}
+
+summary::after {
+  content: "v";
+  float: right;
+  color: var(--muted);
+  transform: translateY(-1px);
+}
+
+details[open] summary {
+  border-bottom: 1px solid var(--line);
+}
+
+details[open] summary::after {
+  content: "^";
+}
+
+details div {
+  padding: 10px 12px 12px;
+  color: #d7dbdc;
+  overflow-wrap: anywhere;
+}
+
+details a {
+  color: var(--blue);
+  text-decoration: none;
 }
 
 .actions {
   display: grid;
-  grid-template-columns: 46px minmax(0, 1fr) 46px;
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 10px;
   align-items: center;
   padding: 12px 14px calc(env(safe-area-inset-bottom) + 14px);
   border-top: 1px solid var(--line);
+}
+
+.actions.info-only {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.utility-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
 }
 
 .round {
@@ -273,23 +398,23 @@ summary {
   color: var(--red);
 }
 
-.round.yes {
-  color: var(--green);
+.round.comment {
+  color: var(--blue);
 }
 
 .choices {
   display: flex;
   flex-wrap: wrap;
-  justify-content: center;
+  justify-content: flex-end;
   gap: 8px;
   min-width: 0;
 }
 
 .choice {
   min-height: 36px;
-  max-width: 150px;
+  max-width: 190px;
   padding: 0 13px;
-  border: 0;
+  border: 1px solid transparent;
   border-radius: 999px;
   color: #0f1419;
   background: #eff3f4;
@@ -298,6 +423,11 @@ summary {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.choice:active,
+.round:active {
+  transform: translateY(1px) scale(0.99);
 }
 
 .empty {
@@ -336,6 +466,7 @@ summary {
 
 .context-sheet label {
   font-weight: 850;
+  line-height: 1.25;
 }
 
 .context-sheet textarea {
@@ -405,10 +536,44 @@ summary {
     overflow-x: auto;
   }
 
+  .rail-actions {
+    display: flex;
+    flex: 0 0 auto;
+    margin: 0;
+  }
+
+  .new-goal {
+    width: auto !important;
+  }
+
+  .collapse-rail {
+    display: none;
+  }
+
+  .goal-tabs {
+    display: flex;
+    gap: 8px;
+  }
+
   .goal-rail button {
     width: auto;
     flex: 0 0 auto;
     margin: 0;
+  }
+
+  .topbar {
+    min-height: 54px;
+    padding: 0 10px;
+  }
+
+  .topbar strong {
+    font-size: 17px;
+  }
+
+  .top-actions button {
+    height: 32px;
+    padding: 0 11px;
+    font-size: 13px;
   }
 
   .card {
@@ -417,6 +582,18 @@ summary {
     border-radius: 0;
     border-left: 0;
     border-right: 0;
+  }
+
+  .card-head {
+    padding: 12px 12px 8px;
+  }
+
+  .card-body {
+    padding: 0 12px 12px 64px;
+  }
+
+  .post-text {
+    font-size: 16px;
   }
 
   .deck {

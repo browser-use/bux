@@ -111,6 +111,27 @@ class MiniAppTest(unittest.TestCase):
         self.assertEqual(cards[0]["source_label"], "Gmail thread")
         self.assertEqual(cards[0]["source_url"], "https://mail.google.com/mail/u/0/#inbox/abc")
 
+    def test_cards_include_expandable_blocks(self) -> None:
+        with self.agency_db.conn() as db:
+            self.agency_db.insert(
+                db,
+                title="Reply with variants",
+                description="",
+                importance="high",
+                source="gmail",
+                buttons=["Send A", "Send B"],
+                blocks=[
+                    {"emoji": "A", "title": "Variant A", "body_html": "<pre>book a call</pre>"},
+                    {"emoji": "B", "title": "Variant B", "body_html": "loop in <b>team</b>"},
+                ],
+            )
+
+        cards = self.app._cards()
+
+        self.assertEqual(cards[0]["blocks"][0]["title"], "Variant A")
+        self.assertEqual(cards[0]["blocks"][0]["body"], "book a call")
+        self.assertEqual(cards[0]["blocks"][1]["body"], "loop in team")
+
     def test_http_goal_and_cards_flow(self) -> None:
         with self.agency_db.conn() as db:
             suggestion_id = self.agency_db.insert(
@@ -142,7 +163,7 @@ class MiniAppTest(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
-    def test_start_dispatch_creates_topic_and_runs_agent(self) -> None:
+    def test_start_dispatch_runs_in_goal_topic_by_default(self) -> None:
         calls: list[tuple[str, dict]] = []
         runs: list[tuple[tuple[int, int], str]] = []
 
@@ -174,7 +195,7 @@ class MiniAppTest(unittest.TestCase):
                 title="Start visible work",
                 description="",
                 chat_id=100,
-                thread_id=0,
+                thread_id=123,
                 prompt="Do the work",
             )
 
@@ -184,17 +205,17 @@ class MiniAppTest(unittest.TestCase):
             time.sleep(0.02)
 
         self.assertTrue(result["started"])
-        self.assertTrue(result["topic_created"])
-        self.assertEqual(result["thread_id"], 777)
-        self.assertEqual(calls[0][0], "createForumTopic")
-        self.assertEqual(runs, [((100, 777), "Do the work")])
+        self.assertFalse(result["topic_created"])
+        self.assertEqual(result["thread_id"], 123)
+        self.assertEqual(calls[0][0], "sendMessage")
+        self.assertEqual(runs, [((100, 123), "Do the work")])
         with self.agency_db.conn() as db:
             row = db.execute(
                 "SELECT status, worker_topic_id FROM suggestions WHERE id = ?",
                 (suggestion_id,),
             ).fetchone()
         self.assertEqual(row["status"], "accepted")
-        self.assertEqual(row["worker_topic_id"], 777)
+        self.assertEqual(row["worker_topic_id"], 123)
 
     def _request(self, url: str, *, method: str = "GET", body: dict | None = None) -> dict:
         data = None if body is None else json.dumps(body).encode()

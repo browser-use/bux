@@ -448,6 +448,25 @@ def _render_streaming_view(
     return _render_collapsed_steps(parts, len(parts), max_body, sub_agents=sub_agents, marker=marker)
 
 
+def _fit_tg_markdown(text: str, max_len: int) -> str:
+    """Render text as MarkdownV2, clipping raw text until it fits Telegram."""
+    rendered = _to_tg_markdown_v2(text)
+    if len(rendered) <= max_len:
+        return rendered
+    suffix = "\n\n..."
+    lo, hi = 0, len(text)
+    best = _to_tg_markdown_v2(suffix.strip())
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        candidate = _to_tg_markdown_v2(text[:mid].rstrip() + suffix)
+        if len(candidate) <= max_len:
+            best = candidate
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
 def _humanize_tokens(n: int) -> str:
     if n >= 1_000_000:
         v = n / 1_000_000
@@ -601,15 +620,19 @@ def _render_final_view(
     parts = [b.strip() for b in blocks if b and b.strip()]
     if not parts:
         return ""
-    final_md = _to_tg_markdown_v2(parts[-1])
+    final_md = _fit_tg_markdown(parts[-1], max_body)
     steps = parts[:-1]
+    if len(final_md) >= max_body - 2:
+        return final_md
     if not steps:
         # One-shot turn: skip the footer entirely. The user asked for
         # tokens/duration only when "there were some thinking messages so
         # it took a little bit longer."
         return final_md
     footer = _format_final_footer(usage, duration_ms, tool_calls=tool_calls)
-    steps_max = max(max_body - len(final_md) - 2, 200)
+    steps_max = max_body - len(final_md) - 2
+    if steps_max < 120:
+        return final_md
     steps_md = _render_collapsed_steps(
         steps,
         len(steps),
@@ -4960,15 +4983,49 @@ class Bot:
                 )
                 return
             separator = "&" if "?" in url else "?"
-            url = f"{url}{separator}v=20260512x40"
+            url = f"{url}{separator}v=20260512x41"
+            web_app_markup = {
+                "inline_keyboard": [[{"text": "Open Agency", "web_app": {"url": url}}]]
+            }
+            chat_type = str((msg.get("chat") or {}).get("type") or "")
+            if chat_type == "private":
+                self.send(
+                    chat_id,
+                    "Open Agency.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                    reply_markup=web_app_markup,
+                )
+                return
+
+            # Telegram rejects web_app inline buttons in forum/group topics
+            # (BUTTON_TYPE_INVALID). Send the actual Mini App button to the
+            # owner's private bot chat, and keep the forum reply short.
+            sent_dm = False
+            owner_user_id = sender.get("user_id")
+            if owner_user_id:
+                try:
+                    self.send(
+                        int(owner_user_id),
+                        "Open Agency.",
+                        reply_markup=web_app_markup,
+                    )
+                    sent_dm = True
+                except Exception:
+                    LOG.exception("miniapp DM handoff failed")
+            me = self.call("getMe")
+            username = ((me.get("result") or {}).get("username") or "").strip()
+            dm_markup = None
+            if username:
+                dm_markup = {
+                    "inline_keyboard": [[{"text": "Open bot chat", "url": f"https://t.me/{username}"}]]
+                }
             self.send(
                 chat_id,
-                "Open Agency.",
+                "Sent Agency to your bot DM." if sent_dm else "Open the bot DM and type /miniapp.",
                 reply_to=mid,
                 thread_id=thread_id,
-                reply_markup={
-                    "inline_keyboard": [[{"text": "Open Mini App", "web_app": {"url": url}}]]
-                },
+                reply_markup=dm_markup,
             )
             return
         if cmd == "/whoami":

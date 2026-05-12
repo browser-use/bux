@@ -337,6 +337,41 @@ def _button_labels(row: dict[str, Any]) -> list[str]:
     return [str(label).strip() for label in labels if str(label).strip()]
 
 
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _html_block_to_text(value: str) -> str:
+    text = value or ""
+    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?i)</(?:p|div|li|pre|blockquote)>", "\n", text)
+    text = _TAG_RE.sub("", text)
+    text = html.unescape(text)
+    return "\n".join(line.rstrip() for line in text.splitlines()).strip()
+
+
+def _card_blocks(row: dict[str, Any]) -> list[dict[str, str]]:
+    raw = row.get("blocks_json")
+    if not raw:
+        return []
+    try:
+        items = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(items, list):
+        return []
+    blocks: list[dict[str, str]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        title = _clean_mobile_text(str(item.get("title") or "Details"))
+        emoji = str(item.get("emoji") or "").strip()
+        body = _html_block_to_text(str(item.get("body_html") or item.get("body") or ""))
+        if not body:
+            continue
+        blocks.append({"emoji": emoji, "title": title or "Details", "body": body})
+    return blocks
+
+
 def _is_default_action_button(label: str) -> bool:
     normalized = re.sub(r"[^a-z]+", " ", label.lower()).strip()
     return normalized in {"yes", "yes new thread", "do it", "start"}
@@ -475,6 +510,7 @@ def _cards(limit: int = 100) -> list[dict[str, Any]]:
                 "importance": row.get("importance") or "med",
                 "action": action,
                 "buttons": _button_labels(row),
+                "blocks": _card_blocks(row),
                 "source": row.get("source") or "",
                 "source_label": row.get("source_label") or "",
                 "source_url": _source_url(row),
@@ -813,11 +849,12 @@ def _start_agent_work(
         work_thread = thread_id
         topic_created = False
         topic_name = (row.get("title") or "Mini App task")[:128]
-        res = bot.call("createForumTopic", chat_id=chat_id, name=topic_name)
-        if res.get("ok"):
-            work_thread = int(res["result"].get("message_thread_id") or thread_id)
-            topic_created = True
-            _upsert_topic(chat_id, work_thread, topic_name, "miniapp-start")
+        if bool(row.get("spawn_topic")):
+            res = bot.call("createForumTopic", chat_id=chat_id, name=topic_name)
+            if res.get("ok"):
+                work_thread = int(res["result"].get("message_thread_id") or thread_id)
+                topic_created = True
+                _upsert_topic(chat_id, work_thread, topic_name, "miniapp-start")
         with agency_db.conn() as db:
             if row.get("tg_chat_id") and row.get("tg_message_id"):
                 agency_db.record_decision(
@@ -991,6 +1028,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 _json_response(self, 401, {"error": str(exc)})
             return
         if path == "/":
+            path = "/tinder.html"
+        if path == "/feed":
             path = "/index.html"
         if path == "/tinder":
             path = "/tinder.html"

@@ -57,6 +57,7 @@ def init_schema(db: sqlite3.Connection) -> None:
           source          TEXT,                  -- e.g. slack-c-foo, gmail-thread-19df, gh-pr-78
           prompt          TEXT,                  -- the action that would run if user says yes
           buttons_json    TEXT,                  -- JSON list of the labels shown
+          blocks_json     TEXT,                  -- JSON list of expandable card blocks
           image_url       TEXT,
           image_file      TEXT,
           source_label    TEXT,
@@ -92,6 +93,8 @@ def init_schema(db: sqlite3.Connection) -> None:
          "ALTER TABLE suggestions ADD COLUMN spawn_topic INTEGER NOT NULL DEFAULT 0"),
         ("refine_context_injected",
          "ALTER TABLE suggestions ADD COLUMN refine_context_injected INTEGER NOT NULL DEFAULT 0"),
+        ("blocks_json",
+         "ALTER TABLE suggestions ADD COLUMN blocks_json TEXT"),
         ("image_url",
          "ALTER TABLE suggestions ADD COLUMN image_url TEXT"),
         ("image_file",
@@ -122,6 +125,7 @@ def insert(
     source: str | None = None,
     prompt: str | None = None,
     buttons: list[str] | None = None,
+    blocks: list[dict] | None = None,
     image_url: str | None = None,
     image_file: str | None = None,
     source_label: str | None = None,
@@ -133,10 +137,10 @@ def insert(
     cur = db.execute(
         """
         INSERT INTO suggestions (
-          title, description, importance, source, prompt, buttons_json, image_url, image_file,
+          title, description, importance, source, prompt, buttons_json, blocks_json, image_url, image_file,
           source_label, source_url,
           tg_chat_id, tg_thread_id, spawn_topic
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             title,
@@ -145,6 +149,7 @@ def insert(
             source,
             prompt,
             json.dumps(buttons) if buttons is not None else None,
+            json.dumps(blocks) if blocks is not None else None,
             image_url,
             image_file,
             source_label,

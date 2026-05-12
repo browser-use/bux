@@ -36,9 +36,12 @@ One topic, one goal, one ongoing mission. Each forum topic is a long-running lan
 **The user has 2 seconds.** Phone screen, late-night, mid-workout, between meetings. Every card must answer in one glance:
 
 1. **What** would happen if I tap Yes? *(title, verb-led)*
-2. **Why** does it matter for my goal? *(subhead, concrete number tying to the goal)*
+2. **Why** does it matter for my goal? *(short, persuasive reason tied to the goal)*
+3. **Where** does it happen? *(platform + object: Gmail thread, Slack DM, GitHub PR, X post, Datadog alert)*
 
-If the image doesn't say *what*, if the title doesn't say what would happen, if the subhead doesn't tie to the goal with a number — the card gets skipped, acceptance drops, trust erodes, the channel gets muted.
+If the image doesn't say *what*, if the title doesn't say what would happen, or if the body doesn't make the goal relevance obvious — the card gets skipped, trust erodes, the channel gets muted.
+
+The user scrolls through many unrelated cards. Assume zero local context on each one. Every card must read like an X post or short message: instantly understandable, no weird IDs, no private abbreviations, no unexplained source slugs. Spell out the platform, the exact thing, and the action you want to take.
 
 ## Two zones
 
@@ -107,23 +110,22 @@ End with a numbered concrete follow-up list. Each item self-contained. Never ask
 
 ### Tie every card to the locked goal
 
-The user's locked goal is in `<user>_endgoal.md`. Each card's subhead must tie its action to that goal with a concrete number:
+The user's locked goal is in `<user>_endgoal.md`. Each card must tell the user why this action matters for that goal in simple language:
 
 - ❌ "submit to Smithery, virgin slot" *(so what?)*
-- ✅ "+5K MCP devs/wk discover us → mindshare lift toward default-OSS-X"
+- ✅ "Ship this now so more MCP devs discover the project while the launch window is hot."
 
-If you can't write the subhead in that shape, the card isn't HIGH. Drop it.
+If you can't explain why the user should care, drop the card.
 
 ### Sell the card before asking for the tap
 
-Proactive cards feel random because the user didn't ask. Every suggestion card needs a compact persuasion block in the body or first expandable:
+Proactive cards feel random because the user didn't ask. Every suggestion card needs a compact persuasion line in the body or first expandable:
 
 ```
-why this matters: <one sentence tying the action to the user's goal>
-importance:       <low|medium|high> because <specific reach / money / risk / time window>
+why this matters: <one sentence that makes the goal impact obvious>
 ```
 
-Concrete evidence: `20K docs visitors/month`, `direct path to 1K users`, `launch window closes tonight`, `one tap, already drafted`. No begging ("please accept this!") — neediness reads as weakness.
+Useful evidence is welcome when real: `20K docs visitors/month`, `direct path to 1K users`, `launch window closes tonight`, `one tap, already drafted`. No scoring labels, no fake precision, no begging.
 
 Persuasion in the body, not the image. The image is the billboard, not the proof.
 
@@ -157,7 +159,7 @@ Periodically (≈once per 10-15 cards or after an acceptance shift) ask **one** 
 ### Acceptance test before posting any card
 
 1. Would the user smile or nod at this card? *(engaging)*
-2. Can they understand it in one glance? *(simple — image-first, verb-led title, impact subhead with a number)*
+2. Can they understand it in one glance? *(simple — image-first, verb-led title, clear goal reason)*
 3. Did I already do the work, or am I asking them to do it? *(super helpful — pre-completed up to the visible boundary)*
 4. Have I seen this shape land recently in the DB, or am I exploring a new angle on purpose? *(adaptive — not posting blind)*
 
@@ -168,7 +170,7 @@ If the answer to (4) is "posting blind", drop the card unless there's a specific
 ```
 [image, default ON]
 <emoji> <verb-led one-line action>
-<one context sentence>
+<one sentence: why this matters for the goal>
 
 ▾ 📝 Drafted action     (one expandable, when there's a draft)
 ▾ 📎 Context            (optional second expandable)
@@ -180,15 +182,16 @@ If the answer to (4) is "posting blind", drop the card unless there's a specific
 **Rules:**
 
 1. **Title = verb-led action.** "Reply to <person> on Slack — explain v0.4.3 ETA", not "🤖 Agency #119 — wants help".
-2. **One context sentence**, prose. No bullets, no `## Why this matters` header.
-3. **One expandable for the draft** — `📝 Drafted action`. Don't label "Variant A" unless B / C exist with their own buttons.
-4. **Multi-variant cards: one expandable per variant and one direct button per variant** (`🅰️ Variant A — warm`, `🅱️ B — terse`, `🅲 C — technical` plus `Send A` / `Send B` / `Send C`). Don't cram variants into one block and don't use generic Yes / Skip / Edit when the choice is A/B/C.
-5. **Optional `📎 Context`** for provenance. Skip when empty. **Never put internal log numbers (`N=145`) or "X cards pending" framing in here.**
-6. **Buttons in a 2+1 grid.** Row 1 = primary + Skip. Row 2 = third button.
-7. **Per-card-type tweaks:** PR → diff is the expandable. Video → MP4 is the surface, no draft expandable. Status / FYI → sometimes no expandable.
-8. **Resist filling a schema.** Let card type drive shape.
+2. **One goal-reason sentence**, prose. Make the user feel "yes, this moves my goal." No bullets, no scoring labels, no `## Why this matters` header.
+3. **Name the platform and object.** "Gmail: reply to Vincent about parallel browsers" is better than "Reply to c9e1".
+4. **One expandable for the draft** — `📝 Drafted action`. Don't label "Variant A" unless B / C exist with their own buttons.
+5. **Multi-variant cards: one expandable per variant and one direct button per variant** (`🅰️ Variant A — warm`, `🅱️ B — terse`, `🅲 C — technical` plus `Send A` / `Send B` / `Send C`). Don't cram variants into one block, don't leave variants only in body text, and don't use generic Yes / Skip / Edit when the choice is A/B/C.
+6. **Optional `📎 Context`** for provenance. Skip when empty. **Never put internal log numbers (`N=145`) or "X cards pending" framing in here.**
+7. **Buttons in a 2+1 grid.** Row 1 = primary + Skip. Row 2 = third button.
+8. **Per-card-type tweaks:** PR → diff is the expandable. Video → MP4 is the surface, no draft expandable. Status / FYI → sometimes no expandable.
+9. **Resist filling a schema.** Let card type drive shape.
 
-**Compression bar:** title ≤80 chars, subhead ≤100 chars with impact phrase, draft 3-5 lines paste-ready, reasoning ≤3 sentences if it adds urgency. No nested bullets >1 level. URLs as `[label](url)`.
+**Compression bar:** title ≤80 chars, subhead ≤120 chars with clear goal relevance, draft 3-5 lines paste-ready, reasoning ≤3 sentences if it adds urgency. No nested bullets >1 level. URLs as `[label](url)`.
 
 ### Block heading patterns
 
@@ -217,6 +220,8 @@ agency-report --emoji "✍️" \
   --source "hn-karol-reply" --prompt "Send the chosen variant" --skip-if-exists
 ```
 
+**Hard rule for reply/message cards:** create 3 contrasting options by default (for example yes / no / neutral, or warm / terse / technical). Each option must be its own `--block`, and each option must have a matching `--button` (`Send A`, `Send B`, `Send C`). A card with variant buttons but no matching expandable variant blocks is invalid.
+
 ### Build the asset before posting
 
 If the action is "make a video / chart / screenshot / draft", **build it first**, attach to the card, ask Yes/No on whether to *publish*. Never `should I make a video?` — by the time the card lands, the asset must already exist.
@@ -225,19 +230,19 @@ Exception: when building is itself irreversible or expensive (minting an NFT, pa
 
 ## Image-first
 
-Include an image on **every** card unless it's a pure photo asset (MP4 / real chart / real screenshot — those carry their own visual).
+Include a strong visual on **every** card unless it would be noise. In the Tinder-style Mini App, the image is often what makes the card feel worth opening. Prefer real screenshots, charts, thumbnails, product logos, recipient avatars, or a generated image that makes the action obvious.
 
-**Default:** 1080×540 PIL render — vertical linear gradient (top-dark → bottom-light, color per card mood: blue / purple / pink / red / green / amber / teal / orange / indigo / cyan), 8px accent ribbon left edge, real **color** emoji top-left at ~110px (load Noto color emoji at bitmap size 109 then LANCZOS-resize; any other size errors), bold headline (DejaVu Bold 110pt, 56pt fallback) in white, one optional impact line (white, 56pt). No paragraph subtitles in the image.
+**Default generated card image:** 1080×540 PIL render with one big real color emoji/icon, a bold 3-6 word action phrase, and optionally one tiny goal-reason line. The image should work like a billboard: the user understands the action before reading the text.
 
-`placehold.co` (`--image-text`) is a fallback for low-budget cards. Flat color, plain text.
+`placehold.co` (`--image-text`) is only a fallback. Never show a useless text tile when no visual helps; either make a good image or skip the image.
 
 **Don't use Remotion for static cards** — it's a video framework (React + headless Chrome, ~10s per card). PIL renders in 0.2s.
 
-### `--image-text` — sparse WHAT + IMPACT
+### `--image-text` — sparse WHAT + GOAL
 
 ```
 LINE 1 — short WHAT (artifact / channel / lever, in caps)
-LINE 2 — goal impact (number, audience, or direct goal-lever)
+LINE 2 — why it moves the goal
 ```
 
 Examples:
@@ -249,7 +254,7 @@ Examples:
 | $25K bounty | `"$25K BOUNTY\n200 builders"` |
 | HF Spaces demo | `"HF SPACES\n3M MAU"` |
 
-Rules: two lines default (three max for short tokens like `today`), ≤22 chars per line / ≤8 words total, no labels (`I WILL:` / `IMPACT:` waste budget), caps for WHAT mixed case for WHY, numbers in WHY whenever possible, no bare URLs / `@handles` (those go in `--source-label` / `--source-url`).
+Rules: two lines default (three max for short tokens like `today`), ≤22 chars per line / ≤8 words total, no labels (`I WILL:` / `IMPACT:` waste budget), caps for WHAT mixed case for WHY, no bare URLs / `@handles` (those go in `--source-label` / `--source-url`).
 
 **`--image-file`** for real PNGs: matplotlib charts, recipient avatars, company logos, rendered diff snippets.
 
@@ -311,10 +316,10 @@ Each interaction costs one tap, not one keystroke. `--button` overrides defaults
 
 `agency-report` infers `--spawn-topic` automatically:
 
-- Thread is already a `worker_topic` → in-place (don't fork another topic mid-task).
-- Otherwise (main agency feed) → spawn fresh forum topic.
+- Any forum topic → in-place. Treat the topic as the goal/session lane.
+- No forum topic → spawn a fresh forum topic.
 
-Backed by `agency_db.is_worker_topic(thread_id)`. Override with `--spawn-topic` / `--no-spawn-topic`.
+Override with `--spawn-topic` / `--no-spawn-topic`. Use `--spawn-topic` only when the card truly needs a separate lane; Mini App cards are rendered inside one goal section and should stay in that goal by default.
 
 **Multi-tap dedupes the worker topic.** Tapping Yes twice doesn't spawn two; subsequent taps reuse the first `worker_topic_id`.
 
@@ -324,7 +329,7 @@ Backed by `agency_db.is_worker_topic(thread_id)`. Override with `--spawn-topic` 
 
 `kind=action`:
 
-1. `createForumTopic` named after the suggestion title.
+1. Only when explicitly spawning, `createForumTopic` named after the suggestion title.
 2. Post the original `--prompt` as `<blockquote>` (not `<pre>` — the copy widget reads as noise on phone).
 3. `run_task` to fire the lane.
 4. Append `🧵 Open thread` to the original card.
@@ -406,6 +411,8 @@ Check each topic's brief before drafting.
 ## Mini App launch workflow
 
 `/miniapp` opens the per-box Telegram Mini App. "Agency start <goal>" or a new Mini App goal creates/uses one Telegram topic as the goal lane, records context there, and asks the agent to generate initial cards. "Generate more" means: continue from that topic's current context and produce more high-signal action cards, not a new goal. Cards should use short, phone-readable copy, clickable sources, real images/videos when available, and no internal IDs.
+
+When a Mini App card is accepted, run it in the same goal topic/session by default. If the user accepts 10 cards from one goal, push all 10 into that goal's agent session. The agent can create sub-agents or new Telegram topics later only when it is clearly useful.
 
 ## Honor access gaps
 
