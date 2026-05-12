@@ -336,10 +336,51 @@ def _thread_title(row: dict[str, Any]) -> str:
         title = _topic_title(chat_id, thread_id)
         if title:
             return title
-    source = _clean_mobile_text(row.get("source") or "")
+    source = _human_topic_title(row.get("source") or "")
     if source:
-        return source.replace("-", " ").title()[:28]
+        return source
+    title = _clean_mobile_text(row.get("title") or "")
+    if title:
+        return _clip_text(title, 28)
     return f"Topic {thread_id}" if thread_id else "General"
+
+
+def _human_topic_title(source: str) -> str:
+    value = re.sub(r"[_-]+", " ", source or "").strip()
+    if not value:
+        return ""
+    parts = [
+        part
+        for part in value.split()
+        if part.lower()
+        not in {
+            "agency",
+            "growth",
+            "slack",
+            "gmail",
+            "thread",
+            "topic",
+            "miniapp",
+            "demo",
+            "v2",
+            "v3",
+        }
+        and not re.fullmatch(r"n?\d+|20\d{2}|0x[0-9a-f]+", part.lower())
+    ]
+    label = " ".join(parts[:4]).strip()
+    if not label:
+        return ""
+    words = {
+        "oss": "OSS",
+        "gh": "GitHub",
+        "github": "GitHub",
+        "payg": "PAYG",
+        "dm": "DM",
+        "dms": "DMs",
+        "pr": "PR",
+        "cdp": "CDP",
+    }
+    return " ".join(words.get(part.lower(), part.capitalize()) for part in label.split())[:32]
 
 
 def _source_url(row: dict[str, Any]) -> str:

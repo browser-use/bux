@@ -4830,7 +4830,7 @@ class Bot:
                 )
                 return
             separator = "&" if "?" in url else "?"
-            url = f"{url}{separator}v=20260512x29"
+            url = f"{url}{separator}v=20260512x30"
             owner_chat = int(owner.get("user_id") or chat_id)
             target_chat = owner_chat if chat_id != owner_chat else chat_id
             self.send(
