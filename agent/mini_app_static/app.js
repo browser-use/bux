@@ -17,7 +17,6 @@ const state = {
   passedByScroll: new Set(),
   comments: {},
   openContextCardId: null,
-  suppressScrollPassUntil: 0,
 };
 
 const els = {
@@ -119,10 +118,26 @@ function render() {
     return;
   }
   cards.forEach((card, index) => els.feed.append(renderCard(card, index)));
+  els.feed.append(renderEndCard());
   requestAnimationFrame(() => {
     restoreCursor();
     syncDock();
   });
+}
+
+function renderEndCard() {
+  const article = document.createElement("article");
+  article.className = "end-card";
+  const active = goal();
+  article.innerHTML = `
+    <div>
+      <strong>${escapeHtml(active ? active.title : "Need a different direction?")}</strong>
+      <p>${escapeHtml(active ? "Add more context for this goal and Agency can create better cards." : "Create a goal or add context so Agency knows what to look for next.")}</p>
+      <button class="create-goal" type="button">${active ? "Provide more context" : "New goal"}</button>
+    </div>
+  `;
+  article.querySelector("button").addEventListener("click", openGoal);
+  return article;
 }
 
 function renderCard(card, index) {
@@ -152,7 +167,6 @@ function renderCard(card, index) {
         </div>
         ${action ? detailHtml("Show draft", action) : ""}
         ${mediaHtml(card)}
-        ${sourceFooter(card, meta)}
         ${commentPanelHtml(card, meta)}
         <div class="post-actions ${actionButtons.length ? "" : "no-primary"}">
           <div class="secondary-actions">
@@ -171,7 +185,6 @@ function renderCard(card, index) {
   article.querySelectorAll("[data-start]").forEach((button) => {
     button.addEventListener("click", () => startCard(card.id, button.dataset.button || ""));
   });
-  attachSwipe(article, card.id);
   article.querySelector("[data-inline-context-form]")?.addEventListener("submit", submitInlineContext);
   return article;
 }
@@ -179,7 +192,7 @@ function renderCard(card, index) {
 function detailHtml(label, text) {
   return `
     <details class="tweet-detail">
-      <summary>${escapeHtml(label)}</summary>
+      <summary><span>${escapeHtml(label)}</span></summary>
       <div>${renderRichText(text)}</div>
     </details>
   `;
@@ -297,20 +310,6 @@ function looksOperational(text) {
     value.includes("capture #") ||
     value.includes("agency") && value.includes("pending")
   );
-}
-
-function sourceFooter(card, meta) {
-  const label = card.source_label || sourceLabel(card.source) || meta.name;
-  const url = card.source_url || firstUrl([card.title, card.why, card.action].join(" "));
-  const source = url
-    ? `<a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`
-    : `<span>${escapeHtml(label)}</span>`;
-  return `<footer class="source-footer">${source}</footer>`;
-}
-
-function firstUrl(value) {
-  const match = String(value || "").match(/https?:\/\/[^\s)]+/);
-  return match ? match[0] : "";
 }
 
 function sourceMeta(cardOrSource) {
@@ -456,9 +455,7 @@ function renderGoals() {
 function renderGoalTabs() {
   const tabs = [
     { id: "all", title: "All", count: unhandledCount(state.cards) },
-    ...state.goals
-      .map((item) => ({ id: String(item.id), title: item.title, count: goalCardCount(item.id) }))
-      .filter((item) => item.count > 0 || String(item.id) === String(state.activeGoalId)),
+    ...state.goals.map((item) => ({ id: String(item.id), title: item.title, count: goalCardCount(item.id) })),
   ];
   els.goalTabs.innerHTML = tabs
     .map((item) => {
@@ -522,11 +519,6 @@ function updateCurrentFromScroll() {
     }
   });
   const previousIndex = state.currentIndex;
-  if (bestIndex > previousIndex && Date.now() > state.suppressScrollPassUntil) {
-    visibleCards()
-      .slice(previousIndex, bestIndex)
-      .forEach((card) => passByScroll(card));
-  }
   state.currentIndex = bestIndex;
   const id = currentCard()?.id;
   if (id) localStorage.setItem(cursorKey, String(id));
@@ -548,7 +540,6 @@ function removeCurrent() {
 }
 
 function removeCard(id, direction = "left") {
-  state.suppressScrollPassUntil = Date.now() + 900;
   const article = els.feed.querySelector(`[data-card-id="${CSS.escape(String(id))}"]`);
   if (article && !article.classList.contains("removing")) {
     article.classList.add("removing", direction === "right" ? "remove-right" : "remove-left");
@@ -594,20 +585,6 @@ async function startCurrent(button = "") {
     toast(error.message);
   } finally {
     syncDock();
-  }
-}
-
-async function passByScroll(card) {
-  if (!card || state.passedByScroll.has(card.id)) return;
-  state.passedByScroll.add(card.id);
-  card.handled = true;
-  renderGoalTabs();
-  try {
-    await api(`/api/cards/${card.id}/dismiss`, { method: "POST", body: "{}" });
-    removeCard(card.id, "left");
-    await refreshStats();
-  } catch {
-    state.passedByScroll.delete(card.id);
   }
 }
 
@@ -695,42 +672,6 @@ async function submitInlineContext(event) {
   } catch (error) {
     toast(error.message);
   }
-}
-
-function attachSwipe(article, id) {
-  let startX = 0;
-  let startY = 0;
-  let tracking = false;
-  article.addEventListener("pointerdown", (event) => {
-    if (event.target.closest("button, a, textarea, summary, details")) return;
-    tracking = true;
-    startX = event.clientX;
-    startY = event.clientY;
-    article.setPointerCapture?.(event.pointerId);
-  });
-  article.addEventListener("pointermove", (event) => {
-    if (!tracking) return;
-    const dx = event.clientX - startX;
-    const dy = event.clientY - startY;
-    if (Math.abs(dy) > Math.abs(dx) + 24) return;
-    article.style.setProperty("--swipe-x", `${Math.max(-96, Math.min(96, dx))}px`);
-    article.classList.toggle("swiping-delete", dx < -36);
-    article.classList.toggle("swiping-context", dx > 36);
-  });
-  article.addEventListener("pointerup", (event) => {
-    if (!tracking) return;
-    tracking = false;
-    const dx = event.clientX - startX;
-    article.style.removeProperty("--swipe-x");
-    article.classList.remove("swiping-delete", "swiping-context");
-    if (dx < -90) passCard(id, "left");
-    if (dx > 90) openInlineContext(id);
-  });
-  article.addEventListener("pointercancel", () => {
-    tracking = false;
-    article.style.removeProperty("--swipe-x");
-    article.classList.remove("swiping-delete", "swiping-context");
-  });
 }
 
 function attachSpeech(button, input, idleLabel) {

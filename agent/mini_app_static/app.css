@@ -123,9 +123,7 @@ button {
   background: #000;
   border-bottom: 1px solid #2f3336;
   margin-bottom: 10px;
-  transform: translateX(var(--swipe-x, 0));
-  transition: transform 180ms ease, opacity 180ms ease, max-height 220ms ease, padding 220ms ease;
-  will-change: transform, opacity;
+  transition: opacity 180ms ease, max-height 220ms ease, padding 220ms ease;
 }
 
 .story::before {
@@ -139,27 +137,11 @@ button {
   padding: 12px 14px 10px;
 }
 
-.story.swiping-delete {
-  background: linear-gradient(90deg, #000 0%, rgba(244, 33, 46, 0.16) 100%);
-}
-
-.story.swiping-context {
-  background: linear-gradient(90deg, rgba(29, 155, 240, 0.18) 0%, #000 100%);
-}
-
 .story.removing {
   pointer-events: none;
   opacity: 0;
   max-height: 0;
   overflow: hidden;
-}
-
-.story.remove-left {
-  transform: translateX(-110%);
-}
-
-.story.remove-right {
-  transform: translateX(110%);
 }
 
 .goal-tabs {
@@ -365,22 +347,31 @@ button {
 }
 
 .tweet-detail summary {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 4px;
-  min-height: 34px;
-  padding: 4px 14px;
-  border: 1px solid #2f3336;
-  border-radius: 999px;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 38px;
+  padding: 7px 0;
+  border: 0;
+  border-top: 1px solid #2f3336;
+  border-bottom: 1px solid #2f3336;
+  border-radius: 0;
   color: #e7e9ea;
-  background: #111418;
+  background: transparent;
   font-size: 14px;
   font-weight: 700;
   cursor: pointer;
 }
 
-.tweet-detail summary::marker {
+.tweet-detail summary::after {
+  content: "⌄";
   color: #71767b;
+  font-size: 18px;
+}
+
+.tweet-detail[open] summary::after {
+  content: "⌃";
 }
 
 .tweet-detail div {
@@ -451,27 +442,6 @@ button {
   height: 100%;
   object-fit: cover;
   display: block;
-}
-
-.source-footer {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0;
-  align-items: center;
-  margin-top: 9px;
-  color: #71767b;
-  font-size: 12px;
-  line-height: 1.3;
-}
-
-.source-footer a {
-  color: #71767b;
-  text-decoration: none;
-}
-
-.source-footer a::after {
-  content: " ↗";
-  font-size: 11px;
 }
 
 .post-actions {
@@ -594,9 +564,36 @@ button {
 }
 
 .icon-action.icon-only {
-  width: 34px;
-  height: 34px;
+  width: 42px;
+  height: 42px;
   justify-content: center;
+}
+
+.icon-action.icon-only svg {
+  width: 23px;
+  height: 23px;
+}
+
+.end-card {
+  display: grid;
+  place-items: center;
+  min-height: 260px;
+  padding: 28px 18px calc(env(safe-area-inset-bottom) + 80px);
+  color: #e7e9ea;
+  text-align: center;
+  border-top: 1px solid #2f3336;
+}
+
+.end-card strong {
+  display: block;
+  font-size: 19px;
+}
+
+.end-card p {
+  max-width: 32ch;
+  margin: 8px auto 18px;
+  color: #71767b;
+  line-height: 1.35;
 }
 
 .icon-action svg {
