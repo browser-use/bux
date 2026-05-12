@@ -492,6 +492,7 @@ button {
 .post-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 20px;
   min-height: 36px;
   margin-top: 8px;
@@ -566,7 +567,6 @@ button {
 }
 
 .post-actions .start-inline {
-  margin-left: auto;
   min-height: 34px;
   padding: 0 16px;
   border-radius: 999px;
@@ -574,6 +574,10 @@ button {
   background: #1d9bf0;
   font-size: 15px;
   font-weight: 800;
+}
+
+.post-actions .icon-action + .start-inline {
+  margin-left: auto;
 }
 
 .icon-action {

@@ -252,6 +252,24 @@ def _card_visual(row: dict[str, Any]) -> dict[str, str]:
     return {"kind": "none"}
 
 
+def _button_labels(row: dict[str, Any]) -> list[str]:
+    raw = row.get("buttons_json")
+    if not raw:
+        return []
+    try:
+        labels = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(labels, list):
+        return []
+    return [str(label).strip() for label in labels if str(label).strip()]
+
+
+def _is_default_action_button(label: str) -> bool:
+    normalized = re.sub(r"[^a-z]+", " ", label.lower()).strip()
+    return normalized in {"yes", "yes new thread", "do it", "start"}
+
+
 def _clip_text(value: str, limit: int) -> str:
     text = " ".join((value or "").split())
     if len(text) <= limit:
@@ -300,13 +318,15 @@ def _cards(limit: int = 30) -> list[dict[str, Any]]:
         prompt = _clean_mobile_text((row.get("prompt") or "").strip())
         why = _clip_text(_clean_mobile_text((row.get("description") or "").strip()), 240)
         title = _clip_text(_clean_mobile_text(row.get("title") or "Untitled action"), 92)
+        action = prompt or ""
         cards.append(
             {
                 "id": int(row["id"]),
                 "title": title,
                 "why": why,
                 "importance": row.get("importance") or "med",
-                "action": prompt or row.get("title") or "",
+                "action": action,
+                "buttons": _button_labels(row),
                 "source": row.get("source") or "",
                 "source_label": row.get("source_label") or "",
                 "source_url": row.get("source_url") or "",
@@ -407,11 +427,16 @@ def _find_suggestion(suggestion_id: int) -> dict[str, Any] | None:
         return dict(row) if row else None
 
 
-def _start_agent_work(suggestion_id: int, user: dict[str, Any]) -> dict[str, Any]:
+def _start_agent_work(
+    suggestion_id: int, user: dict[str, Any], button_label: str | None = None
+) -> dict[str, Any]:
     row = _find_suggestion(suggestion_id)
     if not row:
         return {"started": False, "error": "card not found"}
-    prompt = (row.get("prompt") or row.get("title") or "").strip()
+    prompt = (row.get("prompt") or "").strip()
+    button_label = (button_label or "").strip()
+    if button_label and not _is_default_action_button(button_label):
+        prompt = f"[agency-button] {button_label}" + (f"\n\n{prompt}" if prompt else "")
     if not prompt:
         return {"started": False, "error": "card has no action prompt"}
     try:
@@ -436,7 +461,7 @@ def _start_agent_work(suggestion_id: int, user: dict[str, Any]) -> dict[str, Any
                     db,
                     int(row.get("tg_chat_id") or 0),
                     int(row.get("tg_message_id") or 0),
-                    "Mini App Start",
+                button_label or "Mini App Start",
                 )
             agency_db.set_status(db, suggestion_id, "accepted")
             if work_thread:
@@ -644,8 +669,9 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     _json_response(self, 200, {"ok": True})
                     return
                 if action == "start":
-                    _append_event(suggestion_id, "start", user)
-                    result = _start_agent_work(suggestion_id, user)
+                    button_label = (body.get("button") or "").strip()
+                    _append_event(suggestion_id, "start", user, button_label)
+                    result = _start_agent_work(suggestion_id, user, button_label)
                     status = 200 if result.get("started") else 409
                     _json_response(self, status, {"ok": bool(result.get("started")), **result})
                     return

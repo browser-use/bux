@@ -745,7 +745,7 @@ def main() -> int:
     if args.spawn_topic is None:
         args.spawn_topic = not agency_db.is_worker_topic(db, args.thread_id)
 
-    buttons = _resolve_buttons(args)
+    buttons = [] if args.info_only else _resolve_buttons(args)
     button_labels_for_db = [label for label, _ in buttons]
     generated_image_file = None
     if args.image_text and not args.image and not args.image_file:

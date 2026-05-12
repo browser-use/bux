@@ -128,6 +128,7 @@ function render() {
 function renderCard(card, index) {
   const meta = sourceMeta(card);
   const action = usefulAction(card);
+  const actionButtons = cardActionButtons(card);
   const subtitle = meta.brand ? relativeAge(card.created_at) : `@${meta.handle} · ${relativeAge(card.created_at)}`;
   const postText = renderPostText(card);
   const needsExpand = plainPostText(card).length > 180;
@@ -158,14 +159,16 @@ function renderCard(card, index) {
         <div class="post-actions">
           <button class="icon-action danger" data-delete="${card.id}" type="button" aria-label="Delete">${trashSvg()}<span>Delete</span></button>
           <button class="icon-action" data-context="${card.id}" type="button" aria-label="Refine">${replySvg()}<span>Refine</span></button>
-          <button class="start-inline" data-start="${card.id}" type="button">Do it</button>
+          ${actionButtons.map((label) => `<button class="start-inline" data-start="${card.id}" data-button="${escapeAttr(label.raw)}" type="button">${escapeHtml(label.text)}</button>`).join("")}
         </div>
       </div>
     </section>
   `;
   article.querySelector("[data-context]").addEventListener("click", () => openInlineContext(card.id));
   article.querySelector("[data-delete]").addEventListener("click", () => passCard(card.id, "left"));
-  article.querySelector("[data-start]").addEventListener("click", () => startCard(card.id));
+  article.querySelectorAll("[data-start]").forEach((button) => {
+    button.addEventListener("click", () => startCard(card.id, button.dataset.button || ""));
+  });
   attachSwipe(article, card.id);
   article.querySelector("[data-inline-context-form]")?.addEventListener("submit", submitInlineContext);
   article.querySelector("[data-expand-text]")?.addEventListener("click", (event) => {
@@ -260,6 +263,32 @@ function usefulAction(card) {
   if (!action || action === card.title || action === card.why) return "";
   if (looksOperational(action)) return "";
   return action;
+}
+
+function cardActionButtons(card) {
+  const prompt = String(card.action || "").trim();
+  const labels = Array.isArray(card.buttons) ? card.buttons : [];
+  const actionable = labels
+    .map((raw) => ({ raw: String(raw || "").trim(), text: buttonText(raw) }))
+    .filter((item) => item.raw && item.text);
+  if (!prompt && !actionable.length) return [];
+  if (!prompt) return actionable.filter((item) => !isDefaultActionButton(item.raw));
+  if (!actionable.length) return [{ raw: "Do it", text: "Do it" }];
+  return actionable;
+}
+
+function buttonText(label) {
+  const raw = String(label || "").trim();
+  const normalized = raw.toLowerCase();
+  if (/(skip|dismiss|delete|no\b|pass)/i.test(raw)) return "";
+  if (/(edit|refine|change|context)/i.test(raw)) return "";
+  if (isDefaultActionButton(raw)) return "Do it";
+  return raw.replace(/^[^\p{L}\p{N}]+/u, "").trim().slice(0, 28);
+}
+
+function isDefaultActionButton(label) {
+  const normalized = String(label || "").toLowerCase().replace(/[^a-z]+/g, " ").trim();
+  return ["yes", "yes new thread", "do it", "start"].includes(normalized);
 }
 
 function looksOperational(text) {
@@ -544,20 +573,23 @@ function removeCardNow(id) {
   }
 }
 
-async function startCard(id) {
+async function startCard(id, button = "") {
   const index = visibleCards().findIndex((card) => card.id === id);
   if (index >= 0) state.currentIndex = index;
-  await startCurrent();
+  await startCurrent(button);
 }
 
-async function startCurrent() {
+async function startCurrent(button = "") {
   const card = currentCard();
   if (!card) return;
   els.startButton.disabled = true;
   removeCurrent();
   requestAnimationFrame(() => document.querySelector(`[data-index="${state.currentIndex}"]`)?.scrollIntoView({ block: "start" }));
   try {
-    const result = await api(`/api/cards/${card.id}/start`, { method: "POST", body: "{}" });
+    const result = await api(`/api/cards/${card.id}/start`, {
+      method: "POST",
+      body: JSON.stringify({ button }),
+    });
     await refreshStats();
     toast(result.topic_created ? "Topic created. Agent started." : "Agent started.");
     tg?.HapticFeedback?.notificationOccurred?.("success");
