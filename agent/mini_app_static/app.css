@@ -633,18 +633,19 @@ button {
 }
 
 .end-card {
-  display: grid;
-  place-items: center;
-  min-height: 260px;
-  padding: 28px 18px calc(env(safe-area-inset-bottom) + 80px);
+  display: block;
+  min-height: 180px;
+  padding: 34px 28px calc(env(safe-area-inset-bottom) + 92px);
   color: #e7e9ea;
-  text-align: center;
+  text-align: left;
   border-top: 1px solid #2f3336;
 }
 
 .end-card strong {
   display: block;
-  font-size: 19px;
+  max-width: 520px;
+  font-size: 18px;
+  line-height: 1.25;
 }
 
 .end-card p {
@@ -652,6 +653,17 @@ button {
   margin: 8px auto 18px;
   color: #71767b;
   line-height: 1.35;
+}
+
+.end-card .create-goal {
+  width: auto;
+  min-height: 34px;
+  margin-top: 14px;
+  padding: 0 16px;
+  border-radius: 999px;
+  color: #050608;
+  background: #eff3f4;
+  font-size: 14px;
 }
 
 .icon-action svg {
