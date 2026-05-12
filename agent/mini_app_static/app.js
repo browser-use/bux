@@ -135,7 +135,7 @@ function renderEndCard() {
   article.className = "end-card";
   article.innerHTML = `
     <div>
-      <strong>What should I do next?</strong>
+      <strong>Tell me your goals so I know what to work on next.</strong>
       <button class="create-goal" type="button">Give context</button>
     </div>
   `;
