@@ -83,7 +83,7 @@ button {
 }
 
 .brand strong {
-  display: block;
+  display: none;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

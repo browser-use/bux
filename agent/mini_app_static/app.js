@@ -177,7 +177,7 @@ function renderCard(card, index) {
         <div class="post-actions ${actionButtons.length ? "" : "no-primary"}">
           <div class="secondary-actions">
             <button class="icon-action" data-context="${card.id}" type="button" aria-label="Refine">${replySvg()}<span>Refine</span></button>
-            <button class="icon-action danger icon-only" data-delete="${card.id}" type="button" aria-label="Delete">${trashSvg()}</button>
+            <button class="icon-action skip icon-only" data-delete="${card.id}" type="button" aria-label="Skip" title="Skip">${skipSvg()}</button>
           </div>
           <div class="primary-actions">
             ${actionButtons.map((label) => `<button class="start-inline" data-start="${card.id}" data-button="${escapeAttr(label.raw)}" title="${escapeAttr(label.text)}" type="button">${escapeHtml(label.text)}</button>`).join("")}
@@ -283,7 +283,7 @@ function renderRichText(value) {
     /(https?:\/\/[^\s<]+)/g,
     (rawUrl) => {
       const { url, suffix } = splitTrailingUrlPunctuation(rawUrl);
-      return `${linkToken(shortUrl(url), url)}${suffix}`;
+      return `${linkToken(bareUrlLabel(url), url)}${suffix}`;
     },
   );
   let html = escapeHtml(text);
@@ -306,13 +306,19 @@ function splitTrailingUrlPunctuation(rawUrl) {
   return { url, suffix };
 }
 
-function shortUrl(url) {
+function bareUrlLabel(url) {
   try {
     const parsed = new URL(url);
-    const path = parsed.pathname.replace(/\/$/, "");
-    return `${parsed.hostname}${path ? path.slice(0, 28) : ""}`;
+    const host = parsed.hostname.replace(/^www\./, "");
+    if (host.includes("slack.com")) return "Slack";
+    if (host.includes("mail.google.com")) return "Gmail";
+    if (host.includes("github.com")) return "GitHub";
+    if (host.includes("x.com") || host.includes("twitter.com")) return "X";
+    if (host.includes("reddit.com")) return "Reddit";
+    if (host.includes("t.me")) return "Telegram";
+    return host.split(".").slice(0, -1).join(".") || host;
   } catch {
-    return url;
+    return "link";
   }
 }
 
@@ -430,8 +436,8 @@ function replySvg() {
   return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 7 5 12l5 5M5 12h9a5 5 0 0 1 5 5v1" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 }
 
-function trashSvg() {
-  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 14h10l1-14M9 7V4h6v3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+function skipSvg() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h12M13 7l5 5-5 5" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 }
 
 function brandSvg(icon) {

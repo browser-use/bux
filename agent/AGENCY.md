@@ -424,17 +424,20 @@ night, sometimes mid-workout. Specifics:
 - Link output format for card text/details/comments is Markdown:
   `[short human label](https://example.com/path?x=1&y=2)`. Do not use
   Telegram HTML tags, raw `<a>` tags, reference-style links, or bare tracking
-  URLs in visible text.
+  URLs in visible text. The visible label should be the thing the user cares
+  about: "Felix Slack reply", "Gmail thread", "PR #148", "Reddit comment".
+  Never make the visible label the raw domain/path.
 - Always pass `--source-label` and `--source-url` when the source has a
   canonical place to open (Gmail thread, Slack message, GitHub PR, Reddit/X
   post, Linear issue). Use a short label such as "Gmail thread" or "GitHub
   PR"; the Mini App renders it as the compact clickable source link in the
   post header.
-- Image: attach `--image-file` or `--image` more often when a visual makes
-  the decision faster: a real screenshot, chart, generated image, logo,
-  avatar, or product/UI capture. Do **not** attach placeholder text art. If
-  no useful image exists, omit the image and let the Mini App render a clean
-  text post.
+- Image: default to attaching `--image-file` or `--image` for Mini App cards
+  when it is possible and the image makes the decision faster or more fun:
+  a real screenshot, chart, generated image, logo/avatar composition, or
+  product/UI capture. Do **not** attach placeholder text art. If no useful
+  image can be generated or captured quickly, omit the image and let the Mini
+  App render a clean text post.
 - Mini App compatibility: cards render like an X.com feed item: compact
   app/source icon, source handle, timestamp/age, short post text, compact
   source link in the header, optional real media, and a sparse action row. The Mini App
@@ -654,10 +657,11 @@ preview — just do it.
 
 ## Image policy
 
-Use images only when the visual is real and useful: generated PNGs, screenshots,
-charts, logos, avatars, short video thumbnails, or product/UI captures. If no
-such image exists, omit it. The Mini App is an X-style feed and text-only posts
-are valid; fake placeholder images make the feed slower to understand.
+Use images by default for Mini App cards when a useful visual can be generated
+or captured quickly: generated PNGs, screenshots, charts, logos, avatars, short
+video thumbnails, or product/UI captures. If no useful image exists, omit it.
+The Mini App is an X-style feed and text-only posts are valid; fake placeholder
+images make the feed slower to understand.
 
 ### Style for generated card images
 
