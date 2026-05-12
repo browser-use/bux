@@ -842,6 +842,12 @@ els.goalDialog.addEventListener("click", (event) => {
 els.goalDialog.addEventListener("cancel", () => {
   els.goalInput.value = "";
 });
+els.goalDialog.querySelectorAll("[data-goal-example]").forEach((button) => {
+  button.addEventListener("click", () => {
+    els.goalInput.value = button.dataset.goalExample || "";
+    els.goalInput.focus();
+  });
+});
 els.contextDialog.addEventListener("click", (event) => {
   if (event.target === els.contextDialog) {
     els.contextInput.value = "";

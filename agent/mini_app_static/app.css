@@ -926,6 +926,36 @@ button {
   border-color: #f4212e;
 }
 
+.goal-examples {
+  display: grid;
+  margin: 4px 0 14px;
+  border-top: 1px solid #2f3336;
+}
+
+.goal-examples span {
+  padding: 12px 0 4px;
+  color: #71767b;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.goal-examples button {
+  width: 100%;
+  padding: 10px 0;
+  border: 0;
+  border-bottom: 1px solid #2f3336;
+  color: #e7e9ea;
+  background: transparent;
+  text-align: left;
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.goal-examples button:hover,
+.goal-examples button:focus-visible {
+  color: #1d9bf0;
+}
+
 .context-sheet {
   width: min(calc(100vw - 28px), 420px);
 }

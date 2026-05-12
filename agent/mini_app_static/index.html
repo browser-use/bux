@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Agency</title>
-    <link rel="stylesheet" href="/app.css?v=20260512x28" />
+    <link rel="stylesheet" href="/app.css?v=20260512x29" />
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body>
@@ -58,6 +58,16 @@
             <strong>Speak goal</strong>
           </button>
           <textarea id="goalInput" rows="5" placeholder="What should this topic work on?"></textarea>
+          <div class="goal-examples" aria-label="Goal examples">
+            <span>Examples</span>
+            <button type="button" data-goal-example="Monitor my Gmail every 30 minutes. Ignore spam and cold outreach. When something important arrives, draft three reply options in my style based on how I replied before.">Monitor Gmail and draft replies in my style</button>
+            <button type="button" data-goal-example="Watch Slack and WhatsApp for important messages. Surface only what needs my attention, summarize the context, and draft short replies I can approve or edit.">Watch Slack and WhatsApp for important replies</button>
+            <button type="button" data-goal-example="Monitor Datadog all day. Give me concise status updates, flag unusual metrics, and tell me what needs action versus what can wait.">Monitor Datadog and brief me on changes</button>
+            <button type="button" data-goal-example="Own new signups. Enrich them from my CDP, explain why they matter, and draft a message I can accept, reject, or refine.">Enrich new signups and draft outreach</button>
+            <button type="button" data-goal-example="Find moments in my communication channels where I can be grateful. Draft warm, specific messages to peers in my voice.">Find moments to thank people</button>
+            <button type="button" data-goal-example="Watch Slack for great demos or use cases. Pitch me the best ones so we can turn them into a demo video or case study.">Turn great demos into case studies</button>
+            <button type="button" data-goal-example="Make my startup successful. Help with distribution, remind me to stay healthy and fit, and suggest creative high-leverage things you can do for me.">Make my startup successful</button>
+          </div>
           <button class="sheet-primary" type="submit">Create</button>
         </form>
       </dialog>
@@ -89,6 +99,6 @@
 
       <div id="toast" class="toast" role="status"></div>
     </main>
-    <script src="/app.js?v=20260512x28" type="module"></script>
+    <script src="/app.js?v=20260512x29" type="module"></script>
   </body>
 </html>
