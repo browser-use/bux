@@ -233,6 +233,7 @@ AGENT_CLAUDE = "claude"
 AGENT_CODEX = "codex"
 AGENTS = (AGENT_CLAUDE, AGENT_CODEX)
 DEFAULT_AGENT = AGENT_CLAUDE
+CODEX_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
 
 
 # Registered with Telegram via setMyCommands at boot. Order = order shown
@@ -248,6 +249,8 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("agent", "switch this topic's agent (claude|codex)"),
     ("claude", "switch/login/logout Claude"),
     ("codex", "switch/login/logout Codex"),
+    ("fast", "switch this topic's Codex lane to fast mode"),
+    ("model", "show/set this topic's Codex model"),
     ("miniapp", "open the goal card feed"),
     ("live", "live-view URL of the active browser"),
     ("queue", "pending tasks in this topic"),
@@ -1087,8 +1090,13 @@ def burn_setup_token() -> None:
 
 
 # ---------------------------------------------------------------------------
-# State file — getUpdates offset + per-lane agent binding.
-# Format: {"offset": <int>, "agents": {"<lane_slug>": "claude"|"codex"}}
+# State file — getUpdates offset + per-lane agent binding/settings.
+# Format:
+# {
+#   "offset": <int>,
+#   "agents": {"<lane_slug>": "claude"|"codex"},
+#   "codex_settings": {"<lane_slug>": {"model": "...", "reasoning_effort": "..."}}
+# }
 # ---------------------------------------------------------------------------
 
 
@@ -1099,11 +1107,12 @@ def load_state() -> dict:
             if isinstance(data, dict):
                 data.setdefault("offset", 0)
                 data.setdefault("agents", {})
+                data.setdefault("codex_settings", {})
                 data.setdefault("owners", {})
                 return data
         except Exception:
             pass
-    return {"offset": 0, "agents": {}, "owners": {}}
+    return {"offset": 0, "agents": {}, "codex_settings": {}, "owners": {}}
 
 
 def save_state(s: dict) -> None:
@@ -1376,6 +1385,61 @@ def _set_agent_for(key: LaneKey, agent: str, state: dict) -> None:
         return
     state.setdefault("agents", {})[_lane_slug(key)] = agent
     save_state(state)
+
+
+def _codex_settings_for(key: LaneKey, state: dict) -> dict:
+    raw = (state.get("codex_settings") or {}).get(_lane_slug(key)) or {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    model = str(raw.get("model") or "").strip()
+    if model:
+        out["model"] = model
+    effort = str(raw.get("reasoning_effort") or "").strip().lower()
+    if effort in CODEX_REASONING_EFFORTS:
+        out["reasoning_effort"] = effort
+    return out
+
+
+def _set_codex_settings(
+    key: LaneKey,
+    state: dict,
+    *,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+    clear: bool = False,
+) -> dict:
+    slug = _lane_slug(key)
+    settings_by_lane = state.setdefault("codex_settings", {})
+    if clear:
+        settings_by_lane.pop(slug, None)
+        save_state(state)
+        return {}
+    current = dict(_codex_settings_for(key, state))
+    if model is not None:
+        model = model.strip()
+        if model:
+            current["model"] = model
+        else:
+            current.pop("model", None)
+    if reasoning_effort is not None:
+        reasoning_effort = reasoning_effort.strip().lower()
+        if reasoning_effort in CODEX_REASONING_EFFORTS:
+            current["reasoning_effort"] = reasoning_effort
+        elif not reasoning_effort:
+            current.pop("reasoning_effort", None)
+    if current:
+        settings_by_lane[slug] = current
+    else:
+        settings_by_lane.pop(slug, None)
+    save_state(state)
+    return current
+
+
+def _format_codex_settings(settings: dict) -> str:
+    model = settings.get("model") or "(Codex default)"
+    effort = settings.get("reasoning_effort") or "(Codex default)"
+    return f"model: `{model}`\nreasoning effort: `{effort}`"
 
 
 # ---------------------------------------------------------------------------
@@ -4084,6 +4148,14 @@ class Bot:
             "-a", "never",
             "-s", "danger-full-access",
         ]
+        codex_settings = _codex_settings_for(key, self.state)
+        if codex_settings.get("model"):
+            codex_bypass_flags += ["-m", codex_settings["model"]]
+        if codex_settings.get("reasoning_effort"):
+            codex_bypass_flags += [
+                "-c",
+                f'model_reasoning_effort="{codex_settings["reasoning_effort"]}"',
+            ]
         if existing_thread:
             # Resume the lane's existing codex thread so conversation context
             # carries across messages. `codex exec resume <id>` is the
@@ -4995,6 +5067,8 @@ class Bot:
                 "/codex — switch this topic to Codex\n"
                 "/codex login — sign in Codex with device auth\n"
                 "/codex logout — sign out Codex\n"
+                "/fast — switch this topic to Codex with low reasoning effort\n"
+                "/model — show/set this topic's Codex model, e.g. `/model gpt-5.4 low`\n"
                 "/claude — switch this topic to Claude\n"
                 "/claude login — sign in Claude through a terminal flow\n"
                 "/claude logout — sign out Claude\n"
@@ -5143,6 +5217,23 @@ class Bot:
                 )
                 return
             self._cmd_agent(key, chat_id, mid, thread_id, AGENT_CODEX)
+            return
+        if cmd == "/fast":
+            _set_agent_for(key, AGENT_CODEX, self.state)
+            settings = _set_codex_settings(key, self.state, reasoning_effort="low")
+            self.send(
+                chat_id,
+                "Switched this topic to `codex` fast mode.\n\n"
+                + _format_codex_settings(settings)
+                + "\n\nUse `/model` to inspect, `/model <model> [low|medium|high|xhigh]` "
+                "to change it, or `/model reset` to return to Codex defaults.",
+                reply_to=mid,
+                thread_id=thread_id,
+                markdown=True,
+            )
+            return
+        if cmd == "/model":
+            self._cmd_codex_model(key, chat_id, mid, thread_id, arg)
             return
         if cmd == "/claude":
             action = arg.strip().lower()
@@ -5504,6 +5595,122 @@ class Bot:
             chat_id,
             f"Switched to `{arg}` for this topic. Each agent has its own "
             "session UUID and workspace.",
+            reply_to=reply_to,
+            thread_id=thread_id,
+            markdown=True,
+        )
+
+    def _cmd_codex_model(
+        self,
+        key: LaneKey,
+        chat_id: int,
+        reply_to: int | None,
+        thread_id: int,
+        arg: str,
+    ) -> None:
+        """Show or update per-topic Codex model settings.
+
+        These settings are applied as CLI flags to future `codex exec` turns
+        in this Telegram lane. They are bot-level settings because Codex TUI
+        slash commands like `/model` are interactive, while the bot runs
+        Codex through non-interactive `codex exec --json`.
+        """
+        raw = arg.strip()
+        if not raw:
+            current_agent = _agent_for(key, self.state)
+            settings = _codex_settings_for(key, self.state)
+            self.send(
+                chat_id,
+                f"This topic is using `{current_agent}`.\n\n"
+                "Codex settings for this topic:\n"
+                + _format_codex_settings(settings)
+                + "\n\nExamples:\n"
+                "`/fast`\n"
+                "`/model gpt-5.4 low`\n"
+                "`/model gpt-5.4-mini low`\n"
+                "`/model high`\n"
+                "`/model reset`",
+                reply_to=reply_to,
+                thread_id=thread_id,
+                markdown=True,
+            )
+            return
+
+        words = raw.split()
+        first = words[0].lower()
+        if first in ("reset", "default", "defaults", "clear"):
+            _set_agent_for(key, AGENT_CODEX, self.state)
+            settings = _set_codex_settings(key, self.state, clear=True)
+            self.send(
+                chat_id,
+                "Switched this topic to `codex` and reset Codex model settings.\n\n"
+                + _format_codex_settings(settings),
+                reply_to=reply_to,
+                thread_id=thread_id,
+                markdown=True,
+            )
+            return
+
+        if first == "fast":
+            _set_agent_for(key, AGENT_CODEX, self.state)
+            settings = _set_codex_settings(key, self.state, reasoning_effort="low")
+            self.send(
+                chat_id,
+                "Switched this topic to `codex` fast mode.\n\n"
+                + _format_codex_settings(settings),
+                reply_to=reply_to,
+                thread_id=thread_id,
+                markdown=True,
+            )
+            return
+
+        model: str | None = None
+        effort: str | None = None
+        unknown: list[str] = []
+        for word in words:
+            normalized = word.lower()
+            if normalized in CODEX_REASONING_EFFORTS:
+                effort = normalized
+            elif normalized in ("effort", "reasoning"):
+                continue
+            elif model is None:
+                model = word
+            else:
+                unknown.append(word)
+
+        if unknown:
+            self.send(
+                chat_id,
+                "I couldn't parse: "
+                + " ".join(f"`{w}`" for w in unknown)
+                + "\n\nUse `/model <model> [low|medium|high|xhigh]` or `/model reset`.",
+                reply_to=reply_to,
+                thread_id=thread_id,
+                markdown=True,
+            )
+            return
+
+        if model is None and effort is None:
+            self.send(
+                chat_id,
+                "No model or effort found. Use `/model <model> [low|medium|high|xhigh]`.",
+                reply_to=reply_to,
+                thread_id=thread_id,
+                markdown=True,
+            )
+            return
+
+        _set_agent_for(key, AGENT_CODEX, self.state)
+        settings = _set_codex_settings(
+            key,
+            self.state,
+            model=model,
+            reasoning_effort=effort,
+        )
+        self.send(
+            chat_id,
+            "Switched this topic to `codex` and updated Codex settings.\n\n"
+            + _format_codex_settings(settings),
             reply_to=reply_to,
             thread_id=thread_id,
             markdown=True,
