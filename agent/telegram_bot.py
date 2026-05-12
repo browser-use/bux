@@ -252,6 +252,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("codex", "switch/login/logout Codex"),
     ("fast", "switch this topic's Codex lane to fast mode"),
     ("model", "show/set this topic's Codex model"),
+    ("agency", "open the goal card feed"),
     ("miniapp", "open the goal card feed"),
     ("live", "live-view URL of the active browser"),
     ("queue", "pending tasks in this topic"),
@@ -5201,6 +5202,7 @@ class Bot:
                 "/claude — switch this topic to Claude\n"
                 "/claude login — sign in Claude through a terminal flow\n"
                 "/claude logout — sign out Claude\n"
+                "/agency — open the Mini App\n"
                 "/agent — open the Mini App\n"
                 "/agent claude|codex — switch this topic to a different agent\n"
                 "/miniapp — open the Mini App\n"
@@ -5219,7 +5221,7 @@ class Bot:
                 thread_id=thread_id,
             )
             return
-        if cmd == "/miniapp" or (cmd == "/agent" and not arg.strip()):
+        if cmd in ("/agency", "/miniapp") or (cmd == "/agent" and not arg.strip()):
             if not owner or not _is_owner(sender, owner):
                 self.send(
                     chat_id,
@@ -5278,7 +5280,7 @@ class Bot:
                 }
             self.send(
                 chat_id,
-                "Sent Agency to your bot DM." if sent_dm else "Open the bot DM and type /miniapp.",
+                "Sent Agency to your bot DM." if sent_dm else "Open the bot DM and type /agency.",
                 reply_to=mid,
                 thread_id=thread_id,
                 reply_markup=dm_markup,
