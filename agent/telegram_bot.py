@@ -4831,22 +4831,15 @@ class Bot:
                 return
             separator = "&" if "?" in url else "?"
             url = f"{url}{separator}v=20260512x36"
-            owner_chat = int(owner.get("user_id") or chat_id)
-            target_chat = owner_chat if chat_id != owner_chat else chat_id
             self.send(
-                target_chat,
-                "Open your goal feed.",
+                chat_id,
+                "Open Agency.",
+                reply_to=mid,
+                thread_id=thread_id,
                 reply_markup={
                     "inline_keyboard": [[{"text": "Open Mini App", "web_app": {"url": url}}]]
                 },
             )
-            if target_chat != chat_id:
-                self.send(
-                    chat_id,
-                    "Sent the secure Mini App button to your DM.",
-                    reply_to=mid,
-                    thread_id=thread_id,
-                )
             return
         if cmd == "/whoami":
             who_label = _sender_label(sender) or "(unknown)"

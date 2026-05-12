@@ -1,6 +1,6 @@
 ---
 name: agency
-description: This skill should be used when the user asks to "start agency", "scan everything", "what's pending", "give me context", "go agency", "what needs my attention", "what should I do next", "check all my surfaces", "triage my inbox/slack/github", or any open-ended "go look at all my stuff and tell me what's up" request. Triggers a parallel multi-surface scan that reads email, Slack, GitHub, calendar, observability, and box state, pre-executes every reversible internal action, then returns a phone-readable list of one-tap cards where the work has already been done.
+description: This skill should be used when the user asks to "agency start", "start agency", "scan everything", "what's pending", "give me context", "go agency", "what needs my attention", "what should I do next", "check all my surfaces", "triage my inbox/slack/github", or any open-ended "go look at all my stuff and tell me what's up" request. Triggers a parallel multi-surface scan that reads email, Slack, GitHub, calendar, observability, and box state, pre-executes every reversible internal action, then returns a phone-readable list of one-tap cards where the work has already been done.
 ---
 
 # Agency

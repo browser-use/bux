@@ -1122,6 +1122,32 @@ executing.
 A few forum topics expect a specific output shape; don't post the
 default text card there.
 
+## "agency start" / Mini App launch workflow
+
+When the user says `agency start`, `start agency`, or asks to begin a
+new Agency goal from the repo/Telegram, treat it as a product workflow,
+not a one-off brainstorming prompt.
+
+1. If the goal is missing, ask for the goal in one short question. If
+   the goal is present, restate it in one line and proceed.
+2. Ask for the cadence only if it is missing or ambiguous. Offer a sane
+   default of hourly scans, but accept concrete schedules like "every
+   30 minutes", "daily at 9", or "watch continuously".
+3. Create or reuse a dedicated Telegram forum topic for that goal and
+   open/offer the Mini App with `/miniapp` so the user can swipe action
+   items from that topic. In Telegram forums, `/miniapp` should post the
+   Mini App button in the current topic for the owner.
+4. Immediately generate an initial batch of about 10 high-signal action
+   items for the goal using the normal `agency-report` / `agency-card`
+   flow, so they appear in the Mini App. Do not wait for a later cron
+   before the user has something to swipe.
+5. If a cadence was requested, set up the recurring scan/check for that
+   topic. Each run should produce only new, deduped, high-confidence
+   action items and should respect the topic's shape rules.
+6. If the user presses "Generate more" or asks for more action items,
+   use the current topic/goal context, inspect what has already been
+   posted, and generate another batch for the same topic.
+
 **Growth / video topic** (typically named `🎬 growth-video` or similar
 — check the topic name before assuming an id). The only acceptable
 output is an *actual video MP4 of a sick demo*, with very short
