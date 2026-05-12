@@ -269,8 +269,53 @@ def _image_data_url(path_value: str | None) -> str:
         return ""
 
 
+_VIDEO_PATH_RE = re.compile(r"(/[^\s'\"()<>]+\.(?:mp4|mov|webm))", re.I)
+
+
+def _media_token(suggestion_id: int, path_value: str) -> str:
+    secret = (_bot_token() or "miniapp-dev").encode()
+    payload = f"{suggestion_id}:{Path(path_value).resolve()}".encode()
+    return hmac.new(secret, payload, hashlib.sha256).hexdigest()[:32]
+
+
+def _video_content_type(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".webm":
+        return "video/webm"
+    if suffix == ".mov":
+        return "video/quicktime"
+    return "video/mp4"
+
+
+def _card_video_path(row: dict[str, Any]) -> str:
+    image_file = str(row.get("image_file") or "").strip()
+    if image_file and Path(image_file).suffix.lower() in {".mp4", ".mov", ".webm"}:
+        return image_file
+    haystack = "\n".join(
+        str(row.get(key) or "")
+        for key in ("prompt", "description", "source_url", "image_url")
+    )
+    match = _VIDEO_PATH_RE.search(haystack)
+    return match.group(1) if match else ""
+
+
 def _card_visual(row: dict[str, Any]) -> dict[str, str]:
     image_url = (row.get("image_url") or "").strip()
+    if image_url.lower().split("?", 1)[0].endswith((".mp4", ".mov", ".webm")):
+        return {"kind": "video", "src": image_url}
+    video_path = _card_video_path(row)
+    if video_path:
+        path = Path(video_path).expanduser()
+        try:
+            resolved = path.resolve()
+            if resolved.exists() and resolved.stat().st_size <= 80_000_000:
+                suggestion_id = int(row.get("id") or 0)
+                query = urllib.parse.urlencode(
+                    {"token": _media_token(suggestion_id, str(resolved))}
+                )
+                return {"kind": "video", "src": f"/api/cards/{suggestion_id}/media?{query}"}
+        except Exception:
+            pass
     image_data_url = _image_data_url(row.get("image_file"))
     if image_data_url:
         return {"kind": "image", "src": image_data_url}
@@ -893,6 +938,50 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 _json_response(self, 200, {"comments": _comments(suggestion_id)})
             except PermissionError as exc:
                 _json_response(self, 401, {"error": str(exc)})
+            return
+        if len(parts) == 4 and parts[:2] == ["api", "cards"] and parts[3] == "media":
+            suggestion_id = int(parts[2])
+            row = _find_suggestion(suggestion_id)
+            if not row:
+                _json_response(self, 404, {"error": "card not found"})
+                return
+            video_path = _card_video_path(row)
+            if not video_path:
+                _json_response(self, 404, {"error": "media not found"})
+                return
+            path_obj = Path(video_path).expanduser()
+            try:
+                resolved = path_obj.resolve()
+                token = urllib.parse.parse_qs(parsed.query).get("token", [""])[0]
+                if token != _media_token(suggestion_id, str(resolved)):
+                    _json_response(self, 403, {"error": "bad media token"})
+                    return
+                if not resolved.exists() or resolved.stat().st_size > 80_000_000:
+                    _json_response(self, 404, {"error": "media not found"})
+                    return
+                size = resolved.stat().st_size
+                start, end = 0, size - 1
+                status = 200
+                range_header = self.headers.get("Range", "")
+                if range_header.startswith("bytes="):
+                    status = 206
+                    raw_start, _, raw_end = range_header.removeprefix("bytes=").partition("-")
+                    start = int(raw_start or "0")
+                    end = int(raw_end) if raw_end else end
+                    end = min(end, size - 1)
+                length = max(0, end - start + 1)
+                self.send_response(status)
+                self.send_header("Content-Type", _video_content_type(resolved))
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Length", str(length))
+                if status == 206:
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+                self.end_headers()
+                with resolved.open("rb") as fh:
+                    fh.seek(start)
+                    self.wfile.write(fh.read(length))
+            except Exception:
+                _json_response(self, 404, {"error": "media not found"})
             return
         if path == "/api/stats":
             try:

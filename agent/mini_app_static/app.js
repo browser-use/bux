@@ -393,6 +393,7 @@ function brandFromAction(card) {
     card?.action,
     Array.isArray(card?.buttons) ? card.buttons.join(" ") : "",
   ].join(" ").toLowerCase();
+  if (/product\s*hunt|producthunt|golden kitty/.test(value)) return brandMeta("producthunt", "Product Hunt", "producthunt");
   if (/\breddit\b|r\/[a-z0-9_]+|subreddit/.test(value)) return brandMeta("reddit", "Reddit", "reddit");
   if (value.includes("whatsapp")) return brandMeta("whatsapp", "WhatsApp", "whatsapp");
   if (/\bgithub\b|\bgh\b|pull request|pr #\d+/.test(value)) return brandMeta("github", "GitHub", "github");
@@ -407,6 +408,7 @@ function brandFromText(value) {
   if (value.includes("gmail") || value.includes("email")) return brandMeta("gmail", "Gmail", "gmail");
   if (value.includes("slack")) return brandMeta("slack", "Slack", "slack");
   if (value.includes("reddit")) return brandMeta("reddit", "Reddit", "reddit");
+  if (/product\s*hunt|producthunt|golden kitty|launch-producthunt/.test(value)) return brandMeta("producthunt", "Product Hunt", "producthunt");
   if (value.includes("github") || value.includes("gh-pr")) return brandMeta("github", "GitHub", "github");
   if (value.includes("linear")) return brandMeta("linear", "Linear", "linear");
   if (value.includes("calendar")) return brandMeta("calendar", "Calendar", "googlecalendar");
@@ -438,6 +440,7 @@ function faviconDomain(kind) {
     calendar: "calendar.google.com",
     telegram: "telegram.org",
     whatsapp: "whatsapp.com",
+    producthunt: "producthunt.com",
   };
   return domains[kind] || "";
 }
@@ -459,6 +462,9 @@ function mediaHtml(card) {
   if (visual.kind === "image" && visual.src) {
     return `<div class="media-card"><img class="card-image" src="${escapeAttr(visual.src)}" alt="" /></div>`;
   }
+  if (visual.kind === "video" && visual.src) {
+    return `<div class="media-card"><video class="card-image" src="${escapeAttr(visual.src)}" controls playsinline preload="metadata"></video></div>`;
+  }
   return "";
 }
 
@@ -477,6 +483,7 @@ function brandSvg(icon) {
     reddit: `<svg viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="20" fill="#FF4500"/><text x="24" y="32" text-anchor="middle" font-size="24" font-family="Arial, sans-serif" font-weight="700" fill="#fff">r</text></svg>`,
     x: `<svg viewBox="0 0 48 48" aria-hidden="true"><rect width="48" height="48" rx="24" fill="#fff"/><path d="M14 12h7.2l5.1 7.1 6.2-7.1h3.2l-8 9.2L37 36h-7.2l-5.8-8.1-7 8.1h-3.2l8.7-10L14 12Zm5.5 2.4 11.6 19.2h2.4L21.9 14.4h-2.4Z" fill="#000"/></svg>`,
     github: `<svg viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="21" fill="#181717"/><text x="24" y="30" text-anchor="middle" font-size="13" font-family="Arial, sans-serif" font-weight="700" fill="#fff">GH</text></svg>`,
+    producthunt: `<svg viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="21" fill="#DA552F"/><text x="24" y="31" text-anchor="middle" font-size="20" font-family="Arial, sans-serif" font-weight="800" fill="#fff">P</text></svg>`,
     linear: `<svg viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="21" fill="#5E6AD2"/><path d="M14 29 29 14M15 36 36 15M24 38l14-14" stroke="#fff" stroke-width="4" stroke-linecap="round"/></svg>`,
     googlecalendar: `<svg viewBox="0 0 48 48" aria-hidden="true"><rect x="8" y="10" width="32" height="30" rx="4" fill="#fff"/><path d="M8 18h32" stroke="#4285F4" stroke-width="5"/><text x="24" y="34" text-anchor="middle" font-size="15" font-family="Arial, sans-serif" font-weight="700" fill="#1f2937">31</text></svg>`,
     telegram: `<svg viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="21" fill="#26A5E4"/><path d="M35 14 29.8 35c-.4 1.5-1.4 1.9-2.8 1.2l-7.7-5.7-3.7 3.6c-.4.4-.8.8-1.6.8l.6-7.9L29 17.8c.7-.6-.1-.9-1-.4L12.5 27.2 5 24.8c-1.6-.5-1.6-1.6.3-2.3L33.4 11.7c1.3-.5 2.4.3 1.6 2.3Z" fill="#fff"/></svg>`,
