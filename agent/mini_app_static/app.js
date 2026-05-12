@@ -131,7 +131,6 @@ function renderCard(card, index) {
   const actionButtons = cardActionButtons(card);
   const subtitle = meta.brand ? relativeAge(card.created_at) : `@${meta.handle} · ${relativeAge(card.created_at)}`;
   const postText = renderPostText(card);
-  const needsExpand = plainPostText(card).length > 180;
   const article = document.createElement("article");
   article.className = "story";
   article.dataset.index = String(index);
@@ -149,17 +148,20 @@ function renderCard(card, index) {
           </div>
         </header>
         <div class="post-body">
-          <div class="post-text ${needsExpand ? "collapsed" : ""}">${postText}</div>
-          ${needsExpand ? `<button class="show-more" type="button" data-expand-text>Show more</button>` : ""}
+          <div class="post-text">${postText}</div>
         </div>
         ${action ? detailHtml("Show draft", action) : ""}
         ${mediaHtml(card)}
         ${sourceFooter(card, meta)}
         ${commentPanelHtml(card, meta)}
-        <div class="post-actions">
-          <button class="icon-action danger" data-delete="${card.id}" type="button" aria-label="Delete">${trashSvg()}<span>Delete</span></button>
-          <button class="icon-action" data-context="${card.id}" type="button" aria-label="Refine">${replySvg()}<span>Refine</span></button>
-          ${actionButtons.map((label) => `<button class="start-inline" data-start="${card.id}" data-button="${escapeAttr(label.raw)}" type="button">${escapeHtml(label.text)}</button>`).join("")}
+        <div class="post-actions ${actionButtons.length ? "" : "no-primary"}">
+          <div class="secondary-actions">
+            <button class="icon-action danger icon-only" data-delete="${card.id}" type="button" aria-label="Delete">${trashSvg()}</button>
+            <button class="icon-action" data-context="${card.id}" type="button" aria-label="Refine">${replySvg()}<span>Refine</span></button>
+          </div>
+          <div class="primary-actions">
+            ${actionButtons.map((label) => `<button class="start-inline" data-start="${card.id}" data-button="${escapeAttr(label.raw)}" type="button">${escapeHtml(label.text)}</button>`).join("")}
+          </div>
         </div>
       </div>
     </section>
@@ -171,11 +173,6 @@ function renderCard(card, index) {
   });
   attachSwipe(article, card.id);
   article.querySelector("[data-inline-context-form]")?.addEventListener("submit", submitInlineContext);
-  article.querySelector("[data-expand-text]")?.addEventListener("click", (event) => {
-    const text = article.querySelector(".post-text");
-    text?.classList.toggle("collapsed");
-    event.currentTarget.textContent = text?.classList.contains("collapsed") ? "Show more" : "Show less";
-  });
   return article;
 }
 

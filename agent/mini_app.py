@@ -316,8 +316,8 @@ def _cards(limit: int = 30) -> list[dict[str, Any]]:
     cards: list[dict[str, Any]] = []
     for row in rows:
         prompt = _clean_mobile_text((row.get("prompt") or "").strip())
-        why = _clip_text(_clean_mobile_text((row.get("description") or "").strip()), 240)
-        title = _clip_text(_clean_mobile_text(row.get("title") or "Untitled action"), 92)
+        why = _clean_mobile_text((row.get("description") or "").strip())
+        title = _clean_mobile_text(row.get("title") or "Untitled action")
         action = prompt or ""
         cards.append(
             {
