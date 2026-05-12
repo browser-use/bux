@@ -392,7 +392,7 @@ button {
   font-size: 12px;
   font-weight: 900;
   line-height: 1;
-  transform: translateY(1px);
+  transform: translateY(-1px);
 }
 
 .tweet-detail[open] summary::after {

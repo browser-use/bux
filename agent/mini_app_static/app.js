@@ -211,8 +211,8 @@ function detailHtml(label, text) {
 
 function sourceLine(card, meta) {
   const url = card.source_url || firstUrl([card.title, card.why].join(" "));
-  const label = card.source_label || (url ? "Source" : sourceLabel(card.source) || meta.name);
-  if (!label && !url) return "";
+  if (!url) return "";
+  const label = card.source_label || "Source";
   const body = url
     ? `<a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label || "Source")}</a>`
     : `<span>${escapeHtml(label)}</span>`;
@@ -351,12 +351,6 @@ function sourceMeta(cardOrSource) {
   const sourceValue = String(source || "").toLowerCase();
   const sourceBrand = brandFromText(sourceValue);
   if (sourceBrand) return sourceBrand;
-  const combined = typeof cardOrSource === "string"
-    ? cardOrSource
-    : [cardOrSource?.source, cardOrSource?.title, cardOrSource?.why, cardOrSource?.action].join(" ");
-  const value = String(combined || "").toLowerCase();
-  const combinedBrand = brandFromText(value);
-  if (combinedBrand) return combinedBrand;
   const label = sourceLabel(source);
   return { kind: "agency", mark: initials(source) || "B", name: titleCase(label), handle: slug(label), brand: false };
 }

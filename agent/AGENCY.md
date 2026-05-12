@@ -396,6 +396,13 @@ night, sometimes mid-workout. Specifics:
 - Visible body / `--description` ≤ 240 chars. 1-2 natural sentences:
   what matters and why now. Put proof, names, dates, IDs, and raw
   provenance in collapsed blocks, never in the visible body.
+- Write the visible body in plain human language, not scoring shorthand.
+  Do not show RICE fragments like `R: 3`, `I: 3`, `C: 9`, `E: 1`, opaque
+  IDs, frozen slugs, or internal category names. If scoring matters, turn it
+  into one readable sentence or hide it in evidence.
+- Use short paragraphs and intentional new lines for drafts/details. Every
+  visible sentence should be understandable without opening the database or
+  knowing internal conventions.
 - Subhead ≤ 100 chars and contains the impact phrase.
 - Draft expandable: 3-5 lines of paste-ready text. No reasoning, no
   preamble.
@@ -406,6 +413,9 @@ night, sometimes mid-workout. Specifics:
 - No bullet trees nested >1 level.
 - No URL pasted bare — always `[label](url)`. Place URLs inside
   `--source-label` / `--source-url` for the canonical clickable header.
+  Only use `--source-label` when you also have a real `--source-url`; never
+  put category labels like "case study", "growth box", or "pipeline" in the
+  source slot.
 - Always pass `--source-label` and `--source-url` when the source has a
   canonical place to open (Gmail thread, Slack message, GitHub PR, Reddit/X
   post, Linear issue). Use a short label such as "Gmail thread" or "GitHub
@@ -423,6 +433,10 @@ night, sometimes mid-workout. Specifics:
   sections should be rare: one `Show draft` block only when there is
   paste-ready text. Do not add a generic "Context" block unless it names
   the real human, app, company, or thread that supplies the context.
+- Button labels should be concrete when possible: "Send reply", "Merge PR",
+  "Create draft", "Post update". Generic yes/start labels are allowed but
+  render as `Do it` in the Mini App, so prefer a verb label when the action
+  is obvious.
   Scrolling advances past a card; don't depend on a visible Skip button in
   the Mini App. If your `agency-report` call would look ugly in that shape,
   rewrite the card before posting.

@@ -283,12 +283,14 @@ _FILE_URL_RE = re.compile(r"file://\S+")
 _LOCAL_PATH_RE = re.compile(r"(?<!https:)(?<!http:)(?:^|\s)/(?:[\w.-]+/)*[\w.-]+")
 _BRACKET_TAG_RE = re.compile(r"\[[^\]]{1,80}\]")
 _LONG_SLUG_RE = re.compile(r"\b(?=[A-Za-z0-9_-]{24,}\b)(?=.*[-_])[A-Za-z0-9_-]+\b")
+_RICE_SCORE_RE = re.compile(r"\b[CRIE]:\s*\d+(?:\.\d+)?\s*(?:[→>+-]\s*)?", re.I)
 
 
 def _clean_mobile_text(value: str) -> str:
     text = _BRACKET_TAG_RE.sub("", value or "")
     text = _FILE_URL_RE.sub(" ", text)
     text = _LOCAL_PATH_RE.sub(" ", text)
+    text = _RICE_SCORE_RE.sub("", text)
     text = _RAW_COUNTER_RE.sub("", text)
     text = _VISIBLE_ID_RE.sub("", text)
     text = _LONG_SLUG_RE.sub("", text)
