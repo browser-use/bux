@@ -406,6 +406,11 @@ night, sometimes mid-workout. Specifics:
 - Subhead ≤ 100 chars and contains the impact phrase.
 - Draft expandable: 3-5 lines of paste-ready text. No reasoning, no
   preamble.
+- Multiple draft variants are allowed. Put them in the expandable as:
+  `Draft 1` then the exact text, blank line, `Draft 2` then the exact text.
+  Pair them with concrete buttons such as `Send Draft 1` and `Send Draft 2`.
+  Do not use one generic `Do it` button when the user should choose between
+  variants.
 - Reasoning expandable: optional, max 3 sentences, only if it adds
   urgency or unblocks a question the user would actually ask.
 - Context / Evidence expandables: collapsed by default. Keep each one
@@ -416,6 +421,10 @@ night, sometimes mid-workout. Specifics:
   Only use `--source-label` when you also have a real `--source-url`; never
   put category labels like "case study", "growth box", or "pipeline" in the
   source slot.
+- Link output format for card text/details/comments is Markdown:
+  `[short human label](https://example.com/path?x=1&y=2)`. Do not use
+  Telegram HTML tags, raw `<a>` tags, reference-style links, or bare tracking
+  URLs in visible text.
 - Always pass `--source-label` and `--source-url` when the source has a
   canonical place to open (Gmail thread, Slack message, GitHub PR, Reddit/X
   post, Linear issue). Use a short label such as "Gmail thread" or "GitHub

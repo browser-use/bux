@@ -270,26 +270,40 @@ function renderPostText(card) {
 
 function renderRichText(value) {
   const links = [];
-  let html = escapeHtml(value);
-  html = html.replace(
+  const linkToken = (label, url) => {
+    const token = `__BUX_LINK_${links.length}__`;
+    links.push(`<a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`);
+    return token;
+  };
+  let text = String(value || "").replace(
     /\[([^\]]{1,100})\]\((https?:\/\/[^)\s]+)\)/g,
-    (_match, label, url) => {
-      const token = `__BUX_LINK_${links.length}__`;
-      links.push(`<a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`);
-      return token;
+    (_match, label, url) => linkToken(label, url),
+  );
+  text = text.replace(
+    /(https?:\/\/[^\s<]+)/g,
+    (rawUrl) => {
+      const { url, suffix } = splitTrailingUrlPunctuation(rawUrl);
+      return `${linkToken(shortUrl(url), url)}${suffix}`;
     },
   );
+  let html = escapeHtml(text);
   html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   html = html.replace(/\*{1,2}/g, "");
   html = html.replace(/\n+/g, "<br />");
-  html = html.replace(
-    /(https?:\/\/[^\s<]+)/g,
-    (url) => `<a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(shortUrl(url))}</a>`,
-  );
   links.forEach((link, index) => {
     html = html.replace(`__BUX_LINK_${index}__`, link);
   });
   return html;
+}
+
+function splitTrailingUrlPunctuation(rawUrl) {
+  let url = String(rawUrl || "");
+  let suffix = "";
+  while (/[.,!?;:]$/.test(url)) {
+    suffix = url.slice(-1) + suffix;
+    url = url.slice(0, -1);
+  }
+  return { url, suffix };
 }
 
 function shortUrl(url) {
