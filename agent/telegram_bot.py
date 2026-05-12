@@ -52,6 +52,7 @@ import re
 import secrets
 import select
 import signal
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -72,6 +73,7 @@ OPENAI_ENV = Path("/home/bux/.secrets/openai.env")
 ALLOWED_FILE = Path("/etc/bux/tg-allowed.txt")
 STATE_FILE = Path("/etc/bux/tg-state.json")
 QUEUE_FILE = Path("/etc/bux/tg-queue.json")
+MINIAPP_DB = Path(os.environ.get("BUX_MINIAPP_DB", "/var/lib/bux/miniapp.db"))
 
 # Marker for "I've already told the user about this SHA". Lets transient
 # bux-tg restarts (systemd flaps, polling backoff) stay silent while
@@ -149,6 +151,39 @@ _SERVICE_MESSAGE_FIELDS = frozenset({
     "connected_website",
     "passport_data",
 })
+
+
+def _record_miniapp_topic(chat_id: int, thread_id: int, title: str, source: str = "telegram") -> None:
+    if not chat_id or not thread_id or not title:
+        return
+    try:
+        MINIAPP_DB.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(str(MINIAPP_DB)) as db:
+            db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS topics (
+                  chat_id INTEGER NOT NULL,
+                  thread_id INTEGER NOT NULL,
+                  title TEXT NOT NULL DEFAULT '',
+                  source TEXT NOT NULL DEFAULT '',
+                  updated_at INTEGER NOT NULL,
+                  PRIMARY KEY (chat_id, thread_id)
+                )
+                """
+            )
+            db.execute(
+                """
+                INSERT INTO topics (chat_id, thread_id, title, source, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(chat_id, thread_id) DO UPDATE SET
+                  title = COALESCE(NULLIF(excluded.title, ''), topics.title),
+                  source = excluded.source,
+                  updated_at = excluded.updated_at
+                """,
+                (chat_id, thread_id, title[:128], source, int(time.time())),
+            )
+    except Exception:
+        LOG.debug("could not record mini app topic", exc_info=True)
 
 # Failure reaction on the user's message. Telegram's free-tier reaction
 # allowlist excludes ⏳/✅/⚠️/❌ — this is a verified-allowed pick.
@@ -4385,13 +4420,18 @@ class Bot:
 
     def handle(self, msg: dict) -> None:
         chat_id = msg["chat"]["id"]
+        thread_id_raw = msg.get("message_thread_id")
+        thread_id = thread_id_raw if isinstance(thread_id_raw, int) else 0
         # Skip chat-lifecycle service messages (topic created, member joined,
         # title changed, …). They have no user intent and shouldn't bounce a
         # reply or auto-bind an unbound chat.
         if any(k in msg for k in _SERVICE_MESSAGE_FIELDS):
+            created = msg.get("forum_topic_created") or {}
+            edited = msg.get("forum_topic_edited") or {}
+            title = (created.get("name") or edited.get("name") or "").strip()
+            if title:
+                _record_miniapp_topic(chat_id, thread_id, title)
             return
-        thread_id_raw = msg.get("message_thread_id")
-        thread_id = thread_id_raw if isinstance(thread_id_raw, int) else 0
 
         # TG service messages (topic created/edited/closed, members joined,
         # pinned, video chat lifecycle, etc.) carry no user content — drop
@@ -4790,7 +4830,7 @@ class Bot:
                 )
                 return
             separator = "&" if "?" in url else "?"
-            url = f"{url}{separator}v=20260512x16"
+            url = f"{url}{separator}v=20260512x17"
             owner_chat = int(owner.get("user_id") or chat_id)
             target_chat = owner_chat if chat_id != owner_chat else chat_id
             self.send(

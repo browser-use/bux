@@ -11,12 +11,14 @@ const goalKey = "buxMiniAppActiveGoalId";
 const state = {
   cards: [],
   goals: [],
+  topics: [],
   stats: {},
   currentIndex: 0,
   activeGoalId: localStorage.getItem(goalKey) || "all",
   passedByScroll: new Set(),
   comments: {},
   openContextCardId: null,
+  contextTarget: null,
 };
 
 const els = {
@@ -131,15 +133,13 @@ function render() {
 function renderEndCard() {
   const article = document.createElement("article");
   article.className = "end-card";
-  const activeTitle = activeGoalTitle();
   article.innerHTML = `
     <div>
       <strong>What should I do next?</strong>
-      <p>${escapeHtml(state.activeGoalId === "all" ? "What should I work on next?" : `What should I work on next for “${activeTitle}”?`)}</p>
       <button class="create-goal" type="button">Give context</button>
     </div>
   `;
-  article.querySelector("button").addEventListener("click", openGoal);
+  article.querySelector("button").addEventListener("click", openEndContext);
   return article;
 }
 
@@ -522,13 +522,16 @@ function renderGoalTabs() {
 }
 
 function topicTabs() {
-  const byTopic = new Map();
+  const byTopic = new Map((state.topics || []).map((topic) => [
+    String(topic.id),
+    { id: String(topic.id), title: topic.title || `Topic ${topic.thread_id}`, count: Number(topic.count || 0), fromApi: true },
+  ]));
   state.cards.forEach((card) => {
     const topicId = String(card.topic_id || "0");
     if (!topicId || topicId === "0") return;
     const key = `topic:${topicId}`;
     const existing = byTopic.get(key) || { id: key, title: card.topic_title || `Topic ${topicId}`, count: 0 };
-    if (!card.handled) existing.count += 1;
+    if (!existing.fromApi && !card.handled) existing.count += 1;
     byTopic.set(key, existing);
   });
   return [...byTopic.values()].sort((a, b) => b.count - a.count).slice(0, 12);
@@ -538,6 +541,8 @@ function activeGoalTitle() {
   if (state.activeGoalId === "all") return "All cards";
   if (state.activeGoalId.startsWith("topic:")) {
     const topicId = state.activeGoalId.slice("topic:".length);
+    const topic = (state.topics || []).find((item) => String(item.thread_id || "0") === topicId);
+    if (topic?.title) return topic.title;
     return state.cards.find((card) => String(card.topic_id || "0") === topicId)?.topic_title || `Topic ${topicId}`;
   }
   return goal()?.title || "All cards";
@@ -704,8 +709,26 @@ function openGoal() {
 }
 
 function openContext() {
+  state.contextTarget = null;
   els.contextDialog.showModal();
   els.contextInput.focus();
+}
+
+function openEndContext() {
+  if (state.activeGoalId.startsWith("topic:")) {
+    const topicId = state.activeGoalId.slice("topic:".length);
+    state.contextTarget = { type: "topic", id: topicId };
+    els.contextDialog.showModal();
+    els.contextInput.focus();
+    return;
+  }
+  if (state.activeGoalId !== "all") {
+    state.contextTarget = { type: "goal", id: state.activeGoalId };
+    els.contextDialog.showModal();
+    els.contextInput.focus();
+    return;
+  }
+  openGoal();
 }
 
 async function openInlineContext(id) {
@@ -792,6 +815,7 @@ els.goalDialog.addEventListener("cancel", () => {
 els.contextDialog.addEventListener("click", (event) => {
   if (event.target === els.contextDialog) {
     els.contextInput.value = "";
+    state.contextTarget = null;
     els.contextDialog.close();
   }
 });
@@ -825,16 +849,31 @@ els.contextForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const card = currentCard();
   const comment = els.contextInput.value.trim();
-  if (!card || !comment) return;
+  if (!comment) return;
   try {
-    await api(`/api/cards/${card.id}/comment`, {
-      method: "POST",
-      body: JSON.stringify({ comment }),
-    });
+    if (state.contextTarget?.type === "topic") {
+      await api(`/api/topics/${state.contextTarget.id}/context`, {
+        method: "POST",
+        body: JSON.stringify({ comment }),
+      });
+    } else if (state.contextTarget?.type === "goal") {
+      await api(`/api/goals/${state.contextTarget.id}/context`, {
+        method: "POST",
+        body: JSON.stringify({ comment }),
+      });
+    } else if (card) {
+      await api(`/api/cards/${card.id}/comment`, {
+        method: "POST",
+        body: JSON.stringify({ comment }),
+      });
+    } else {
+      return;
+    }
     els.contextInput.value = "";
+    state.contextTarget = null;
     els.contextDialog.close();
     await refreshStats();
-    toast("Reply added.");
+    toast("Context sent.");
   } catch (error) {
     toast(error.message);
   }
@@ -848,15 +887,20 @@ async function refreshStats() {
 
 async function load() {
   try {
-    const [goals, cards, stats] = await Promise.all([
+    const [goals, topics, cards, stats] = await Promise.all([
       api("/api/goals"),
+      api("/api/topics"),
       api("/api/cards"),
       api("/api/stats"),
     ]);
     state.goals = goals.goals || [];
+    state.topics = topics.topics || [];
     state.cards = cards.cards || [];
     state.stats = stats.stats || {};
-    if (state.activeGoalId !== "all" && !state.goals.some((item) => String(item.id) === String(state.activeGoalId))) {
+    const activeExists = state.activeGoalId === "all"
+      || state.goals.some((item) => String(item.id) === String(state.activeGoalId))
+      || state.topics.some((item) => String(item.id) === String(state.activeGoalId));
+    if (!activeExists) {
       state.activeGoalId = "all";
       localStorage.setItem(goalKey, "all");
     }

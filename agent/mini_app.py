@@ -165,6 +165,22 @@ def _mini_conn() -> sqlite3.Connection:
           telegram_user_id TEXT NOT NULL,
           created_at INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS topics (
+          chat_id INTEGER NOT NULL,
+          thread_id INTEGER NOT NULL,
+          title TEXT NOT NULL DEFAULT '',
+          source TEXT NOT NULL DEFAULT '',
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (chat_id, thread_id)
+        );
+        CREATE TABLE IF NOT EXISTS topic_context (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          chat_id INTEGER NOT NULL,
+          thread_id INTEGER NOT NULL,
+          body TEXT NOT NULL,
+          telegram_user_id TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        );
         """
     )
     db.commit()
@@ -314,10 +330,15 @@ def _thread_url(row: dict[str, Any]) -> str:
 
 
 def _thread_title(row: dict[str, Any]) -> str:
+    thread_id = int(row.get("tg_thread_id") or 0)
+    chat_id = int(row.get("tg_chat_id") or 0)
+    if thread_id:
+        title = _topic_title(chat_id, thread_id)
+        if title:
+            return title
     source = _clean_mobile_text(row.get("source") or "")
     if source:
         return source.replace("-", " ").title()[:28]
-    thread_id = int(row.get("tg_thread_id") or 0)
     return f"Topic {thread_id}" if thread_id else "General"
 
 
@@ -368,6 +389,73 @@ def _cards(limit: int = 100) -> list[dict[str, Any]]:
             }
         )
     return cards
+
+
+def _topic_title(chat_id: int, thread_id: int) -> str:
+    if not thread_id:
+        return ""
+    with _mini_conn() as db:
+        row = db.execute(
+            """
+            SELECT title FROM topics
+             WHERE thread_id = ? AND (? = 0 OR chat_id = ?)
+             ORDER BY updated_at DESC LIMIT 1
+            """,
+            (thread_id, chat_id, chat_id),
+        ).fetchone()
+    return str(row["title"] or "") if row else ""
+
+
+def _upsert_topic(chat_id: int, thread_id: int, title: str, source: str = "miniapp") -> None:
+    if not chat_id or not thread_id:
+        return
+    with _mini_conn() as db:
+        db.execute(
+            """
+            INSERT INTO topics (chat_id, thread_id, title, source, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(chat_id, thread_id) DO UPDATE SET
+              title = COALESCE(NULLIF(excluded.title, ''), topics.title),
+              source = excluded.source,
+              updated_at = excluded.updated_at
+            """,
+            (chat_id, thread_id, title[:128], source, _now()),
+        )
+        db.commit()
+
+
+def _topics() -> list[dict[str, Any]]:
+    topics: dict[tuple[int, int], dict[str, Any]] = {}
+    with _mini_conn() as db:
+        for row in db.execute("SELECT * FROM topics ORDER BY updated_at DESC"):
+            chat_id = int(row["chat_id"] or 0)
+            thread_id = int(row["thread_id"] or 0)
+            if thread_id:
+                topics[(chat_id, thread_id)] = {
+                    "id": f"topic:{thread_id}",
+                    "chat_id": chat_id,
+                    "thread_id": thread_id,
+                "title": (row["title"] or "").strip() or f"Topic {thread_id}",
+                    "count": 0,
+                }
+    for card in _cards(limit=100):
+        thread_id = int(card.get("topic_id") or 0)
+        if not thread_id:
+            continue
+        chat_id = 0
+        key = next((k for k in topics if k[1] == thread_id), (chat_id, thread_id))
+        item = topics.setdefault(
+            key,
+            {
+                "id": f"topic:{thread_id}",
+                "chat_id": chat_id,
+                "thread_id": thread_id,
+                "title": str(card.get("topic_title") or "").strip() or f"Topic {thread_id}",
+                "count": 0,
+            },
+        )
+        item["count"] = int(item.get("count") or 0) + (0 if card.get("handled") else 1)
+    return sorted(topics.values(), key=lambda item: (-int(item.get("count") or 0), str(item.get("title") or "")))[:30]
 
 
 def _comments(suggestion_id: int) -> list[dict[str, Any]]:
@@ -453,6 +541,47 @@ def _append_event(suggestion_id: int, event: str, user: dict[str, Any], detail: 
         db.commit()
 
 
+def _dispatch_topic_context(
+    chat_id: int, thread_id: int, comment: str, user: dict[str, Any]
+) -> bool:
+    if not chat_id or not thread_id or not comment:
+        return False
+    try:
+        import telegram_bot
+
+        env = _tg_env()
+        bot = telegram_bot.Bot(env["TG_BOT_TOKEN"], env.get("TG_SETUP_TOKEN", ""))
+        text = "Context from Mini App:\n" + comment
+        bot.send(chat_id, text, thread_id=thread_id)
+
+        def run() -> None:
+            try:
+                bot.run_task(
+                    (chat_id, thread_id),
+                    text,
+                    reply_to=None,
+                    sender={
+                        "user_id": str(user.get("id") or ""),
+                        "username": user.get("username") or "",
+                        "name": user.get("first_name") or "",
+                    },
+                )
+            except Exception:
+                print("bux-miniapp: context dispatch failed", file=sys.stderr)
+
+        threading.Thread(target=run, name=f"miniapp-context-{thread_id}", daemon=True).start()
+        return True
+    except Exception as exc:
+        print(f"bux-miniapp: context dispatch failed: {exc}", file=sys.stderr)
+        return False
+
+
+def _dispatch_card_context(row: dict[str, Any], comment: str, user: dict[str, Any]) -> bool:
+    chat_id = int(row.get("tg_chat_id") or 0) or _default_chat_id()
+    thread_id = int(row.get("worker_topic_id") or row.get("tg_thread_id") or 0)
+    return _dispatch_topic_context(chat_id, thread_id, comment, user)
+
+
 def _find_suggestion(suggestion_id: int) -> dict[str, Any] | None:
     with agency_db.conn() as db:
         row = db.execute("SELECT * FROM suggestions WHERE id = ?", (suggestion_id,)).fetchone()
@@ -487,6 +616,7 @@ def _start_agent_work(
         if res.get("ok"):
             work_thread = int(res["result"].get("message_thread_id") or thread_id)
             topic_created = True
+            _upsert_topic(chat_id, work_thread, topic_name, "miniapp-start")
         with agency_db.conn() as db:
             if row.get("tg_chat_id") and row.get("tg_message_id"):
                 agency_db.record_decision(
@@ -573,6 +703,13 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 with _mini_conn() as db:
                     goals = [dict(row) for row in db.execute("SELECT * FROM goals ORDER BY id DESC")]
                 _json_response(self, 200, {"goals": goals})
+            except PermissionError as exc:
+                _json_response(self, 401, {"error": str(exc)})
+            return
+        if path == "/api/topics":
+            try:
+                _auth_user(self)
+                _json_response(self, 200, {"topics": _topics()})
             except PermissionError as exc:
                 _json_response(self, 401, {"error": str(exc)})
             return
@@ -663,10 +800,31 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     _write_setting("provider", provider, user)
                 _json_response(self, 200, {"ok": True, "settings": _settings()})
                 return
+            if len(path) == 4 and path[:2] == ["api", "goals"] and path[3] == "context":
+                goal_id = int(path[2])
+                comment = (body.get("comment") or "").strip()
+                if not comment:
+                    _json_response(self, 400, {"error": "comment required"})
+                    return
+                with _mini_conn() as db:
+                    row = db.execute("SELECT context FROM goals WHERE id = ?", (goal_id,)).fetchone()
+                    if not row:
+                        _json_response(self, 404, {"error": "goal not found"})
+                        return
+                    existing = str(row["context"] or "").strip()
+                    updated = (existing + "\n\n" if existing else "") + comment
+                    db.execute(
+                        "UPDATE goals SET context = ?, updated_at = ? WHERE id = ?",
+                        (updated, _now(), goal_id),
+                    )
+                    db.commit()
+                _json_response(self, 200, {"ok": True})
+                return
             if len(path) >= 4 and path[:2] == ["api", "cards"]:
                 suggestion_id = int(path[2])
                 action = path[3]
-                if not _find_suggestion(suggestion_id):
+                row = _find_suggestion(suggestion_id)
+                if not row:
                     _json_response(self, 404, {"error": "card not found"})
                     return
                 if action == "comment":
@@ -685,7 +843,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                         )
                         db.commit()
                     _append_event(suggestion_id, "comment", user, comment)
-                    _json_response(self, 200, {"ok": True})
+                    dispatched = _dispatch_card_context(row, comment, user)
+                    _json_response(self, 200, {"ok": True, "dispatched": dispatched})
                     return
                 if action == "dismiss":
                     with agency_db.conn() as db:
@@ -707,6 +866,27 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     status = 200 if result.get("started") else 409
                     _json_response(self, status, {"ok": bool(result.get("started")), **result})
                     return
+            if len(path) == 4 and path[:2] == ["api", "topics"] and path[3] == "context":
+                thread_id = int(path[2])
+                comment = (body.get("comment") or "").strip()
+                if not comment:
+                    _json_response(self, 400, {"error": "comment required"})
+                    return
+                topic = next((item for item in _topics() if int(item["thread_id"]) == thread_id), None)
+                chat_id = int((topic or {}).get("chat_id") or 0) or _default_chat_id()
+                with _mini_conn() as db:
+                    db.execute(
+                        """
+                        INSERT INTO topic_context
+                          (chat_id, thread_id, body, telegram_user_id, created_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (chat_id, thread_id, comment, str(user.get("id") or ""), _now()),
+                    )
+                    db.commit()
+                dispatched = _dispatch_topic_context(chat_id, thread_id, comment, user)
+                _json_response(self, 200, {"ok": True, "dispatched": dispatched})
+                return
             _json_response(self, 404, {"error": "not found"})
         except PermissionError as exc:
             _json_response(self, 401, {"error": str(exc)})
