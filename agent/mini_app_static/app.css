@@ -590,17 +590,19 @@ button {
 .primary-actions {
   display: grid;
   gap: 8px;
-  justify-items: stretch;
+  justify-items: end;
 }
 
 .post-actions .start-inline {
-  min-height: 34px;
-  width: 100%;
+  min-height: 30px;
+  width: auto;
+  min-width: 86px;
+  max-width: 160px;
   padding: 0 12px;
   border-radius: 999px;
   color: #050608;
   background: #eff3f4;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 800;
 }
 
