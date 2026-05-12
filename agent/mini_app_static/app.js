@@ -39,6 +39,7 @@ const els = {
   passButton: document.querySelector("#passButton"),
   voiceButton: document.querySelector("#voiceButton"),
   startButton: document.querySelector("#startButton"),
+  topButton: document.querySelector("#topButton"),
   toast: document.querySelector("#toast"),
 };
 
@@ -89,15 +90,6 @@ function escapeAttr(value) {
   return escapeHtml(value).replaceAll("'", "&#39;");
 }
 
-function palette(card) {
-  const source = String(card.source || "").toLowerCase();
-  if (source.includes("gmail")) return ["#f27059", "#f7b267", "#120907"];
-  if (source.includes("slack")) return ["#8067ff", "#64dfdf", "#080818"];
-  if (source.includes("github") || source.includes("pr")) return ["#111827", "#60a5fa", "#030712"];
-  if (card.importance === "high") return ["#ff5f6f", "#ffd36b", "#170507"];
-  return ["#191d32", "#62d5ff", "#05070f"];
-}
-
 function render() {
   renderGoals();
   renderStats();
@@ -131,66 +123,94 @@ function render() {
 }
 
 function renderCard(card, index) {
-  const [a, b] = palette(card);
   const meta = sourceMeta(card.source);
   const action = usefulAction(card);
   const subtitle = meta.brand ? relativeAge(card.created_at) : `@${meta.handle} · ${relativeAge(card.created_at)}`;
+  const postText = renderPostText(card);
+  const needsExpand = plainPostText(card).length > 180;
   const article = document.createElement("article");
   article.className = "story";
   article.dataset.index = String(index);
   article.dataset.cardId = String(card.id);
   article.innerHTML = `
-    <section class="post-card">
-      <header class="tweet-head">
+    <section class="post-row">
+      <div class="avatar-column">
         ${appIconHtml(meta)}
-        <div>
-          <strong>${escapeHtml(meta.name)}</strong>
-          <span>${escapeHtml(subtitle)}</span>
+      </div>
+      <div class="post-main">
+        <header class="tweet-head">
+          <div>
+            <strong>${escapeHtml(meta.name)}</strong>
+            <span>${escapeHtml(subtitle)}</span>
+          </div>
+        </header>
+        <div class="post-body">
+          <div class="post-text ${needsExpand ? "collapsed" : ""}">${postText}</div>
+          ${needsExpand ? `<button class="show-more" type="button" data-expand-text>Show more</button>` : ""}
         </div>
-      </header>
-      <div class="post-body">
-        <p>${renderPostText(card)}</p>
-      </div>
-      <div class="post-details">
-        ${action ? detailHtml("Draft / idea", action) : ""}
-        ${detailHtml("Source", sourceDetail(card, meta))}
-      </div>
-      ${mediaHtml(card, meta, a, b)}
-      <div class="post-actions">
-        <button class="post-action" data-context="${card.id}" type="button" aria-label="Refine">↩ <span>Refine</span></button>
-        <button class="start-inline" data-start="${card.id}" type="button">Do it</button>
+        ${action ? detailHtml("Show draft", action) : ""}
+        ${mediaHtml(card)}
+        ${sourceFooter(card, meta)}
+        <div class="post-actions">
+          <button class="icon-action" data-context="${card.id}" type="button" aria-label="Refine">${replySvg()}<span>Refine</span></button>
+          <button class="icon-action danger" data-delete="${card.id}" type="button" aria-label="Delete">${trashSvg()}<span>Delete</span></button>
+          <button class="start-inline" data-start="${card.id}" type="button">Do it</button>
+        </div>
       </div>
     </section>
   `;
   article.querySelector("[data-context]").addEventListener("click", openContext);
+  article.querySelector("[data-delete]").addEventListener("click", () => passCard(card.id));
   article.querySelector("[data-start]").addEventListener("click", () => startCard(card.id));
+  article.querySelector("[data-expand-text]")?.addEventListener("click", (event) => {
+    const text = article.querySelector(".post-text");
+    text?.classList.toggle("collapsed");
+    event.currentTarget.textContent = text?.classList.contains("collapsed") ? "Show more" : "Show less";
+  });
   return article;
 }
 
 function detailHtml(label, text) {
   return `
-    <details class="detail-block">
+    <details class="tweet-detail">
       <summary>${escapeHtml(label)}</summary>
       <div>${renderRichText(text)}</div>
     </details>
   `;
 }
 
-function renderPostText(card) {
+function plainPostText(card) {
   const title = String(card.title || "").trim();
   const why = String(card.why || "").trim();
-  const text = why && why !== title ? `${title}\n${why}` : title || why || "Ready when you are.";
-  return renderRichText(text);
+  return why && why !== title ? `${title}\n${why}` : title || why || "Ready when you are.";
+}
+
+function renderPostText(card) {
+  return renderRichText(plainPostText(card));
 }
 
 function renderRichText(value) {
+  const links = [];
   let html = escapeHtml(value);
+  html = html.replace(
+    /\[([^\]]{1,100})\]\((https?:\/\/[^)\s]+)\)/g,
+    (_match, label, url) => {
+      const token = `__BUX_LINK_${links.length}__`;
+      links.push(`<a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`);
+      return token;
+    },
+  );
   html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/\*{1,2}/g, "");
   html = html.replace(/\n+/g, "<br />");
-  return html.replace(
+  html = html.replace(
     /(https?:\/\/[^\s<]+)/g,
     (url) => `<a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(shortUrl(url))}</a>`,
   );
+  links.forEach((link, index) => {
+    html = html.replace(`__BUX_LINK_${index}__`, link);
+  });
+  return html;
 }
 
 function shortUrl(url) {
@@ -221,10 +241,20 @@ function looksOperational(text) {
   );
 }
 
-function sourceDetail(card, meta) {
-  const source = sourceLabel(card.source);
-  const bits = [source || meta.name, `${card.importance || "med"} priority`, `created ${relativeAge(card.created_at)}`];
-  return bits.filter(Boolean).join(" · ");
+function sourceFooter(card, meta) {
+  const label = card.source_label || sourceLabel(card.source) || meta.name;
+  const url = card.source_url || firstUrl([card.title, card.why, card.action].join(" "));
+  const age = relativeAge(card.created_at);
+  const priority = `${card.importance || "med"} priority`;
+  const source = url
+    ? `<a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`
+    : `<span>${escapeHtml(label)}</span>`;
+  return `<footer class="source-footer">${source}<span>${escapeHtml(priority)}</span><span>${escapeHtml(age)}</span></footer>`;
+}
+
+function firstUrl(value) {
+  const match = String(value || "").match(/https?:\/\/[^\s)]+/);
+  return match ? match[0] : "";
 }
 
 function sourceMeta(source) {
@@ -258,21 +288,20 @@ function appIconHtml(meta) {
   return `<div class="app-icon ${escapeHtml(meta.kind)}">${escapeHtml(meta.mark)}</div>`;
 }
 
-function mediaIconHtml(meta) {
-  if (!meta.icon) return "";
-  return `<div class="media-logo ${escapeHtml(meta.kind)}">${brandSvg(meta.icon)}</div>`;
-}
-
-function mediaHtml(card, meta, a, b) {
+function mediaHtml(card) {
   const visual = card.visual || {};
   if (visual.kind === "image" && visual.src) {
-    return `<div class="media-card image-media"><img class="card-image" src="${escapeAttr(visual.src)}" alt="" /></div>`;
+    return `<div class="media-card"><img class="card-image" src="${escapeAttr(visual.src)}" alt="" /></div>`;
   }
-  return `
-    <div class="media-card" style="background:linear-gradient(145deg, ${a}, ${b})">
-      ${mediaIconHtml(meta)}
-    </div>
-  `;
+  return "";
+}
+
+function replySvg() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 7 5 12l5 5M5 12h9a5 5 0 0 1 5 5v1" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
+
+function trashSvg() {
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 14h10l1-14M9 7V4h6v3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 }
 
 function brandSvg(icon) {
@@ -347,7 +376,9 @@ function renderGoals() {
 function renderGoalTabs() {
   const tabs = [
     { id: "all", title: "All", count: unhandledCount(state.cards) },
-    ...state.goals.map((item) => ({ id: String(item.id), title: item.title, count: goalCardCount(item.id) })),
+    ...state.goals
+      .map((item) => ({ id: String(item.id), title: item.title, count: goalCardCount(item.id) }))
+      .filter((item) => item.count > 0 || String(item.id) === String(state.activeGoalId)),
   ];
   els.goalTabs.innerHTML = tabs
     .map((item) => {
@@ -394,6 +425,7 @@ function syncDock() {
   [els.passButton, els.voiceButton, els.startButton].forEach((button) => {
     button.disabled = !enabled;
   });
+  els.topButton.hidden = els.feed.scrollTop < 260;
 }
 
 function updateCurrentFromScroll() {
@@ -569,6 +601,7 @@ els.voiceButton.addEventListener("click", openContext);
 els.startButton.addEventListener("click", startCurrent);
 els.passButton.addEventListener("click", passCurrent);
 els.feed.addEventListener("scroll", () => requestAnimationFrame(updateCurrentFromScroll));
+els.topButton.addEventListener("click", () => els.feed.scrollTo({ top: 0, behavior: "smooth" }));
 els.goalDialog.addEventListener("click", (event) => {
   if (event.target === els.goalDialog) {
     els.goalInput.value = "";

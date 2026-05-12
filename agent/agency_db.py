@@ -59,6 +59,8 @@ def init_schema(db: sqlite3.Connection) -> None:
           buttons_json    TEXT,                  -- JSON list of the labels shown
           image_url       TEXT,
           image_file      TEXT,
+          source_label    TEXT,
+          source_url      TEXT,
           tg_chat_id      INTEGER,
           tg_thread_id    INTEGER,
           tg_message_id   INTEGER,
@@ -94,6 +96,10 @@ def init_schema(db: sqlite3.Connection) -> None:
          "ALTER TABLE suggestions ADD COLUMN image_url TEXT"),
         ("image_file",
          "ALTER TABLE suggestions ADD COLUMN image_file TEXT"),
+        ("source_label",
+         "ALTER TABLE suggestions ADD COLUMN source_label TEXT"),
+        ("source_url",
+         "ALTER TABLE suggestions ADD COLUMN source_url TEXT"),
     ):
         try:
             db.execute(ddl)
@@ -118,6 +124,8 @@ def insert(
     buttons: list[str] | None = None,
     image_url: str | None = None,
     image_file: str | None = None,
+    source_label: str | None = None,
+    source_url: str | None = None,
     chat_id: int | None = None,
     thread_id: int | None = None,
     spawn_topic: bool = False,
@@ -126,8 +134,9 @@ def insert(
         """
         INSERT INTO suggestions (
           title, description, importance, source, prompt, buttons_json, image_url, image_file,
+          source_label, source_url,
           tg_chat_id, tg_thread_id, spawn_topic
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             title,
@@ -138,6 +147,8 @@ def insert(
             json.dumps(buttons) if buttons is not None else None,
             image_url,
             image_file,
+            source_label,
+            source_url,
             chat_id,
             thread_id,
             1 if spawn_topic else 0,

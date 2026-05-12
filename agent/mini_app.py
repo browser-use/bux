@@ -249,16 +249,7 @@ def _card_visual(row: dict[str, Any]) -> dict[str, str]:
         return {"kind": "image", "src": image_data_url}
     if image_url.startswith(("https://", "http://")):
         return {"kind": "image", "src": image_url}
-    palettes = {
-        "high": "linear-gradient(135deg,#121212,#e84a5f)",
-        "med": "linear-gradient(135deg,#16213e,#2ab7ca)",
-        "low": "linear-gradient(135deg,#233142,#84a98c)",
-    }
-    return {
-        "kind": "generated",
-        "gradient": palettes.get(row.get("importance") or "med", palettes["med"]),
-        "label": (row.get("title") or "Action")[:80],
-    }
+    return {"kind": "none"}
 
 
 def _clip_text(value: str, limit: int) -> str:
@@ -317,6 +308,8 @@ def _cards(limit: int = 30) -> list[dict[str, Any]]:
                 "importance": row.get("importance") or "med",
                 "action": prompt or row.get("title") or "",
                 "source": row.get("source") or "",
+                "source_label": row.get("source_label") or "",
+                "source_url": row.get("source_url") or "",
                 "created_at": row.get("created_at"),
                 "comments": comments.get(int(row["id"]), 0),
                 "visual": _card_visual(row),

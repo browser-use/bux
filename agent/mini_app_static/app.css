@@ -106,9 +106,11 @@ button {
 .feed {
   height: 100%;
   overflow-y: auto;
-  scroll-snap-type: y mandatory;
   scroll-behavior: smooth;
   scrollbar-width: none;
+  padding-top: calc(env(safe-area-inset-top) + 106px);
+  padding-bottom: calc(env(safe-area-inset-bottom) + 108px);
+  background: #000;
 }
 
 .feed::-webkit-scrollbar {
@@ -117,36 +119,20 @@ button {
 
 .story {
   position: relative;
-  height: 100svh;
-  scroll-snap-align: start;
-  scroll-snap-stop: always;
-  overflow: hidden;
-  background: #050608;
+  min-height: 0;
+  background: #000;
+  border-bottom: 1px solid #2f3336;
 }
 
 .story::before {
   display: none;
 }
 
-.post-card {
-  position: absolute;
-  left: 14px;
-  right: 14px;
-  top: calc(env(safe-area-inset-top) + 124px);
-  bottom: calc(env(safe-area-inset-bottom) + 18px);
+.post-row {
   display: grid;
-  grid-template-rows: auto auto auto minmax(96px, 132px) auto;
+  grid-template-columns: 48px minmax(0, 1fr);
   gap: 10px;
-  padding: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 16px;
-  background: #050608;
-  overflow-y: auto;
-  scrollbar-width: none;
-}
-
-.post-card::-webkit-scrollbar {
-  display: none;
+  padding: 12px 14px 10px;
 }
 
 .goal-tabs {
@@ -205,17 +191,24 @@ button {
   opacity: 0.68;
 }
 
-.tweet-head {
-  display: grid;
-  grid-template-columns: 42px 1fr;
-  align-items: center;
-  gap: 10px;
+.avatar-column {
+  display: flex;
+  justify-content: center;
+  padding-top: 2px;
+}
+
+.post-main {
   min-width: 0;
 }
 
+.tweet-head {
+  min-width: 0;
+  margin-bottom: 2px;
+}
+
 .app-icon {
-  width: 42px;
-  height: 42px;
+  width: 40px;
+  height: 40px;
   display: grid;
   place-items: center;
   border-radius: 50%;
@@ -273,27 +266,96 @@ button {
 
 .tweet-head strong,
 .tweet-head span {
-  display: block;
+  display: inline;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.tweet-head span {
-  margin-top: 2px;
-  color: var(--muted);
-  font-size: 12px;
+.tweet-head strong {
+  max-width: 44vw;
+  font-size: 15px;
+  font-weight: 800;
 }
 
-.post-body p {
+.tweet-head span {
+  margin-left: 5px;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.post-body {
+  min-width: 0;
+}
+
+.post-text {
   margin: 0;
+  color: #e7e9ea;
+  font-size: 15px;
+  line-height: 1.38;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.post-text.collapsed {
   display: -webkit-box;
   overflow: hidden;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 8;
-  color: rgba(255, 255, 255, 0.86);
+  -webkit-line-clamp: 4;
+}
+
+.post-text strong {
+  font-weight: 850;
+}
+
+.post-text a,
+.source-footer a,
+.tweet-detail a {
+  color: #1d9bf0;
+  text-decoration: none;
+}
+
+.show-more {
+  margin: 3px 0 0;
+  padding: 0;
+  border: 0;
+  color: #1d9bf0;
+  background: transparent;
   font-size: 15px;
-  line-height: 1.34;
+}
+
+.tweet-detail {
+  margin-top: 8px;
+  min-width: 0;
+  color: #e7e9ea;
+}
+
+.tweet-detail summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  color: #1d9bf0;
+  background: transparent;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.tweet-detail summary::marker {
+  color: #71767b;
+}
+
+.tweet-detail div {
+  margin-top: 6px;
+  padding-left: 10px;
+  border-left: 2px solid #2f3336;
+  color: #c9d1d9;
+  font-size: 15px;
+  line-height: 1.38;
+  overflow-wrap: anywhere;
 }
 
 .post-details {
@@ -340,16 +402,12 @@ button {
 }
 
 .media-card {
-  min-height: 0;
-  display: grid;
-  place-items: center;
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  margin-top: 10px;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid #2f3336;
   border-radius: 16px;
   overflow: hidden;
-  gap: 10px;
-}
-
-.media-card.image-media {
   background: #0b0d10;
 }
 
@@ -360,182 +418,84 @@ button {
   display: block;
 }
 
-.media-logo {
-  width: 64px;
-  height: 64px;
-  padding: 0;
-  border-radius: 14px;
-  background: transparent;
+.source-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: 9px;
+  color: #71767b;
+  font-size: 13px;
+  line-height: 1.3;
 }
 
-.media-logo svg {
-  width: 100%;
-  height: 100%;
+.source-footer span:not(:first-child)::before {
+  content: "·";
+  margin-right: 6px;
+  color: #71767b;
 }
 
 .post-actions {
-  display: grid;
-  grid-template-columns: 1fr 1.3fr;
-  gap: 9px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-height: 36px;
+  margin-top: 8px;
 }
 
 .post-actions button {
-  height: 48px;
-  align-self: end;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 999px;
-  color: var(--ink);
-  background: rgba(255, 255, 255, 0.08);
-  font-weight: 900;
+  border: 0;
+  background: transparent;
+  font-weight: 700;
 }
 
 .post-actions .start-inline {
-  color: #061109;
-  background: var(--green);
-  border-color: var(--green);
-}
-
-.post-action {
-  color: rgba(255, 255, 255, 0.9);
-  background: rgba(255, 255, 255, 0.06);
-}
-
-.post-action span {
-  margin-left: 4px;
-}
-
-.story .post-body p {
-  width: auto;
-  margin: 0;
+  margin-left: auto;
+  min-height: 34px;
+  padding: 0 16px;
+  border-radius: 999px;
+  color: #fff;
+  background: #1d9bf0;
   font-size: 15px;
-  line-height: 1.34;
-  -webkit-line-clamp: 8;
-}
-
-.story-media {
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  padding: 22px;
-  transform: scale(1.02);
-}
-
-.orbital {
-  position: relative;
-  width: min(76vw, 350px);
-  aspect-ratio: 1;
-  display: grid;
-  place-items: center;
-  border: 1px solid rgba(255, 255, 255, 0.28);
-  border-radius: 26px;
-  transform: rotate(-6deg);
-  box-shadow: 0 35px 100px rgba(0, 0, 0, 0.38);
-  overflow: hidden;
-}
-
-.orbital::before,
-.orbital::after {
-  content: "";
-  position: absolute;
-  inset: 12%;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 32px;
-  transform: rotate(18deg);
-}
-
-.orbital::after {
-  inset: 24%;
-  transform: rotate(-24deg);
-}
-
-.visual-word {
-  position: relative;
-  z-index: 1;
-  width: 10ch;
-  color: rgba(255, 255, 255, 0.92);
-  font-size: clamp(34px, 12vw, 72px);
-  line-height: 0.88;
-  font-weight: 950;
-  text-align: center;
-  text-wrap: balance;
-}
-
-.story-copy {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: calc(env(safe-area-inset-bottom) + 112px);
-  padding: 0 18px;
-  max-height: 44svh;
-  overflow: hidden;
-  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.48);
-}
-
-.meta-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 28px;
-  margin-bottom: 10px;
-  color: rgba(255, 255, 255, 0.82);
-  font-size: 12px;
   font-weight: 800;
 }
 
-.pill {
-  max-width: 48vw;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding: 6px 9px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 999px;
-  background: rgba(0, 0, 0, 0.28);
+.icon-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0;
+  color: #71767b;
+  font-size: 13px;
 }
 
-.story h1 {
-  margin: 0;
-  max-width: 14ch;
-  display: -webkit-box;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-  font-size: clamp(30px, 8.6vw, 48px);
-  line-height: 0.98;
-  font-weight: 950;
-  text-wrap: balance;
+.icon-action svg {
+  width: 19px;
+  height: 19px;
 }
 
-.story p {
-  width: min(100%, 42ch);
-  margin: 14px 0 0;
-  color: rgba(255, 255, 255, 0.88);
-  font-size: 16px;
-  line-height: 1.36;
-  display: -webkit-box;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 7;
+.icon-action:hover,
+.icon-action:focus-visible {
+  color: #1d9bf0;
 }
 
-.side-rail {
+.icon-action.danger:hover,
+.icon-action.danger:focus-visible {
+  color: #f4212e;
+}
+
+.top-button {
   position: absolute;
-  right: 12px;
-  bottom: calc(env(safe-area-inset-bottom) + 162px);
-  display: grid;
-  gap: 12px;
-}
-
-.rail-button {
-  width: 48px;
-  height: 48px;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 50%;
-  color: var(--ink);
-  background: rgba(0, 0, 0, 0.32);
-  -webkit-backdrop-filter: blur(16px);
-  backdrop-filter: blur(16px);
+  z-index: 32;
+  right: 16px;
+  bottom: calc(env(safe-area-inset-bottom) + 92px);
+  width: 42px;
+  height: 42px;
+  border: 1px solid #2f3336;
+  border-radius: 999px;
+  color: #fff;
+  background: rgba(29, 155, 240, 0.94);
   font-size: 20px;
   font-weight: 900;
 }

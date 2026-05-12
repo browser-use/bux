@@ -403,16 +403,24 @@ night, sometimes mid-workout. Specifics:
 - No bullet trees nested >1 level.
 - No URL pasted bare — always `[label](url)`. Place URLs inside
   `--source-label` / `--source-url` for the canonical clickable header.
-- Image (`--image-text` or `--image-file`): default ON unless the card
-  type is genuinely text-only (e.g. a benchmark number table).
+- Always pass `--source-label` and `--source-url` when the source has a
+  canonical place to open (Gmail thread, Slack message, GitHub PR, Reddit/X
+  post, Linear issue). The Mini App renders that source link at the end of
+  the post.
+- Image: attach `--image-file` or `--image` only when it is a real
+  screenshot, chart, generated image, logo, avatar, or other useful
+  visual. Do **not** attach placeholder text art. If no useful image
+  exists, omit the image and let the Mini App render a clean text post.
 - Mini App compatibility: cards render like an X.com feed item: compact
-  app/source icon, source handle, timestamp/age, short post text, media,
-  and a sparse action row. The default expanded sections are `Draft /
-  idea`, `Why it matters`, and `Source`. Do not add a generic "Context"
-  block unless it names the real human, app, company, or thread that
-  supplies the context. Scrolling advances past a card; don't depend on a
-  visible Skip button in the Mini App. If your `agency-report` call would
-  look ugly in that shape, rewrite the card before posting.
+  app/source icon, source handle, timestamp/age, short post text, optional
+  real media, source link at the end, and a sparse action row. The Mini App
+  does not render a fake image when none is supplied. Default expanded
+  sections should be rare: one `Show draft` block only when there is
+  paste-ready text. Do not add a generic "Context" block unless it names
+  the real human, app, company, or thread that supplies the context.
+  Scrolling advances past a card; don't depend on a visible Skip button in
+  the Mini App. If your `agency-report` call would look ugly in that shape,
+  rewrite the card before posting.
 - The visible reason must say why this matters for the current goal in
   plain language. Do not write generic "moves the goal forward" copy.
   Name the concrete outcome, risk, or leverage.
@@ -547,8 +555,8 @@ fallback default:
    when a user scrolls past it instead of tapping Skip.
 7. **Image generation is deliberate.** Prefer `agency-report --image-file`
    with a real screenshot/chart/generated PNG when the visual teaches
-   something. Use `agency-report --image-text` only as a sparse fallback:
-   1-3 words for the object/source or outcome, not a copy of the title.
+   something. Do not use `--image-text` for generic title cards in the Mini
+   App; a clean text-only X-style post is better than a fake image.
 8. **Per-card-type tweaks override**:
    - PR / merge → primary expandable is the diff or PR link
    - Video / demo → MP4 is the surface; no drafted-text expandable
@@ -616,14 +624,14 @@ expensive (e.g. minting an NFT, sending a paid SMS, calling a $100/run
 API). Then ask first. For free internal work — render, draft, scrape,
 preview — just do it.
 
-## Image-first
+## Image policy
 
-Include an image on **every** card unless it's a pure photo asset (video MP4,
-real chart, real screenshot — those carry their own visual). The image's job
-is to make the card 2-second-readable on a phone screen: **what** would
-happen if the user taps yes, and **why** it matters.
+Use images only when the visual is real and useful: generated PNGs, screenshots,
+charts, logos, avatars, short video thumbnails, or product/UI captures. If no
+such image exists, omit it. The Mini App is an X-style feed and text-only posts
+are valid; fake placeholder images make the feed slower to understand.
 
-### Style: gradient + color-emoji is the default. placehold.co is a fallback.
+### Style for generated card images
 
 Default look = a 1080×540 PIL render with a vertical linear gradient
 (top-dark → bottom-light, color picked per card mood from a fixed palette:
@@ -640,9 +648,9 @@ best on a phone in dark / system / TG-default themes — the gradient gives
 depth, color emoji renders as the actual color glyph (not an outline), white
 type holds across both ends of the gradient.
 
-`placehold.co` (`--image-text` below) is a fallback for emergency cards
-where a full PIL render isn't worth the budget — flat color, plain text,
-serviceable but not beautiful.
+`placehold.co` / `--image-text` is no longer the Mini App default. Use it only
+for Telegram-only emergency cards where a flat text image is explicitly better
+than no media.
 
 **Don't use Remotion for static cards.** Remotion is a video framework
 (React + headless Chrome render farm, ~10s per card). Reserve it for
@@ -706,16 +714,10 @@ haven't been vetted — TG caches pinned to the card.
 
 ### When to skip the image entirely
 
-Only when the visual would be strictly worse than its absence:
-
-- Pure status / FYI cards where one large emoji in the title carries the
-  whole signal.
-- Single-number cards (e.g. "deploy 200 OK") where the number IS the
-  message — putting it in an image too is visual noise.
-
-Default position: **include an image**. Defaulting to "no image" makes
-cards read as plain text in a phone scroll where every other agent's card
-has a visual. Yours get skipped.
+Skip the image whenever the only available visual is a title card, gradient,
+emoji-only placeholder, or duplicated copy. The feed should look like a clean
+X timeline item: post text first, optional real media below, source link at the
+end.
 
 ## Buttons
 

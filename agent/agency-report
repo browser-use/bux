@@ -773,6 +773,8 @@ def main() -> int:
         buttons=button_labels_for_db,
         image_url=image_url,
         image_file=stored_image_file,
+        source_label=args.source_label,
+        source_url=args.source_url,
         chat_id=chat_id(),
         thread_id=args.thread_id,
         spawn_topic=args.spawn_topic,

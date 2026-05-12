@@ -83,7 +83,7 @@ class MiniAppTest(unittest.TestCase):
 
         self.assertEqual(cards[0]["title"], "Reply to investor")
         self.assertEqual(cards[0]["why"], "Keeps the round warm.")
-        self.assertEqual(cards[0]["visual"]["kind"], "generated")
+        self.assertEqual(cards[0]["visual"]["kind"], "none")
 
     def test_cards_include_local_image_data_url(self) -> None:
         image_path = Path(self.tmp.name) / "card.png"
@@ -99,6 +99,8 @@ class MiniAppTest(unittest.TestCase):
                 description="Visual proof.",
                 importance="med",
                 source="gmail",
+                source_label="Gmail thread",
+                source_url="https://mail.google.com/mail/u/0/#inbox/abc",
                 image_file=str(image_path),
             )
 
@@ -106,6 +108,8 @@ class MiniAppTest(unittest.TestCase):
 
         self.assertEqual(cards[0]["visual"]["kind"], "image")
         self.assertTrue(cards[0]["visual"]["src"].startswith("data:image/png;base64,"))
+        self.assertEqual(cards[0]["source_label"], "Gmail thread")
+        self.assertEqual(cards[0]["source_url"], "https://mail.google.com/mail/u/0/#inbox/abc")
 
     def test_http_goal_and_cards_flow(self) -> None:
         with self.agency_db.conn() as db:
