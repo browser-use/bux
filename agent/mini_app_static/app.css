@@ -859,6 +859,45 @@ button {
   background: linear-gradient(135deg, #ff5f6f, #ffd36b);
 }
 
+.context-sheet {
+  width: min(calc(100vw - 28px), 420px);
+}
+
+.context-sheet form {
+  padding: 14px;
+}
+
+.context-sheet h2 {
+  margin: 0 0 10px;
+  font-size: 20px;
+  line-height: 1.15;
+}
+
+.context-sheet .record-button {
+  min-height: 42px;
+  border-color: #2f3336;
+  border-radius: 999px;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.context-sheet .record-button span {
+  display: inline-block;
+  margin-right: 8px;
+  font-size: 14px;
+}
+
+.context-sheet textarea {
+  min-height: 106px;
+  margin: 10px 0;
+  border-radius: 14px;
+}
+
+.context-sheet .sheet-primary {
+  min-height: 42px;
+  border-radius: 999px;
+}
+
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);

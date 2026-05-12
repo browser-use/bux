@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>bux feed</title>
-    <link rel="stylesheet" href="/app.css?v=20260512x21" />
+    <link rel="stylesheet" href="/app.css?v=20260512x22" />
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body>
@@ -64,13 +64,13 @@
 
       <dialog id="contextDialog" class="sheet context-sheet">
         <form id="contextForm" method="dialog">
-          <h2>Provide more context to the agent</h2>
+          <h2>Add context</h2>
           <button id="recordButton" class="record-button" type="button">
             <span>●</span>
-            <strong>Tap to speak</strong>
+            <strong>Speak</strong>
           </button>
-          <textarea id="contextInput" rows="4" placeholder="Tell the agent what to change, consider, or do next"></textarea>
-          <button class="sheet-primary" type="submit">Save note</button>
+          <textarea id="contextInput" rows="3" placeholder="What should the agent change or consider?"></textarea>
+          <button class="sheet-primary" type="submit">Send</button>
         </form>
       </dialog>
 
@@ -89,6 +89,6 @@
 
       <div id="toast" class="toast" role="status"></div>
     </main>
-    <script src="/app.js?v=20260512x21" type="module"></script>
+    <script src="/app.js?v=20260512x22" type="module"></script>
   </body>
 </html>
