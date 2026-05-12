@@ -107,7 +107,7 @@ function render() {
   if (!cards.length) {
     const title = active ? "Working on the first card." : "Make the next move obvious.";
     const copy = active
-      ? "This goal is empty for now. Add context, then Agency can turn it into cards."
+      ? "This goal is empty for now. Add context, then Agency can turn it into action items."
       : "Create a goal or wait for Agency to find the next useful thing.";
     els.feed.innerHTML = `
       <article class="empty">
