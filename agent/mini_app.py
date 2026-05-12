@@ -602,7 +602,8 @@ def _goal_agent_prompt(
         f"{cadence_line}\n\n"
         "Use the Agency skill and /opt/bux/repo/agent/AGENCY.md. "
         f"Scan the user's available context and generate {count} high-signal action items for this goal. "
-        "Post them as Agency cards using the normal agency-report/agency-card flow so they appear in the Mini App feed. "
+        "Post them as Agency cards in this same Telegram topic using the normal agency-report/agency-card flow "
+        "so they appear in the Mini App feed for this topic. "
         "Keep each card short, concrete, and easy to swipe. Prefer real useful images when available. "
         "If the user mentioned a schedule, set up or propose the recurring monitoring cadence instead of treating it as a one-off."
     )
@@ -628,7 +629,8 @@ def _topic_generate_prompt(thread_id: int, title: str) -> str:
         f"Existing recent cards:\n{context}\n\n"
         "Use the Agency skill and /opt/bux/repo/agent/AGENCY.md. "
         "The user explicitly wants more cards/action items for this topic. "
-        "Generate 10 more high-signal cards through the normal agency-report/agency-card flow so they appear in the Mini App feed."
+        "Generate 10 more high-signal cards in this same Telegram topic through the normal agency-report/agency-card flow "
+        "so they appear in the Mini App feed for this topic."
     )
 
 

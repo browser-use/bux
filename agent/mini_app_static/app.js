@@ -543,10 +543,20 @@ function renderGoalTabs() {
   const topics = topicTabs();
   const tabs = [
     { id: "all", title: "All", count: unhandledCount(state.cards) },
-    ...state.goals.map((item) => ({ id: String(item.id), title: item.title, count: goalCardCount(item.id) })),
+    ...state.goals.map((item) => {
+      const threadId = Number(item.tg_thread_id || 0);
+      const id = threadId ? `topic:${threadId}` : String(item.id);
+      return { id, title: item.title, count: threadId ? topicCardCount(threadId) : goalCardCount(item.id) };
+    }),
     ...topics,
   ];
-  els.goalTabs.innerHTML = `<button class="topic-create-tab" type="button" data-open-goal aria-label="Create topic">+</button>` + tabs
+  const seen = new Set();
+  const uniqueTabs = tabs.filter((item) => {
+    if (seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
+  els.goalTabs.innerHTML = `<button class="topic-create-tab" type="button" data-open-goal aria-label="Create topic">+</button>` + uniqueTabs
     .map((item) => {
       const active = String(item.id) === String(state.activeGoalId) ? "active" : "";
       return `<button class="${active}" type="button" data-goal="${escapeHtml(item.id)}">${escapeHtml(item.title)} <span>${item.count}</span></button>`;
@@ -587,6 +597,10 @@ function activeGoalTitle() {
 
 function goalCardCount(goalId) {
   return state.cards.filter((card) => !card.handled && String(card.goal_id || "") === String(goalId)).length;
+}
+
+function topicCardCount(topicId) {
+  return state.cards.filter((card) => !card.handled && String(card.topic_id || "0") === String(topicId)).length;
 }
 
 function unhandledCount(cards) {
@@ -959,6 +973,7 @@ async function load() {
     state.stats = stats.stats || {};
     const activeExists = state.activeGoalId === "all"
       || state.goals.some((item) => String(item.id) === String(state.activeGoalId))
+      || state.goals.some((item) => item.tg_thread_id && `topic:${item.tg_thread_id}` === String(state.activeGoalId))
       || state.topics.some((item) => String(item.id) === String(state.activeGoalId));
     if (!activeExists) {
       state.activeGoalId = "all";
