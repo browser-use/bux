@@ -97,7 +97,9 @@ function escapeAttr(value) {
   return escapeHtml(value).replaceAll("'", "&#39;");
 }
 
-function render() {
+function render(options = {}) {
+  const { restore = true, preserveScroll = false } = options;
+  const scrollTop = els.feed.scrollTop;
   renderGoals();
   renderStats();
   const active = goal();
@@ -129,7 +131,11 @@ function render() {
   cards.forEach((card, index) => els.feed.append(renderCard(card, index)));
   els.feed.append(renderEndCard());
   requestAnimationFrame(() => {
-    restoreCursor();
+    if (preserveScroll) {
+      els.feed.scrollTop = scrollTop;
+    } else if (restore) {
+      restoreCursor();
+    }
     syncDock();
   });
 }
@@ -692,7 +698,7 @@ function removeCardNow(id) {
   if (state.currentIndex >= cards.length) {
     state.currentIndex = Math.max(0, cards.length - 1);
   }
-  render();
+  render({ restore: false, preserveScroll: true });
 }
 
 async function startCard(id, button = "") {
@@ -815,9 +821,9 @@ async function openInlineContext(id) {
       state.comments[id] = [];
     }
   }
-  render();
+  render({ restore: false, preserveScroll: true });
   requestAnimationFrame(() => {
-    els.feed.querySelector(`[data-card-id="${CSS.escape(String(id))}"] .comment-form textarea`)?.focus();
+    els.feed.querySelector(`[data-card-id="${CSS.escape(String(id))}"] .comment-form textarea`)?.focus({ preventScroll: true });
   });
 }
 
@@ -835,7 +841,7 @@ async function submitInlineContext(event) {
     state.comments[id] = result.comments || [];
     await refreshStats();
     state.openContextCardId = null;
-    render();
+    render({ restore: false, preserveScroll: true });
     toast("Sent to Telegram topic.");
   } catch (error) {
     toast(error.message);
