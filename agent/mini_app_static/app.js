@@ -176,8 +176,8 @@ function renderCard(card, index) {
         ${commentPanelHtml(card, meta)}
         <div class="post-actions ${actionButtons.length ? "" : "no-primary"}">
           <div class="secondary-actions">
-            <button class="icon-action danger icon-only" data-delete="${card.id}" type="button" aria-label="Delete">${trashSvg()}</button>
             <button class="icon-action" data-context="${card.id}" type="button" aria-label="Refine">${replySvg()}<span>Refine</span></button>
+            <button class="icon-action danger icon-only" data-delete="${card.id}" type="button" aria-label="Delete">${trashSvg()}</button>
           </div>
           <div class="primary-actions">
             ${actionButtons.map((label) => `<button class="start-inline" data-start="${card.id}" data-button="${escapeAttr(label.raw)}" title="${escapeAttr(label.text)}" type="button">${escapeHtml(label.text)}</button>`).join("")}
