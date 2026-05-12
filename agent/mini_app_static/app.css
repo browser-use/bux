@@ -588,22 +588,27 @@ button {
 }
 
 .primary-actions {
-  display: grid;
-  gap: 8px;
-  justify-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: 230px;
 }
 
 .post-actions .start-inline {
-  min-height: 30px;
+  min-height: 28px;
   width: auto;
-  min-width: 86px;
-  max-width: 160px;
-  padding: 0 12px;
+  min-width: 74px;
+  max-width: 142px;
+  padding: 0 10px;
   border-radius: 999px;
   color: #050608;
   background: #eff3f4;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .icon-action {
