@@ -122,6 +122,9 @@ button {
   min-height: 0;
   background: #000;
   border-bottom: 1px solid #2f3336;
+  transform: translateX(var(--swipe-x, 0));
+  transition: transform 180ms ease, opacity 180ms ease, max-height 220ms ease, padding 220ms ease;
+  will-change: transform, opacity;
 }
 
 .story::before {
@@ -133,6 +136,29 @@ button {
   grid-template-columns: 48px minmax(0, 1fr);
   gap: 10px;
   padding: 12px 14px 10px;
+}
+
+.story.swiping-delete {
+  background: linear-gradient(90deg, #000 0%, rgba(244, 33, 46, 0.16) 100%);
+}
+
+.story.swiping-context {
+  background: linear-gradient(90deg, rgba(29, 155, 240, 0.18) 0%, #000 100%);
+}
+
+.story.removing {
+  pointer-events: none;
+  opacity: 0;
+  max-height: 0;
+  overflow: hidden;
+}
+
+.story.remove-left {
+  transform: translateX(-110%);
+}
+
+.story.remove-right {
+  transform: translateX(110%);
 }
 
 .goal-tabs {
@@ -147,6 +173,14 @@ button {
   border-bottom: 1px solid rgba(255, 255, 255, 0.14);
   background: #050608;
   scrollbar-width: none;
+  transform: translateY(0);
+  transition: transform 180ms ease, opacity 180ms ease;
+}
+
+.goal-tabs.scrolled {
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-100%);
 }
 
 .goal-tabs::-webkit-scrollbar {
@@ -226,6 +260,22 @@ button {
 .app-icon.logo svg {
   width: 100%;
   height: 100%;
+}
+
+.app-icon.logo img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.app-icon.logo img + svg {
+  display: none;
+}
+
+.app-icon.small {
+  width: 32px;
+  height: 32px;
 }
 
 .app-icon.gmail {
@@ -309,7 +359,6 @@ button {
 }
 
 .post-text a,
-.source-footer a,
 .tweet-detail a {
   color: #1d9bf0;
   text-decoration: none;
@@ -319,7 +368,7 @@ button {
   margin: 3px 0 0;
   padding: 0;
   border: 0;
-  color: #1d9bf0;
+  color: #71767b;
   background: transparent;
   font-size: 15px;
 }
@@ -334,13 +383,14 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  min-height: 28px;
-  padding: 0;
-  border: 0;
-  color: #1d9bf0;
-  background: transparent;
-  font-size: 15px;
-  font-weight: 500;
+  min-height: 30px;
+  padding: 2px 10px;
+  border: 1px solid #2f3336;
+  border-radius: 999px;
+  color: #c9d1d9;
+  background: rgba(239, 243, 244, 0.04);
+  font-size: 13px;
+  font-weight: 700;
   cursor: pointer;
 }
 
@@ -421,26 +471,92 @@ button {
 .source-footer {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 0;
   align-items: center;
   margin-top: 9px;
   color: #71767b;
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.3;
 }
 
-.source-footer span:not(:first-child)::before {
-  content: "·";
-  margin-right: 6px;
+.source-footer a {
   color: #71767b;
+  text-decoration: none;
+}
+
+.source-footer a::after {
+  content: " ↗";
+  font-size: 11px;
 }
 
 .post-actions {
   display: flex;
   align-items: center;
-  gap: 18px;
+  gap: 20px;
   min-height: 36px;
   margin-top: 8px;
+}
+
+.comment-panel {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #2f3336;
+}
+
+.comment-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.comment-row strong {
+  font-size: 14px;
+}
+
+.comment-row span {
+  margin-left: 5px;
+  color: #71767b;
+  font-size: 13px;
+}
+
+.comment-row p,
+.comment-empty {
+  margin: 2px 0 0;
+  color: #c9d1d9;
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.comment-empty {
+  color: #71767b;
+}
+
+.comment-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.comment-form textarea {
+  min-height: 42px;
+  max-height: 120px;
+  padding: 10px 0;
+  border: 0;
+  border-bottom: 1px solid #2f3336;
+  border-radius: 0;
+  color: #e7e9ea;
+  background: transparent;
+  resize: vertical;
+}
+
+.comment-form button {
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 999px;
+  color: #fff;
+  background: #1d9bf0;
 }
 
 .post-actions button {

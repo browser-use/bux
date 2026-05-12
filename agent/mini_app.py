@@ -318,6 +318,20 @@ def _cards(limit: int = 30) -> list[dict[str, Any]]:
     return cards
 
 
+def _comments(suggestion_id: int) -> list[dict[str, Any]]:
+    with _mini_conn() as db:
+        rows = db.execute(
+            """
+            SELECT body, telegram_user_id, created_at
+              FROM card_comments
+             WHERE suggestion_id = ?
+             ORDER BY id ASC
+            """,
+            (suggestion_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def _stats() -> dict[str, int]:
     with agency_db.conn() as db:
         rows = db.execute(
@@ -477,6 +491,7 @@ class MiniAppHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        parts = path.strip("/").split("/")
         if path == "/health":
             _json_response(self, 200, {"ok": True})
             return
@@ -515,6 +530,17 @@ class MiniAppHandler(BaseHTTPRequestHandler):
             try:
                 _auth_user(self)
                 _json_response(self, 200, {"cards": _cards()})
+            except PermissionError as exc:
+                _json_response(self, 401, {"error": str(exc)})
+            return
+        if len(parts) == 4 and parts[:2] == ["api", "cards"] and parts[3] == "comments":
+            try:
+                _auth_user(self)
+                suggestion_id = int(parts[2])
+                if not _find_suggestion(suggestion_id):
+                    _json_response(self, 404, {"error": "card not found"})
+                    return
+                _json_response(self, 200, {"comments": _comments(suggestion_id)})
             except PermissionError as exc:
                 _json_response(self, 401, {"error": str(exc)})
             return

@@ -15,6 +15,9 @@ const state = {
   currentIndex: 0,
   activeGoalId: localStorage.getItem(goalKey) || "all",
   passedByScroll: new Set(),
+  comments: {},
+  openContextCardId: null,
+  suppressScrollPassUntil: 0,
 };
 
 const els = {
@@ -123,7 +126,7 @@ function render() {
 }
 
 function renderCard(card, index) {
-  const meta = sourceMeta(card.source);
+  const meta = sourceMeta(card);
   const action = usefulAction(card);
   const subtitle = meta.brand ? relativeAge(card.created_at) : `@${meta.handle} · ${relativeAge(card.created_at)}`;
   const postText = renderPostText(card);
@@ -151,17 +154,20 @@ function renderCard(card, index) {
         ${action ? detailHtml("Show draft", action) : ""}
         ${mediaHtml(card)}
         ${sourceFooter(card, meta)}
+        ${commentPanelHtml(card, meta)}
         <div class="post-actions">
-          <button class="icon-action" data-context="${card.id}" type="button" aria-label="Refine">${replySvg()}<span>Refine</span></button>
           <button class="icon-action danger" data-delete="${card.id}" type="button" aria-label="Delete">${trashSvg()}<span>Delete</span></button>
+          <button class="icon-action" data-context="${card.id}" type="button" aria-label="Refine">${replySvg()}<span>Refine</span></button>
           <button class="start-inline" data-start="${card.id}" type="button">Do it</button>
         </div>
       </div>
     </section>
   `;
-  article.querySelector("[data-context]").addEventListener("click", openContext);
-  article.querySelector("[data-delete]").addEventListener("click", () => passCard(card.id));
+  article.querySelector("[data-context]").addEventListener("click", () => openInlineContext(card.id));
+  article.querySelector("[data-delete]").addEventListener("click", () => passCard(card.id, "left"));
   article.querySelector("[data-start]").addEventListener("click", () => startCard(card.id));
+  attachSwipe(article, card.id);
+  article.querySelector("[data-inline-context-form]")?.addEventListener("submit", submitInlineContext);
   article.querySelector("[data-expand-text]")?.addEventListener("click", (event) => {
     const text = article.querySelector(".post-text");
     text?.classList.toggle("collapsed");
@@ -176,6 +182,32 @@ function detailHtml(label, text) {
       <summary>${escapeHtml(label)}</summary>
       <div>${renderRichText(text)}</div>
     </details>
+  `;
+}
+
+function commentPanelHtml(card, meta) {
+  if (String(state.openContextCardId) !== String(card.id)) return "";
+  const comments = state.comments[card.id] || [];
+  const rows = comments.length
+    ? comments.map((comment) => `
+      <div class="comment-row">
+        ${appIconHtml(meta, "small")}
+        <div>
+          <strong>Magnus</strong>
+          <span>${escapeHtml(relativeAge(comment.created_at))}</span>
+          <p>${renderRichText(comment.body)}</p>
+        </div>
+      </div>
+    `).join("")
+    : `<p class="comment-empty">Add context. The agent will use it to revise or continue this card.</p>`;
+  return `
+    <section class="comment-panel">
+      ${rows}
+      <form data-inline-context-form data-card-id="${card.id}" class="comment-form">
+        <textarea rows="2" placeholder="Add context for the agent"></textarea>
+        <button type="submit">Reply</button>
+      </form>
+    </section>
   `;
 }
 
@@ -244,12 +276,10 @@ function looksOperational(text) {
 function sourceFooter(card, meta) {
   const label = card.source_label || sourceLabel(card.source) || meta.name;
   const url = card.source_url || firstUrl([card.title, card.why, card.action].join(" "));
-  const age = relativeAge(card.created_at);
-  const priority = `${card.importance || "med"} priority`;
   const source = url
     ? `<a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`
     : `<span>${escapeHtml(label)}</span>`;
-  return `<footer class="source-footer">${source}<span>${escapeHtml(priority)}</span><span>${escapeHtml(age)}</span></footer>`;
+  return `<footer class="source-footer">${source}</footer>`;
 }
 
 function firstUrl(value) {
@@ -257,8 +287,12 @@ function firstUrl(value) {
   return match ? match[0] : "";
 }
 
-function sourceMeta(source) {
-  const value = String(source || "").toLowerCase();
+function sourceMeta(cardOrSource) {
+  const source = typeof cardOrSource === "string" ? cardOrSource : cardOrSource?.source;
+  const combined = typeof cardOrSource === "string"
+    ? cardOrSource
+    : [cardOrSource?.source, cardOrSource?.title, cardOrSource?.why, cardOrSource?.action].join(" ");
+  const value = String(combined || "").toLowerCase();
   if (/(twitter|tweet|x\.com|octolens|\bx\b)/.test(value)) return brandMeta("x", "X", "x");
   if (value.includes("gmail") || value.includes("email")) return brandMeta("gmail", "Gmail", "gmail");
   if (value.includes("slack")) return brandMeta("slack", "Slack", "slack");
@@ -277,15 +311,35 @@ function brandMeta(kind, name, icon) {
     name,
     handle: slug(name),
     icon,
+    favicon: faviconDomain(kind),
     brand: true,
   };
 }
 
-function appIconHtml(meta) {
-  if (meta.icon) {
-    return `<div class="app-icon logo ${escapeHtml(meta.kind)}" aria-label="${escapeAttr(meta.name)}">${brandSvg(meta.icon)}</div>`;
+function faviconDomain(kind) {
+  const domains = {
+    gmail: "mail.google.com",
+    slack: "slack.com",
+    reddit: "reddit.com",
+    x: "x.com",
+    github: "github.com",
+    linear: "linear.app",
+    calendar: "calendar.google.com",
+    telegram: "telegram.org",
+  };
+  return domains[kind] || "";
+}
+
+function appIconHtml(meta, size = "") {
+  const sizeClass = size === "small" ? " small" : "";
+  if (meta.favicon) {
+    const src = `https://www.google.com/s2/favicons?domain_url=${encodeURIComponent(`https://${meta.favicon}`)}&sz=64`;
+    return `<div class="app-icon logo ${escapeHtml(meta.kind)}${sizeClass}" aria-label="${escapeAttr(meta.name)}"><img src="${escapeAttr(src)}" alt="" onerror="this.remove()" />${brandSvg(meta.icon)}</div>`;
   }
-  return `<div class="app-icon ${escapeHtml(meta.kind)}">${escapeHtml(meta.mark)}</div>`;
+  if (meta.icon) {
+    return `<div class="app-icon logo ${escapeHtml(meta.kind)}${sizeClass}" aria-label="${escapeAttr(meta.name)}">${brandSvg(meta.icon)}</div>`;
+  }
+  return `<div class="app-icon ${escapeHtml(meta.kind)}${sizeClass}">${escapeHtml(meta.mark)}</div>`;
 }
 
 function mediaHtml(card) {
@@ -426,6 +480,7 @@ function syncDock() {
     button.disabled = !enabled;
   });
   els.topButton.hidden = els.feed.scrollTop < 260;
+  els.goalTabs.classList.toggle("scrolled", els.feed.scrollTop > 20);
 }
 
 function updateCurrentFromScroll() {
@@ -441,7 +496,7 @@ function updateCurrentFromScroll() {
     }
   });
   const previousIndex = state.currentIndex;
-  if (bestIndex > previousIndex) {
+  if (bestIndex > previousIndex && Date.now() > state.suppressScrollPassUntil) {
     visibleCards()
       .slice(previousIndex, bestIndex)
       .forEach((card) => passByScroll(card));
@@ -466,7 +521,18 @@ function removeCurrent() {
   removeCard(id);
 }
 
-function removeCard(id) {
+function removeCard(id, direction = "left") {
+  state.suppressScrollPassUntil = Date.now() + 900;
+  const article = els.feed.querySelector(`[data-card-id="${CSS.escape(String(id))}"]`);
+  if (article && !article.classList.contains("removing")) {
+    article.classList.add("removing", direction === "right" ? "remove-right" : "remove-left");
+    setTimeout(() => removeCardNow(id), 220);
+    return;
+  }
+  removeCardNow(id);
+}
+
+function removeCardNow(id) {
   state.cards = state.cards.filter((card) => card.id !== id);
   const cards = visibleCards();
   if (state.currentIndex >= cards.length) {
@@ -509,26 +575,27 @@ async function passByScroll(card) {
   renderGoalTabs();
   try {
     await api(`/api/cards/${card.id}/dismiss`, { method: "POST", body: "{}" });
+    removeCard(card.id, "left");
     await refreshStats();
   } catch {
     state.passedByScroll.delete(card.id);
   }
 }
 
-async function passCard(id) {
+async function passCard(id, direction = "left") {
   const index = state.cards.findIndex((card) => card.id === id);
   if (index >= 0) state.currentIndex = index;
-  await passCurrent();
+  await passCurrent(direction);
 }
 
-async function passCurrent() {
+async function passCurrent(direction = "left") {
   const card = currentCard();
   if (!card) return;
   try {
     await api(`/api/cards/${card.id}/dismiss`, { method: "POST", body: "{}" });
-    removeCurrent();
+    removeCard(card.id, direction);
     await refreshStats();
-    toast("Passed.");
+    toast("Deleted.");
   } catch (error) {
     toast(error.message);
   }
@@ -563,6 +630,78 @@ function openGoal() {
 function openContext() {
   els.contextDialog.showModal();
   els.contextInput.focus();
+}
+
+async function openInlineContext(id) {
+  state.openContextCardId = String(id);
+  if (!state.comments[id]) {
+    try {
+      const result = await api(`/api/cards/${id}/comments`);
+      state.comments[id] = result.comments || [];
+    } catch {
+      state.comments[id] = [];
+    }
+  }
+  render();
+  requestAnimationFrame(() => {
+    els.feed.querySelector(`[data-card-id="${CSS.escape(String(id))}"] .comment-form textarea`)?.focus();
+  });
+}
+
+async function submitInlineContext(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const id = form.dataset.cardId;
+  const input = form.querySelector("textarea");
+  const comment = input.value.trim();
+  if (!id || !comment) return;
+  try {
+    await api(`/api/cards/${id}/comment`, { method: "POST", body: JSON.stringify({ comment }) });
+    input.value = "";
+    const result = await api(`/api/cards/${id}/comments`);
+    state.comments[id] = result.comments || [];
+    await refreshStats();
+    render();
+    toast("Context added.");
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+function attachSwipe(article, id) {
+  let startX = 0;
+  let startY = 0;
+  let tracking = false;
+  article.addEventListener("pointerdown", (event) => {
+    if (event.target.closest("button, a, textarea, summary, details")) return;
+    tracking = true;
+    startX = event.clientX;
+    startY = event.clientY;
+    article.setPointerCapture?.(event.pointerId);
+  });
+  article.addEventListener("pointermove", (event) => {
+    if (!tracking) return;
+    const dx = event.clientX - startX;
+    const dy = event.clientY - startY;
+    if (Math.abs(dy) > Math.abs(dx) + 24) return;
+    article.style.setProperty("--swipe-x", `${Math.max(-96, Math.min(96, dx))}px`);
+    article.classList.toggle("swiping-delete", dx < -36);
+    article.classList.toggle("swiping-context", dx > 36);
+  });
+  article.addEventListener("pointerup", (event) => {
+    if (!tracking) return;
+    tracking = false;
+    const dx = event.clientX - startX;
+    article.style.removeProperty("--swipe-x");
+    article.classList.remove("swiping-delete", "swiping-context");
+    if (dx < -90) passCard(id, "left");
+    if (dx > 90) openInlineContext(id);
+  });
+  article.addEventListener("pointercancel", () => {
+    tracking = false;
+    article.style.removeProperty("--swipe-x");
+    article.classList.remove("swiping-delete", "swiping-context");
+  });
 }
 
 function attachSpeech(button, input, idleLabel) {
