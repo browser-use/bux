@@ -3243,6 +3243,71 @@ def _agency_build_refine_context(sugg_row: dict) -> str:
     return "\n".join(parts)
 
 
+def _agency_build_custom_dispatch_prompt(
+    label: str, sender: dict, sugg_row: dict | None = None
+) -> str:
+    """Build the prompt delivered to the lane when a custom card button fires.
+
+    Custom agency buttons are intentionally semantic labels ("Show 3 variants",
+    "Reply in thread", "Send B") rather than full prompts. Include the stored
+    card row so the resumed agent can resolve what the label refers to without
+    asking the user to restate the card.
+    """
+    who = sender.get("username") or sender.get("first_name") or sender.get("id")
+    prompt = f"[agency-button] {label} (tapped by @{who})"
+    if sugg_row:
+        parts = ["\n\nAgency card context:"]
+        if sugg_row.get("id") is not None:
+            parts.append(f"Suggestion id: {sugg_row['id']}")
+        title = (sugg_row.get("title") or "").strip()
+        if title:
+            parts.append(f"Title: {title}")
+        source = (sugg_row.get("source") or "").strip()
+        if source:
+            parts.append(f"Source: {source}")
+        source_label = (sugg_row.get("source_label") or "").strip()
+        source_url = (sugg_row.get("source_url") or "").strip()
+        if source_label or source_url:
+            parts.append(f"Source link: {source_label or source_url} {source_url}".strip())
+        thread_id = sugg_row.get("tg_thread_id")
+        message_id = sugg_row.get("tg_message_id")
+        if thread_id or message_id:
+            parts.append(f"Telegram card: thread={thread_id or ''} message={message_id or ''}")
+        buttons_raw = sugg_row.get("buttons_json")
+        if buttons_raw:
+            try:
+                buttons = json.loads(buttons_raw)
+                if isinstance(buttons, list) and buttons:
+                    parts.append("Buttons shown: " + " | ".join(str(b) for b in buttons))
+            except Exception:
+                pass
+        description = (sugg_row.get("description") or "").strip()
+        if description:
+            parts.append(f"\nCard context:\n{description}")
+        action_prompt = (sugg_row.get("prompt") or "").strip()
+        if action_prompt:
+            parts.append(f"\nOriginal action prompt:\n{action_prompt}")
+        parts.append(
+            "\nUse the card context to execute the tapped button. If the label names "
+            "a path or variant that lives in the lane's local log/draft files, find "
+            "the matching entry by source or title before asking the user for more context."
+        )
+        prompt += "\n".join(parts)
+    low = label.lower()
+    if any(w in low for w in ("different", "differently")):
+        prompt += (
+            "\n\nThe user wants you to do this differently. Reply asking "
+            "what they would change, then wait for their next message."
+        )
+    elif any(w in low for w in ("rethink", "redo")):
+        prompt += (
+            "\n\nThe user wants you to rethink this suggestion. Re-evaluate "
+            "the underlying ask and propose a different approach as a fresh "
+            "suggestion (with new buttons via tg-buttons)."
+        )
+    return prompt
+
+
 class Bot:
     def __init__(self, token: str, setup_token: str) -> None:
         self.token = token
@@ -6506,7 +6571,7 @@ class Bot:
                 original_labels=original_labels,
                 append_url_row=append_url_row,
             )
-            self._agency_dispatch_custom(chat_id, target_thread, label, sender)
+            self._agency_dispatch_custom(chat_id, target_thread, label, sender, sugg_row)
             return
 
         # Skip / dismiss: just delete the card from the channel. The
@@ -6714,26 +6779,18 @@ class Bot:
             LOG.exception("agency keyboard mark failed")
 
     def _agency_dispatch_custom(
-        self, chat_id: int, target_thread: int, label: str, sender: dict
+        self,
+        chat_id: int,
+        target_thread: int,
+        label: str,
+        sender: dict,
+        sugg_row: dict | None = None,
     ) -> None:
         """Custom-button behavior: dispatch a synthesized "[agency-button]
         LABEL (tapped by …)" message into the SAME topic so the agent
         receives the tap as if the user typed it. Labels containing
         "different" / "rethink" / "redo" get follow-up instructions."""
-        who = sender.get("username") or sender.get("first_name") or sender.get("id")
-        prompt = f"[agency-button] {label} (tapped by @{who})"
-        low = label.lower()
-        if any(w in low for w in ("different", "differently")):
-            prompt += (
-                "\n\nThe user wants you to do this differently. Reply asking "
-                "what they would change, then wait for their next message."
-            )
-        elif any(w in low for w in ("rethink", "redo")):
-            prompt += (
-                "\n\nThe user wants you to rethink this suggestion. Re-evaluate "
-                "the underlying ask and propose a different approach as a fresh "
-                "suggestion (with new buttons via tg-buttons)."
-            )
+        prompt = _agency_build_custom_dispatch_prompt(label, sender, sugg_row)
         try:
             self.run_task(
                 (chat_id, target_thread),
