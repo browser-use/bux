@@ -45,6 +45,7 @@ class MiniAppTest(unittest.TestCase):
         os.environ["TG_OWNER_ID"] = "42"
         os.environ["BUX_AGENCY_DB"] = str(root / "agency.db")
         os.environ["BUX_MINIAPP_DB"] = str(root / "miniapp.db")
+        os.environ["BUX_MINIAPP_SEED_STARTERS"] = "0"
         os.environ.pop("BUX_MINIAPP_DEV", None)
         for name in ("agency_db", "mini_app"):
             sys.modules.pop(name, None)
@@ -53,6 +54,7 @@ class MiniAppTest(unittest.TestCase):
         self.init_data = _signed_init_data(os.environ["TG_BOT_TOKEN"], 42)
 
     def tearDown(self) -> None:
+        os.environ.pop("BUX_MINIAPP_SEED_STARTERS", None)
         self.tmp.cleanup()
 
     def test_validate_init_data_rejects_wrong_owner(self) -> None:
@@ -84,6 +86,21 @@ class MiniAppTest(unittest.TestCase):
         self.assertEqual(cards[0]["title"], "Reply to investor")
         self.assertEqual(cards[0]["why"], "Keeps the round warm.")
         self.assertEqual(cards[0]["visual"]["kind"], "none")
+
+    def test_cards_seed_starter_ideas_once(self) -> None:
+        os.environ.pop("BUX_MINIAPP_SEED_STARTERS", None)
+
+        first = self.app._cards()
+        second = self.app._cards()
+
+        starter_cards = [card for card in first if str(card["source"]).startswith("miniapp-starter:")]
+        self.assertGreaterEqual(len(starter_cards), 3)
+        self.assertEqual(
+            sorted(card["id"] for card in first if str(card["source"]).startswith("miniapp-starter:")),
+            sorted(card["id"] for card in second if str(card["source"]).startswith("miniapp-starter:")),
+        )
+        self.assertTrue(starter_cards[0]["buttons"])
+        self.assertEqual(starter_cards[0]["visual"]["kind"], "image")
 
     def test_cards_include_local_image_data_url(self) -> None:
         image_path = Path(self.tmp.name) / "card.png"
@@ -208,7 +225,10 @@ class MiniAppTest(unittest.TestCase):
         self.assertFalse(result["topic_created"])
         self.assertEqual(result["thread_id"], 123)
         self.assertEqual(calls[0][0], "sendMessage")
-        self.assertEqual(runs, [((100, 123), "Do the work")])
+        self.assertEqual(runs[0][0], (100, 123))
+        self.assertIn("The user accepted this Mini App card", runs[0][1])
+        self.assertIn("Card title: Start visible work", runs[0][1])
+        self.assertIn("Action prompt:\nDo the work", runs[0][1])
         with self.agency_db.conn() as db:
             row = db.execute(
                 "SELECT status, worker_topic_id FROM suggestions WHERE id = ?",

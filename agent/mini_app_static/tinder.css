@@ -399,7 +399,12 @@ details a {
 }
 
 .round.comment {
+  color: var(--muted);
+}
+
+.round.comment:hover {
   color: var(--blue);
+  background: rgba(29, 155, 240, 0.12);
 }
 
 .choices {

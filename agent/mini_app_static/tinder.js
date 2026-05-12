@@ -91,7 +91,7 @@ function render() {
   renderGoals();
   const cards = visibleCards();
   const card = currentCard();
-  els.meta.textContent = `${openCount()} open · ${state.started} do · ${state.skipped} skip`;
+  els.meta.textContent = `${openCount()} open · ${state.started} done`;
   localStorage.setItem(indexKey, String(state.index));
   if (!card) {
     els.deck.innerHTML = `
@@ -404,6 +404,8 @@ async function sendContext(event) {
   const comment = els.input.value.trim();
   if (!comment) return;
   const card = currentCard();
+  els.sheet.close();
+  toast("Refining it...");
   try {
     if (card?.id) {
       await api(`/api/cards/${card.id}/comment`, { method: "POST", body: JSON.stringify({ comment }) });
@@ -413,10 +415,9 @@ async function sendContext(event) {
       await api(`/api/goals/${state.activeGoalId}/context`, { method: "POST", body: JSON.stringify({ comment }) });
     }
     els.input.value = "";
-    els.sheet.close();
     if (card?.id) removeLocal(card.id);
-    toast("Comment sent.");
   } catch (error) {
+    els.input.value = comment;
     toast(error.message);
   }
 }
@@ -483,7 +484,7 @@ function xSvg() {
 }
 
 function commentSvg() {
-  return `<svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path d="M5.5 18.5v-10A3.5 3.5 0 0 1 9 5h6a3.5 3.5 0 0 1 3.5 3.5v3A3.5 3.5 0 0 1 15 15H10l-4.5 3.5Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>`;
+  return `<svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true"><path d="M1.75 10c0-4.42 3.58-8 8-8h4.37c4.49 0 8.13 3.64 8.13 8.13 0 2.96-1.61 5.68-4.2 7.11L10 21.7v-3.57h-.07C5.42 18.13 1.75 14.46 1.75 10Zm8-6a6 6 0 0 0 0 12H12v2.3l5.09-2.81a6.12 6.12 0 0 0 3.16-5.36A6.13 6.13 0 0 0 14.12 4H9.75Z" fill="currentColor"/></svg>`;
 }
 
 function railSvg(collapsed) {

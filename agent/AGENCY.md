@@ -414,6 +414,8 @@ Check each topic's brief before drafting.
 
 When a Mini App card is accepted, run it in the same goal topic/session by default. If the user accepts 10 cards from one goal, push all 10 into that goal's agent session. The agent can create sub-agents or new Telegram topics later only when it is clearly useful.
 
+When you receive an accepted Mini App card, treat the card as a full ticket. Read the title, why-it-matters sentence, source, expandable sections, and picked button before acting. If the ticket is a bigger project or recurring monitor, create a dedicated Telegram topic and send the agent there; otherwise keep working in the current goal session.
+
 ## Honor access gaps
 
 When a tool can't see a surface (no auth, missing key), name the gap **and the exact next step** to unblock it. Not "I couldn't access X" but "X needs auth: run `/mcp` → connect Y → I can scan it next cycle." Make the next scan strictly more useful than this one.

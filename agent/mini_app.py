@@ -486,7 +486,125 @@ def _source_url(row: dict[str, Any]) -> str:
     return _thread_url(row)
 
 
+STARTER_IDEAS: list[dict[str, Any]] = [
+    {
+        "source": "miniapp-starter:gmail-monitor",
+        "title": "Gmail: monitor important replies every 30 minutes",
+        "description": "Catch important email fast, ignore spam, and draft three reply options in your voice.",
+        "prompt": (
+            "Starter idea accepted from the Mini App.\n\n"
+            "Set up or propose a recurring Gmail monitor: every 30 minutes, scan important inbox threads, "
+            "ignore spam/cold outreach, and create Agency cards with three concise reply drafts based on the user's style. "
+            "If this should run continuously, create a dedicated Telegram topic for the monitor and continue there."
+        ),
+        "buttons": ["Start this"],
+        "image_text": "GMAIL MONITOR\nimportant replies",
+    },
+    {
+        "source": "miniapp-starter:slack-whatsapp-monitor",
+        "title": "Slack/WhatsApp: surface messages that need a reply",
+        "description": "Find the conversations where the user is blocking someone and draft the next response.",
+        "prompt": (
+            "Starter idea accepted from the Mini App.\n\n"
+            "Monitor Slack and WhatsApp for messages that need the user's response. Triage what matters, skip noise, "
+            "and create Agency cards with paste-ready replies. If this becomes a standing workflow, create a dedicated topic."
+        ),
+        "buttons": ["Start this"],
+        "image_text": "REPLY RADAR\nSlack + WhatsApp",
+    },
+    {
+        "source": "miniapp-starter:datadog-pulse",
+        "title": "Datadog: send a 24-hour health pulse",
+        "description": "Turn incidents, latency spikes, and product signals into cards the user can act on.",
+        "prompt": (
+            "Starter idea accepted from the Mini App.\n\n"
+            "Check Datadog for the last 24 hours: incidents, error spikes, latency, notable product usage, and anything "
+            "that should become an Agency card. If recurring monitoring is useful, create a dedicated Telegram topic."
+        ),
+        "buttons": ["Start this"],
+        "image_text": "DATADOG PULSE\n24h health",
+    },
+    {
+        "source": "miniapp-starter:signup-enrichment",
+        "title": "CDP: enrich new signups and draft outreach",
+        "description": "Spot promising users, enrich them, and suggest a message the user can accept or reject.",
+        "prompt": (
+            "Starter idea accepted from the Mini App.\n\n"
+            "Inspect recent signups, enrich them from available CDP/context, identify high-potential accounts, "
+            "and create cards with suggested outreach or accept/reject decisions."
+        ),
+        "buttons": ["Start this"],
+        "image_text": "SIGNUP RADAR\nenrich + draft",
+    },
+    {
+        "source": "miniapp-starter:gratitude-messages",
+        "title": "Comms: find moments to send gratitude",
+        "description": "Look across channels for people worth thanking and draft warm short messages.",
+        "prompt": (
+            "Starter idea accepted from the Mini App.\n\n"
+            "Scan connected communication channels for moments where the user can express gratitude to peers, customers, "
+            "or supporters. Create Agency cards with short messages ready to send."
+        ),
+        "buttons": ["Start this"],
+        "image_text": "THANK SOMEONE\nwarm replies",
+    },
+    {
+        "source": "miniapp-starter:demo-case-studies",
+        "title": "Slack: turn great demo use cases into case studies",
+        "description": "Watch for strong customer/demo moments and pitch a video or case study card.",
+        "prompt": (
+            "Starter idea accepted from the Mini App.\n\n"
+            "Monitor Slack for great demo use cases, customer quotes, surprising wins, or product moments. "
+            "Create Agency cards that pitch a demo video, launch clip, or case study with a clear next action."
+        ),
+        "buttons": ["Start this"],
+        "image_text": "DEMO MOMENTS\ncase studies",
+    },
+    {
+        "source": "miniapp-starter:distribution-health",
+        "title": "Agent: suggest creative moves for startup, distribution, and health",
+        "description": "Generate useful reminders and action ideas that move the user's goals forward.",
+        "prompt": (
+            "Starter idea accepted from the Mini App.\n\n"
+            "Generate creative Agency cards for startup success, distribution, staying healthy, and useful reminders. "
+            "Keep every card short, visual when possible, and tied to a clear user goal."
+        ),
+        "buttons": ["Start this"],
+        "image_text": "NEXT MOVES\nstartup + health",
+    },
+]
+
+
+def _starter_image_url(text: str) -> str:
+    return "https://placehold.co/1080x540/111827/ffffff/png?text=" + urllib.parse.quote(text)
+
+
+def _ensure_starter_cards() -> None:
+    if os.environ.get("BUX_MINIAPP_SEED_STARTERS") == "0":
+        return
+    chat_id = _default_chat_id() or None
+    with agency_db.conn() as db:
+        for idea in STARTER_IDEAS:
+            if agency_db.exists(db, str(idea["source"])):
+                continue
+            agency_db.insert(
+                db,
+                title=str(idea["title"]),
+                description=str(idea["description"]),
+                importance="med",
+                source=str(idea["source"]),
+                source_label="Starter idea",
+                prompt=str(idea["prompt"]),
+                buttons=list(idea.get("buttons") or ["Start this"]),
+                image_url=_starter_image_url(str(idea["image_text"])),
+                chat_id=chat_id,
+                thread_id=0,
+                spawn_topic=False,
+            )
+
+
 def _cards(limit: int = 100) -> list[dict[str, Any]]:
+    _ensure_starter_cards()
     with agency_db.conn() as db:
         rows = agency_db.list_recent(db, status="pending", limit=limit)
     with _mini_conn() as mdb:
@@ -825,6 +943,38 @@ def _find_suggestion(suggestion_id: int) -> dict[str, Any] | None:
         return dict(row) if row else None
 
 
+def _start_agent_prompt(row: dict[str, Any], action_prompt: str, button_label: str) -> str:
+    blocks = _card_blocks(row)
+    block_text = ""
+    if blocks:
+        rendered = []
+        for block in blocks:
+            title = str(block.get("title") or "Details").strip()
+            body = str(block.get("body") or "").strip()
+            if body:
+                rendered.append(f"- {title}:\n{body}")
+        if rendered:
+            block_text = "\n\nExpandable card sections:\n" + "\n\n".join(rendered)
+    source_bits = []
+    if row.get("source_label"):
+        source_bits.append(str(row.get("source_label")))
+    if row.get("source_url"):
+        source_bits.append(str(row.get("source_url")))
+    source_line = " ".join(source_bits).strip() or str(row.get("source") or "").strip() or "unknown"
+    picked = button_label or "Mini App Start"
+    return (
+        "The user accepted this Mini App card. Work from the full card context below.\n"
+        "If this is a bigger ongoing project or recurring monitor, you may create a dedicated Telegram topic "
+        "and continue the agent session there. Otherwise continue in the current goal topic/session.\n\n"
+        f"Picked button: {picked}\n"
+        f"Card title: {row.get('title') or 'Action'}\n"
+        f"Why it matters: {row.get('description') or ''}\n"
+        f"Source: {source_line}"
+        f"{block_text}\n\n"
+        f"Action prompt:\n{action_prompt}"
+    )
+
+
 def _start_agent_work(
     suggestion_id: int, user: dict[str, Any], button_label: str | None = None
 ) -> dict[str, Any]:
@@ -837,6 +987,7 @@ def _start_agent_work(
         prompt = f"[agency-button] {button_label}" + (f"\n\n{prompt}" if prompt else "")
     if not prompt:
         return {"started": False, "error": "card has no action prompt"}
+    dispatch_prompt = _start_agent_prompt(row, prompt, button_label)
     try:
         import telegram_bot
 
@@ -873,7 +1024,7 @@ def _start_agent_work(
             text=(
                 "📋 <b>Started from Mini App</b>\n"
                 f"<b>{html.escape(row.get('title') or 'Action', quote=False)}</b>\n"
-                f"<blockquote>{html.escape(prompt, quote=False)}</blockquote>"
+                f"<blockquote>{html.escape(dispatch_prompt, quote=False)}</blockquote>"
             ),
             parse_mode="HTML",
         )
@@ -882,7 +1033,7 @@ def _start_agent_work(
             try:
                 bot.run_task(
                     (chat_id, work_thread),
-                    prompt,
+                    dispatch_prompt,
                     reply_to=None,
                     sender={
                         "user_id": str(user.get("id") or ""),
