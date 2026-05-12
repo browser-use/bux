@@ -4,13 +4,13 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>bux feed</title>
-    <link rel="stylesheet" href="/app.css?v=20260512x25" />
+    <link rel="stylesheet" href="/app.css?v=20260512x26" />
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body>
     <main class="phone">
       <header class="chrome">
-        <button id="drawerButton" class="icon-button" type="button" aria-label="Goals">☰</button>
+        <button id="drawerButton" class="icon-button" type="button" aria-label="New topic">+</button>
         <div class="brand">
           <span>Agency</span>
           <strong id="activeGoal">Goal feed</strong>
@@ -52,12 +52,12 @@
 
       <dialog id="goalDialog" class="sheet">
         <form id="goalForm" method="dialog">
-          <h2>Create a box item</h2>
+          <h2>Create topic</h2>
           <button id="goalRecordButton" class="record-button compact-record" type="button">
             <span>●</span>
             <strong>Speak goal</strong>
           </button>
-          <textarea id="goalInput" rows="5" placeholder="Make browser-use impossible to ignore this week"></textarea>
+          <textarea id="goalInput" rows="5" placeholder="What should this topic work on?"></textarea>
           <button class="sheet-primary" type="submit">Create</button>
         </form>
       </dialog>
@@ -89,6 +89,6 @@
 
       <div id="toast" class="toast" role="status"></div>
     </main>
-    <script src="/app.js?v=20260512x25" type="module"></script>
+    <script src="/app.js?v=20260512x26" type="module"></script>
   </body>
 </html>

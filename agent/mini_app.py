@@ -792,6 +792,7 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     _json_response(self, 400, {"error": "title required"})
                     return
                 now = _now()
+                active_id = ""
                 with _mini_conn() as db:
                     cur = db.execute(
                         """
@@ -802,7 +803,22 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     )
                     db.commit()
                     goal_id = int(cur.lastrowid)
-                _json_response(self, 200, {"ok": True, "goal_id": goal_id})
+                chat_id = _default_chat_id()
+                if chat_id and os.environ.get("BUX_MINIAPP_DEV") != "1" and MINI_DB == Path("/var/lib/bux/miniapp.db"):
+                    try:
+                        import telegram_bot
+
+                        env = _tg_env()
+                        bot = telegram_bot.Bot(env["TG_BOT_TOKEN"], env.get("TG_SETUP_TOKEN", ""))
+                        res = bot.call("createForumTopic", chat_id=chat_id, name=title[:128])
+                        if res.get("ok"):
+                            thread_id = int(res["result"].get("message_thread_id") or 0)
+                            if thread_id:
+                                _upsert_topic(chat_id, thread_id, title, "miniapp-goal")
+                                active_id = f"topic:{thread_id}"
+                    except Exception as exc:
+                        print(f"bux-miniapp: goal topic create failed: {exc}", file=sys.stderr)
+                _json_response(self, 200, {"ok": True, "goal_id": goal_id, "active_id": active_id})
                 return
             if parsed.path == "/api/settings":
                 provider = (body.get("provider") or "").strip().lower()

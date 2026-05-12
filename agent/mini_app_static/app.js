@@ -367,12 +367,32 @@ function looksOperational(text) {
 }
 
 function sourceMeta(cardOrSource) {
+  if (typeof cardOrSource !== "string") {
+    const actionBrand = brandFromAction(cardOrSource);
+    if (actionBrand) return actionBrand;
+  }
   const source = typeof cardOrSource === "string" ? cardOrSource : cardOrSource?.source;
   const sourceValue = String(source || "").toLowerCase();
   const sourceBrand = brandFromText(sourceValue);
   if (sourceBrand) return sourceBrand;
   const label = sourceLabel(source);
   return { kind: "agency", mark: initials(source) || "B", name: titleCase(label), handle: slug(label), brand: false };
+}
+
+function brandFromAction(card) {
+  const value = [
+    card?.title,
+    card?.action,
+    Array.isArray(card?.buttons) ? card.buttons.join(" ") : "",
+  ].join(" ").toLowerCase();
+  if (/\breddit\b|r\/[a-z0-9_]+|subreddit/.test(value)) return brandMeta("reddit", "Reddit", "reddit");
+  if (value.includes("whatsapp")) return brandMeta("whatsapp", "WhatsApp", "whatsapp");
+  if (/\bgithub\b|\bgh\b|pull request|pr #\d+/.test(value)) return brandMeta("github", "GitHub", "github");
+  if (/\bgmail\b|\bemail\b|reply to [^ ]+@|send .*mail/.test(value)) return brandMeta("gmail", "Gmail", "gmail");
+  if (/\bslack\b|#[a-z0-9_-]{2,}/.test(value)) return brandMeta("slack", "Slack", "slack");
+  if (/\btweet\b|\btwitter\b|\bx\.com\b|\bqt\b|dm .* on x/.test(value)) return brandMeta("x", "X", "x");
+  if (value.includes("telegram")) return brandMeta("telegram", "Telegram", "telegram");
+  return null;
 }
 
 function brandFromText(value) {
@@ -383,6 +403,7 @@ function brandFromText(value) {
   if (value.includes("linear")) return brandMeta("linear", "Linear", "linear");
   if (value.includes("calendar")) return brandMeta("calendar", "Calendar", "googlecalendar");
   if (value.includes("telegram")) return brandMeta("telegram", "Telegram", "telegram");
+  if (value.includes("whatsapp")) return brandMeta("whatsapp", "WhatsApp", "whatsapp");
   if (/(twitter|tweet|x\.com|octolens|\bx\b)/.test(value)) return brandMeta("x", "X", "x");
   return null;
 }
@@ -408,6 +429,7 @@ function faviconDomain(kind) {
     linear: "linear.app",
     calendar: "calendar.google.com",
     telegram: "telegram.org",
+    whatsapp: "whatsapp.com",
   };
   return domains[kind] || "";
 }
@@ -798,7 +820,7 @@ function attachSpeech(button, input, idleLabel) {
   button.addEventListener("click", () => recognition.start());
 }
 
-els.drawerButton.addEventListener("click", openDrawer);
+els.drawerButton.addEventListener("click", openGoal);
 els.drawer.addEventListener("click", (event) => {
   if (event.target === els.drawer) closeDrawer();
 });
@@ -841,7 +863,7 @@ els.goalForm.addEventListener("submit", async (event) => {
       body: JSON.stringify({ title, context: raw, cadence: "" }),
     });
     els.goalInput.value = "";
-    state.activeGoalId = String(result.goal_id || "all");
+    state.activeGoalId = String(result.active_id || result.goal_id || "all");
     localStorage.setItem(goalKey, state.activeGoalId);
     els.goalDialog.close();
     closeDrawer();
