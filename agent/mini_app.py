@@ -542,7 +542,11 @@ def _append_event(suggestion_id: int, event: str, user: dict[str, Any], detail: 
 
 
 def _dispatch_topic_context(
-    chat_id: int, thread_id: int, comment: str, user: dict[str, Any]
+    chat_id: int,
+    thread_id: int,
+    comment: str,
+    user: dict[str, Any],
+    reply_to: int | None = None,
 ) -> bool:
     if not chat_id or not thread_id or not comment:
         return False
@@ -552,14 +556,21 @@ def _dispatch_topic_context(
         env = _tg_env()
         bot = telegram_bot.Bot(env["TG_BOT_TOKEN"], env.get("TG_SETUP_TOKEN", ""))
         text = "Context from Mini App:\n" + comment
-        bot.send(chat_id, text, thread_id=thread_id)
+        sent = bot.call(
+            "sendMessage",
+            chat_id=chat_id,
+            message_thread_id=thread_id,
+            text=text,
+            reply_parameters={"message_id": reply_to} if reply_to else None,
+        )
+        reply_to_agent = int((sent.get("result") or {}).get("message_id") or 0) or None
 
         def run() -> None:
             try:
                 bot.run_task(
                     (chat_id, thread_id),
                     text,
-                    reply_to=None,
+                    reply_to=reply_to_agent,
                     sender={
                         "user_id": str(user.get("id") or ""),
                         "username": user.get("username") or "",
@@ -579,7 +590,9 @@ def _dispatch_topic_context(
 def _dispatch_card_context(row: dict[str, Any], comment: str, user: dict[str, Any]) -> bool:
     chat_id = int(row.get("tg_chat_id") or 0) or _default_chat_id()
     thread_id = int(row.get("worker_topic_id") or row.get("tg_thread_id") or 0)
-    return _dispatch_topic_context(chat_id, thread_id, comment, user)
+    source_thread_id = int(row.get("tg_thread_id") or 0)
+    reply_to = int(row.get("tg_message_id") or 0) if thread_id == source_thread_id else None
+    return _dispatch_topic_context(chat_id, thread_id, comment, user, reply_to=reply_to)
 
 
 def _find_suggestion(suggestion_id: int) -> dict[str, Any] | None:

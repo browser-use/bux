@@ -238,13 +238,13 @@ function commentPanelHtml(card, meta) {
         </div>
       </div>
     `).join("")
-    : `<p class="comment-empty">Add context. The agent will use it to revise or continue this card.</p>`;
+    : `<p class="comment-empty">Sent to the Telegram topic.</p>`;
   return `
     <section class="comment-panel">
       ${rows}
       <form data-inline-context-form data-card-id="${card.id}" class="comment-form">
-        <textarea rows="2" placeholder="Add context for the agent"></textarea>
-        <button type="submit">Reply</button>
+        <textarea rows="2" placeholder="Context"></textarea>
+        <button type="submit">Send</button>
       </form>
     </section>
   `;
@@ -760,8 +760,9 @@ async function submitInlineContext(event) {
     const result = await api(`/api/cards/${id}/comments`);
     state.comments[id] = result.comments || [];
     await refreshStats();
+    state.openContextCardId = null;
     render();
-    toast("Context added.");
+    toast("Sent to Telegram topic.");
   } catch (error) {
     toast(error.message);
   }
