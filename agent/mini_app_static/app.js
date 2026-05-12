@@ -68,6 +68,10 @@ function currentCard() {
 }
 
 function visibleCards() {
+  if (state.activeGoalId.startsWith("topic:")) {
+    const topicId = state.activeGoalId.slice("topic:".length);
+    return state.cards.filter((card) => String(card.topic_id || "0") === topicId);
+  }
   if (state.activeGoalId === "all") return state.cards;
   return state.cards.filter((card) => String(card.goal_id || "") === String(state.activeGoalId));
 }
@@ -95,7 +99,7 @@ function render() {
   renderGoals();
   renderStats();
   const active = goal();
-  els.activeGoal.textContent = active?.title || "All cards";
+  els.activeGoal.textContent = activeGoalTitle();
   els.feed.innerHTML = "";
   const cards = visibleCards();
   if (!cards.length) {
@@ -127,11 +131,11 @@ function render() {
 function renderEndCard() {
   const article = document.createElement("article");
   article.className = "end-card";
-  const active = goal();
+  const activeTitle = activeGoalTitle();
   article.innerHTML = `
     <div>
       <strong>What should I do next?</strong>
-      <p>${escapeHtml(active ? `What should I work on next for “${active.title}”?` : "What should I work on next?")}</p>
+      <p>${escapeHtml(state.activeGoalId === "all" ? "What should I work on next?" : `What should I work on next for “${activeTitle}”?`)}</p>
       <button class="create-goal" type="button">Give context</button>
     </div>
   `;
@@ -161,12 +165,12 @@ function renderCard(card, index) {
             <strong>${escapeHtml(meta.name)}</strong>
             <span>${escapeHtml(subtitle)}</span>
           </div>
+          ${sourceLine(card, meta)}
         </header>
         <div class="post-body">
           <div class="post-text ${needsExpand ? "collapsed" : ""}">${postText}</div>
           ${needsExpand ? `<button class="show-more" type="button" data-expand-text>Show more</button>` : ""}
         </div>
-        ${sourceLine(card, meta)}
         ${action ? detailHtml(detailLabel(action), action) : ""}
         ${mediaHtml(card)}
         ${commentPanelHtml(card, meta)}
@@ -206,8 +210,8 @@ function detailHtml(label, text) {
 }
 
 function sourceLine(card, meta) {
-  const label = card.source_label || sourceLabel(card.source) || meta.name;
-  const url = card.source_url || firstUrl([card.title, card.why, card.action].join(" "));
+  const url = card.source_url || firstUrl([card.title, card.why].join(" "));
+  const label = card.source_label || (url ? "Source" : sourceLabel(card.source) || meta.name);
   if (!label && !url) return "";
   const body = url
     ? `<a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label || "Source")}</a>`
@@ -216,7 +220,7 @@ function sourceLine(card, meta) {
 }
 
 function firstUrl(value) {
-  const match = String(value || "").match(/https?:\/\/[^\s)]+/);
+  const match = String(value || "").match(/https?:\/\/[^\s)"']+/);
   return match ? match[0] : "";
 }
 
@@ -344,20 +348,29 @@ function looksOperational(text) {
 
 function sourceMeta(cardOrSource) {
   const source = typeof cardOrSource === "string" ? cardOrSource : cardOrSource?.source;
+  const sourceValue = String(source || "").toLowerCase();
+  const sourceBrand = brandFromText(sourceValue);
+  if (sourceBrand) return sourceBrand;
   const combined = typeof cardOrSource === "string"
     ? cardOrSource
     : [cardOrSource?.source, cardOrSource?.title, cardOrSource?.why, cardOrSource?.action].join(" ");
   const value = String(combined || "").toLowerCase();
-  if (/(twitter|tweet|x\.com|octolens|\bx\b)/.test(value)) return brandMeta("x", "X", "x");
+  const combinedBrand = brandFromText(value);
+  if (combinedBrand) return combinedBrand;
+  const label = sourceLabel(source);
+  return { kind: "agency", mark: initials(source) || "B", name: titleCase(label), handle: slug(label), brand: false };
+}
+
+function brandFromText(value) {
   if (value.includes("gmail") || value.includes("email")) return brandMeta("gmail", "Gmail", "gmail");
   if (value.includes("slack")) return brandMeta("slack", "Slack", "slack");
   if (value.includes("reddit")) return brandMeta("reddit", "Reddit", "reddit");
-  if (value.includes("github") || value.includes("pr")) return brandMeta("github", "GitHub", "github");
+  if (value.includes("github") || value.includes("gh-pr")) return brandMeta("github", "GitHub", "github");
   if (value.includes("linear")) return brandMeta("linear", "Linear", "linear");
   if (value.includes("calendar")) return brandMeta("calendar", "Calendar", "googlecalendar");
   if (value.includes("telegram")) return brandMeta("telegram", "Telegram", "telegram");
-  const label = sourceLabel(source);
-  return { kind: "agency", mark: initials(source) || "B", name: titleCase(label), handle: slug(label), brand: false };
+  if (/(twitter|tweet|x\.com|octolens|\bx\b)/.test(value)) return brandMeta("x", "X", "x");
+  return null;
 }
 
 function brandMeta(kind, name, icon) {
@@ -483,9 +496,11 @@ function renderGoals() {
 }
 
 function renderGoalTabs() {
+  const topics = topicTabs();
   const tabs = [
     { id: "all", title: "All", count: unhandledCount(state.cards) },
     ...state.goals.map((item) => ({ id: String(item.id), title: item.title, count: goalCardCount(item.id) })),
+    ...topics,
   ];
   els.goalTabs.innerHTML = tabs
     .map((item) => {
@@ -496,6 +511,28 @@ function renderGoalTabs() {
   els.goalTabs.querySelectorAll("[data-goal]").forEach((button) => {
     button.addEventListener("click", () => selectGoal(button.dataset.goal || "all"));
   });
+}
+
+function topicTabs() {
+  const byTopic = new Map();
+  state.cards.forEach((card) => {
+    const topicId = String(card.topic_id || "0");
+    if (!topicId || topicId === "0") return;
+    const key = `topic:${topicId}`;
+    const existing = byTopic.get(key) || { id: key, title: card.topic_title || `Topic ${topicId}`, count: 0 };
+    if (!card.handled) existing.count += 1;
+    byTopic.set(key, existing);
+  });
+  return [...byTopic.values()].sort((a, b) => b.count - a.count).slice(0, 12);
+}
+
+function activeGoalTitle() {
+  if (state.activeGoalId === "all") return "All cards";
+  if (state.activeGoalId.startsWith("topic:")) {
+    const topicId = state.activeGoalId.slice("topic:".length);
+    return state.cards.find((card) => String(card.topic_id || "0") === topicId)?.topic_title || `Topic ${topicId}`;
+  }
+  return goal()?.title || "All cards";
 }
 
 function goalCardCount(goalId) {

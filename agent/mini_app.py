@@ -303,7 +303,35 @@ def _goal_context() -> dict[str, Any] | None:
         return _first_goal(db)
 
 
-def _cards(limit: int = 30) -> list[dict[str, Any]]:
+def _thread_url(row: dict[str, Any]) -> str:
+    chat_id = int(row.get("tg_chat_id") or 0)
+    thread_id = int(row.get("tg_thread_id") or 0)
+    if chat_id < 0 and thread_id > 0:
+        return f"https://t.me/c/{str(chat_id).removeprefix('-100')}/{thread_id}"
+    return ""
+
+
+def _thread_title(row: dict[str, Any]) -> str:
+    source = _clean_mobile_text(row.get("source") or "")
+    if source:
+        return source.replace("-", " ").title()[:28]
+    thread_id = int(row.get("tg_thread_id") or 0)
+    return f"Topic {thread_id}" if thread_id else "General"
+
+
+def _source_url(row: dict[str, Any]) -> str:
+    explicit = row.get("source_url") or ""
+    if explicit:
+        return explicit
+    source = row.get("source") or ""
+    if source.startswith("gmail-"):
+        parts = [part for part in source.split("-") if part]
+        if len(parts) >= 2:
+            return f"https://mail.google.com/mail/u/0/#inbox/{parts[1]}"
+    return _thread_url(row)
+
+
+def _cards(limit: int = 100) -> list[dict[str, Any]]:
     with agency_db.conn() as db:
         rows = agency_db.list_recent(db, status="pending", limit=limit)
     with _mini_conn() as mdb:
@@ -329,7 +357,9 @@ def _cards(limit: int = 30) -> list[dict[str, Any]]:
                 "buttons": _button_labels(row),
                 "source": row.get("source") or "",
                 "source_label": row.get("source_label") or "",
-                "source_url": row.get("source_url") or "",
+                "source_url": _source_url(row),
+                "topic_id": int(row.get("tg_thread_id") or 0),
+                "topic_title": _thread_title(row),
                 "created_at": row.get("created_at"),
                 "comments": comments.get(int(row["id"]), 0),
                 "visual": _card_visual(row),

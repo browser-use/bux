@@ -389,7 +389,10 @@ The card must be 2-second-readable on a phone screen, sometimes late-
 night, sometimes mid-workout. Specifics:
 
 - Title ≤ 90 chars. Verb-led, human-readable, no internal numbering,
-  "SUPERSEDE", parent IDs, or long handles.
+  "SUPERSEDE", parent IDs, or long handles. The first visible words must
+  directly say the action: "Send...", "Reply...", "Open PR...", "Merge...",
+  "Check...", "Draft...", "Call...", "Publish...", "Delete...". Do not start
+  with abstract goal language like "Growth", "Context", or "Opportunity".
 - Visible body / `--description` ≤ 240 chars. 1-2 natural sentences:
   what matters and why now. Put proof, names, dates, IDs, and raw
   provenance in collapsed blocks, never in the visible body.
@@ -405,15 +408,17 @@ night, sometimes mid-workout. Specifics:
   `--source-label` / `--source-url` for the canonical clickable header.
 - Always pass `--source-label` and `--source-url` when the source has a
   canonical place to open (Gmail thread, Slack message, GitHub PR, Reddit/X
-  post, Linear issue). The Mini App renders that source link at the end of
-  the post.
-- Image: attach `--image-file` or `--image` only when it is a real
-  screenshot, chart, generated image, logo, avatar, or other useful
-  visual. Do **not** attach placeholder text art. If no useful image
-  exists, omit the image and let the Mini App render a clean text post.
+  post, Linear issue). Use a short label such as "Gmail thread" or "GitHub
+  PR"; the Mini App renders it as the compact clickable source link in the
+  post header.
+- Image: attach `--image-file` or `--image` more often when a visual makes
+  the decision faster: a real screenshot, chart, generated image, logo,
+  avatar, or product/UI capture. Do **not** attach placeholder text art. If
+  no useful image exists, omit the image and let the Mini App render a clean
+  text post.
 - Mini App compatibility: cards render like an X.com feed item: compact
-  app/source icon, source handle, timestamp/age, short post text, optional
-  real media, source link at the end, and a sparse action row. The Mini App
+  app/source icon, source handle, timestamp/age, short post text, compact
+  source link in the header, optional real media, and a sparse action row. The Mini App
   does not render a fake image when none is supplied. Default expanded
   sections should be rare: one `Show draft` block only when there is
   paste-ready text. Do not add a generic "Context" block unless it names
