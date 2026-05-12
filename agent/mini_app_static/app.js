@@ -41,7 +41,6 @@ const els = {
   passButton: document.querySelector("#passButton"),
   voiceButton: document.querySelector("#voiceButton"),
   startButton: document.querySelector("#startButton"),
-  topButton: document.querySelector("#topButton"),
   toast: document.querySelector("#toast"),
 };
 
@@ -131,9 +130,9 @@ function renderEndCard() {
   const active = goal();
   article.innerHTML = `
     <div>
-      <strong>${escapeHtml(active ? active.title : "Need a different direction?")}</strong>
-      <p>${escapeHtml(active ? "Add more context for this goal and Agency can create better cards." : "Create a goal or add context so Agency knows what to look for next.")}</p>
-      <button class="create-goal" type="button">${active ? "Provide more context" : "New goal"}</button>
+      <strong>What should I do next?</strong>
+      <p>${escapeHtml(active ? `What should I work on next for “${active.title}”?` : "What should I work on next?")}</p>
+      <button class="create-goal" type="button">Give context</button>
     </div>
   `;
   article.querySelector("button").addEventListener("click", openGoal);
@@ -167,6 +166,7 @@ function renderCard(card, index) {
           <div class="post-text ${needsExpand ? "collapsed" : ""}">${postText}</div>
           ${needsExpand ? `<button class="show-more" type="button" data-expand-text>Show more</button>` : ""}
         </div>
+        ${sourceLine(card, meta)}
         ${action ? detailHtml(detailLabel(action), action) : ""}
         ${mediaHtml(card)}
         ${commentPanelHtml(card, meta)}
@@ -203,6 +203,21 @@ function detailHtml(label, text) {
       <div>${renderRichText(text)}</div>
     </details>
   `;
+}
+
+function sourceLine(card, meta) {
+  const label = card.source_label || sourceLabel(card.source) || meta.name;
+  const url = card.source_url || firstUrl([card.title, card.why, card.action].join(" "));
+  if (!label && !url) return "";
+  const body = url
+    ? `<a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label || "Source")}</a>`
+    : `<span>${escapeHtml(label)}</span>`;
+  return `<div class="post-source">${body}</div>`;
+}
+
+function firstUrl(value) {
+  const match = String(value || "").match(/https?:\/\/[^\s)]+/);
+  return match ? match[0] : "";
 }
 
 function commentPanelHtml(card, meta) {
@@ -517,7 +532,6 @@ function syncDock() {
   [els.passButton, els.voiceButton, els.startButton].forEach((button) => {
     button.disabled = !enabled;
   });
-  els.topButton.hidden = els.feed.scrollTop < 260;
   els.goalTabs.classList.toggle("scrolled", els.feed.scrollTop > 20);
 }
 
@@ -721,7 +735,6 @@ els.voiceButton.addEventListener("click", openContext);
 els.startButton.addEventListener("click", startCurrent);
 els.passButton.addEventListener("click", passCurrent);
 els.feed.addEventListener("scroll", () => requestAnimationFrame(updateCurrentFromScroll));
-els.topButton.addEventListener("click", () => els.feed.scrollTo({ top: 0, behavior: "smooth" }));
 els.goalDialog.addEventListener("click", (event) => {
   if (event.target === els.goalDialog) {
     els.goalInput.value = "";

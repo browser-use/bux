@@ -342,7 +342,8 @@ button {
 }
 
 .post-text a,
-.tweet-detail a {
+.tweet-detail a,
+.post-source a {
   color: #1d9bf0;
   text-decoration: none;
 }
@@ -358,37 +359,31 @@ button {
 }
 
 .tweet-detail {
-  margin-top: 10px;
+  margin-top: 6px;
   min-width: 0;
   color: #e7e9ea;
 }
 
 .tweet-detail summary {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  min-height: 38px;
-  padding: 7px 0;
+  gap: 4px;
+  min-height: 24px;
+  padding: 0;
   border: 0;
-  border-top: 1px solid #2f3336;
-  border-bottom: 1px solid #2f3336;
-  border-radius: 0;
-  color: #e7e9ea;
+  color: #1d9bf0;
   background: transparent;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
   cursor: pointer;
 }
 
 .tweet-detail summary::after {
-  content: "⌄";
-  color: #71767b;
-  font-size: 18px;
+  content: "";
 }
 
 .tweet-detail[open] summary::after {
-  content: "⌃";
+  content: "";
 }
 
 .tweet-detail div {
@@ -399,6 +394,22 @@ button {
   font-size: 15px;
   line-height: 1.38;
   overflow-wrap: anywhere;
+}
+
+.post-source {
+  margin-top: 6px;
+  color: #71767b;
+  font-size: 13px;
+}
+
+.post-source a,
+.post-source span {
+  color: #71767b;
+}
+
+.post-source a::after {
+  content: " ↗";
+  font-size: 11px;
 }
 
 .post-details {
@@ -560,13 +571,13 @@ button {
 }
 
 .post-actions .start-inline {
-  min-height: 44px;
+  min-height: 38px;
   width: 100%;
-  padding: 0 18px;
+  padding: 0 14px;
   border-radius: 999px;
   color: #050608;
   background: #eff3f4;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 800;
 }
 
@@ -626,21 +637,6 @@ button {
 .icon-action.danger:hover,
 .icon-action.danger:focus-visible {
   color: #f4212e;
-}
-
-.top-button {
-  position: absolute;
-  z-index: 32;
-  right: 16px;
-  bottom: calc(env(safe-area-inset-bottom) + 92px);
-  width: 42px;
-  height: 42px;
-  border: 1px solid #2f3336;
-  border-radius: 999px;
-  color: #fff;
-  background: rgba(29, 155, 240, 0.94);
-  font-size: 20px;
-  font-weight: 900;
 }
 
 .dock {
