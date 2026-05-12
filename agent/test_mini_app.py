@@ -237,6 +237,60 @@ class MiniAppTest(unittest.TestCase):
         self.assertEqual(row["status"], "accepted")
         self.assertEqual(row["worker_topic_id"], 123)
 
+    def test_start_dispatch_custom_button_includes_card_context(self) -> None:
+        calls: list[tuple[str, dict]] = []
+        runs: list[tuple[tuple[int, int], str]] = []
+
+        class FakeBot:
+            def __init__(self, token: str, setup_token: str) -> None:
+                self.token = token
+                self.setup_token = setup_token
+
+            def call(self, method: str, **params: object) -> dict:
+                calls.append((method, dict(params)))
+                if method == "createForumTopic":
+                    return {"ok": True, "result": {"message_thread_id": 777}}
+                return {"ok": True, "result": {"message_id": 55}}
+
+            def run_task(
+                self,
+                key: tuple[int, int],
+                prompt: str,
+                reply_to: int | None = None,
+                sender: dict | None = None,
+            ) -> None:
+                del reply_to, sender
+                runs.append((key, prompt))
+
+        sys.modules["telegram_bot"] = types.SimpleNamespace(Bot=FakeBot)
+        with self.agency_db.conn() as db:
+            suggestion_id = self.agency_db.insert(
+                db,
+                title="Repost Saurav's n8n launch",
+                description="Slack signal: Saurav asked for reposts.",
+                source="slack-wall-channel-teammate-direct-repost-ask",
+                chat_id=100,
+                thread_id=0,
+                buttons=["🟢 QT - A1 default", "✏️ Show 3 variants", "❌ Skip"],
+            )
+
+        result = self.app._start_agent_work(
+            suggestion_id,
+            {"id": 42, "first_name": "Magnus"},
+            "✏️ Show 3 variants",
+        )
+        deadline = time.time() + 2
+        while not runs and time.time() < deadline:
+            time.sleep(0.02)
+
+        self.assertTrue(result["started"])
+        prompt = runs[0][1]
+        self.assertIn("[agency-button] ✏️ Show 3 variants", prompt)
+        self.assertIn("Title: Repost Saurav's n8n launch", prompt)
+        self.assertIn("Source: slack-wall-channel-teammate-direct-repost-ask", prompt)
+        self.assertIn("Slack signal: Saurav asked for reposts.", prompt)
+        self.assertIn("find the matching entry by source or title", prompt)
+
     def _request(self, url: str, *, method: str = "GET", body: dict | None = None) -> dict:
         data = None if body is None else json.dumps(body).encode()
         req = urllib.request.Request(

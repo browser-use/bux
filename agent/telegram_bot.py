@@ -51,6 +51,7 @@ import random
 import re
 import secrets
 import select
+import shutil
 import signal
 import sqlite3
 import struct
@@ -781,6 +782,82 @@ def _read_kv(path: Path) -> dict[str, str]:
         k, v = line.split("=", 1)
         out[k.strip()] = v.strip().strip('"').strip("'")
     return out
+
+
+def _write_tg_env_value(key: str, value: str) -> None:
+    lines = TG_ENV.read_text().splitlines() if TG_ENV.exists() else []
+    prefix = f"{key}="
+    out: list[str] = []
+    written = False
+    for line in lines:
+        if line.strip().startswith(prefix):
+            out.append(f"{key}={value}")
+            written = True
+        else:
+            out.append(line)
+    if not written:
+        out.append(f"{key}={value}")
+    TG_ENV.write_text("\n".join(out) + "\n")
+    _chmod_root_bux_640(TG_ENV)
+
+
+def _ensure_miniapp_public_url() -> tuple[str, str | None]:
+    url = os.environ.get("BUX_MINIAPP_PUBLIC_URL", "").strip()
+    if url:
+        if url.startswith("https://"):
+            return url, None
+        return "", "`BUX_MINIAPP_PUBLIC_URL` must start with https:// for Telegram."
+
+    cloudflared = shutil.which("cloudflared")
+    if not cloudflared:
+        return "", "Mini App needs an HTTPS URL. Install `cloudflared` or set `BUX_MINIAPP_PUBLIC_URL=https://...`."
+
+    try:
+        subprocess.run(["systemctl", "start", "bux-miniapp.service"], timeout=5, check=False)
+    except Exception:
+        LOG.exception("miniapp: failed to start bux-miniapp.service before tunnel")
+
+    try:
+        proc = subprocess.Popen(
+            [cloudflared, "tunnel", "--url", "http://127.0.0.1:8787", "--no-autoupdate"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+    except Exception as exc:
+        LOG.exception("miniapp: failed to start cloudflared")
+        return "", f"Mini App tunnel failed to start: {exc}"
+
+    deadline = time.time() + 15
+    seen = ""
+    assert proc.stderr is not None
+    while time.time() < deadline:
+        ready, _, _ = select.select([proc.stderr], [], [], 0.5)
+        if not ready:
+            if proc.poll() is not None:
+                break
+            continue
+        line = proc.stderr.readline()
+        if not line:
+            continue
+        seen += line
+        match = re.search(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", line)
+        if match:
+            url = match.group(0)
+            os.environ["BUX_MINIAPP_PUBLIC_URL"] = url
+            try:
+                _write_tg_env_value("BUX_MINIAPP_PUBLIC_URL", url)
+            except Exception:
+                LOG.exception("miniapp: failed to persist BUX_MINIAPP_PUBLIC_URL")
+            return url, None
+
+    try:
+        proc.terminate()
+    except Exception:
+        pass
+    detail = seen.strip().splitlines()[-1] if seen.strip() else "no URL emitted"
+    return "", f"Mini App tunnel did not produce an HTTPS URL ({detail})."
 
 
 # ---------------------------------------------------------------------------
@@ -3330,6 +3407,71 @@ def _agency_build_refine_context(sugg_row: dict) -> str:
     return "\n".join(parts)
 
 
+def _agency_build_custom_dispatch_prompt(
+    label: str, sender: dict, sugg_row: dict | None = None
+) -> str:
+    """Build the prompt delivered to the lane when a custom card button fires.
+
+    Custom agency buttons are intentionally semantic labels ("Show 3 variants",
+    "Reply in thread", "Send B") rather than full prompts. Include the stored
+    card row so the resumed agent can resolve what the label refers to without
+    asking the user to restate the card.
+    """
+    who = sender.get("username") or sender.get("first_name") or sender.get("id")
+    prompt = f"[agency-button] {label} (tapped by @{who})"
+    if sugg_row:
+        parts = ["\n\nAgency card context:"]
+        if sugg_row.get("id") is not None:
+            parts.append(f"Suggestion id: {sugg_row['id']}")
+        title = (sugg_row.get("title") or "").strip()
+        if title:
+            parts.append(f"Title: {title}")
+        source = (sugg_row.get("source") or "").strip()
+        if source:
+            parts.append(f"Source: {source}")
+        source_label = (sugg_row.get("source_label") or "").strip()
+        source_url = (sugg_row.get("source_url") or "").strip()
+        if source_label or source_url:
+            parts.append(f"Source link: {source_label or source_url} {source_url}".strip())
+        thread_id = sugg_row.get("tg_thread_id")
+        message_id = sugg_row.get("tg_message_id")
+        if thread_id or message_id:
+            parts.append(f"Telegram card: thread={thread_id or ''} message={message_id or ''}")
+        buttons_raw = sugg_row.get("buttons_json")
+        if buttons_raw:
+            try:
+                buttons = json.loads(buttons_raw)
+                if isinstance(buttons, list) and buttons:
+                    parts.append("Buttons shown: " + " | ".join(str(b) for b in buttons))
+            except Exception:
+                pass
+        description = (sugg_row.get("description") or "").strip()
+        if description:
+            parts.append(f"\nCard context:\n{description}")
+        action_prompt = (sugg_row.get("prompt") or "").strip()
+        if action_prompt:
+            parts.append(f"\nOriginal action prompt:\n{action_prompt}")
+        parts.append(
+            "\nUse the card context to execute the tapped button. If the label names "
+            "a path or variant that lives in the lane's local log/draft files, find "
+            "the matching entry by source or title before asking the user for more context."
+        )
+        prompt += "\n".join(parts)
+    low = label.lower()
+    if any(w in low for w in ("different", "differently")):
+        prompt += (
+            "\n\nThe user wants you to do this differently. Reply asking "
+            "what they would change, then wait for their next message."
+        )
+    elif any(w in low for w in ("rethink", "redo")):
+        prompt += (
+            "\n\nThe user wants you to rethink this suggestion. Re-evaluate "
+            "the underlying ask and propose a different approach as a fresh "
+            "suggestion (with new buttons via tg-buttons)."
+        )
+    return prompt
+
+
 class Bot:
     def __init__(self, token: str, setup_token: str) -> None:
         self.token = token
@@ -4039,19 +4181,11 @@ class Bot:
                                 reply_to=reply_to,
                                 sender=sender,
                             )
-                        # Codex isn't authed either → fall back to the
-                        # original Claude OAuth flow so the user can
-                        # actually sign in.
-                        owner = _owner_for(chat_id, self.state)
-                        self._cmd_claude_login(
-                            chat_id,
-                            reply_to,
-                            thread_id,
-                            slug,
-                            sender or {},
-                            owner,
-                            force_existing=True,
-                        )
+                        # Neither agent is authed. Do not dump raw
+                        # "not logged in; run login" CLI text into Telegram:
+                        # show the same two-button agent picker used for a
+                        # fresh box so the user can choose Codex or Claude.
+                        self._send_login_picker(chat_id, reply_to, thread_id)
                         return
                     self.send(
                         chat_id,
@@ -4442,13 +4576,8 @@ class Bot:
             f"Chat id: {chat_id}\n\n"
             "🔒 This bot is now locked to this chat only. Every other chat is "
             "silently dropped — even if someone discovers the bot handle.\n\n"
-            "Pick an agent to drive — `/claude login` for Claude (default), "
-            "or `/codex login` for Codex. The box also works without either "
-            "if you only need browser tools / Composio integrations.\n\n"
-            "Text me anything once you're signed in and I'll run it on your "
-            "bux. Want parallel work? Turn on Topics in this chat and each "
-            "topic becomes a separate agent session. Use `/codex` per-topic "
-            "to switch from claude.",
+            "Pick the agent you want to drive this box:",
+            reply_markup=_login_picker_reply_markup(),
         )
 
     def _auto_allow_chat(
@@ -5072,8 +5201,9 @@ class Bot:
                 "/claude — switch this topic to Claude\n"
                 "/claude login — sign in Claude through a terminal flow\n"
                 "/claude logout — sign out Claude\n"
+                "/agent — open the Mini App\n"
                 "/agent claude|codex — switch this topic to a different agent\n"
-                "/miniapp — open the goal card feed\n"
+                "/miniapp — open the Mini App\n"
                 "/live — live-view URL of the active browser\n"
                 "/queue — pending tasks in this topic\n"
                 "/cancel — kill the running task / terminal + drop "
@@ -5089,7 +5219,7 @@ class Bot:
                 thread_id=thread_id,
             )
             return
-        if cmd == "/miniapp":
+        if cmd == "/miniapp" or (cmd == "/agent" and not arg.strip()):
             if not owner or not _is_owner(sender, owner):
                 self.send(
                     chat_id,
@@ -5098,21 +5228,11 @@ class Bot:
                     thread_id=thread_id,
                 )
                 return
-            url = os.environ.get("BUX_MINIAPP_PUBLIC_URL", "").strip()
-            if not url:
+            url, url_error = _ensure_miniapp_public_url()
+            if url_error:
                 self.send(
                     chat_id,
-                    "Mini App backend is running locally on the box. Set "
-                    "`BUX_MINIAPP_PUBLIC_URL` to an HTTPS URL to open it in Telegram.",
-                    reply_to=mid,
-                    thread_id=thread_id,
-                    markdown=True,
-                )
-                return
-            if not url.startswith("https://"):
-                self.send(
-                    chat_id,
-                    "`BUX_MINIAPP_PUBLIC_URL` must start with https:// for Telegram.",
+                    url_error,
                     reply_to=mid,
                     thread_id=thread_id,
                     markdown=True,
@@ -6183,7 +6303,7 @@ class Bot:
         """
         self.send(
             chat_id,
-            "👋 To get started, sign in with one of these:",
+            "Not signed in yet. Pick an agent to connect:",
             reply_to=reply_to,
             thread_id=thread_id,
             reply_markup=_login_picker_reply_markup(),
@@ -6832,7 +6952,7 @@ class Bot:
                 original_labels=original_labels,
                 append_url_row=append_url_row,
             )
-            self._agency_dispatch_custom(chat_id, target_thread, label, sender)
+            self._agency_dispatch_custom(chat_id, target_thread, label, sender, sugg_row)
             return
 
         # Skip / dismiss: just delete the card from the channel. The
@@ -7040,26 +7160,18 @@ class Bot:
             LOG.exception("agency keyboard mark failed")
 
     def _agency_dispatch_custom(
-        self, chat_id: int, target_thread: int, label: str, sender: dict
+        self,
+        chat_id: int,
+        target_thread: int,
+        label: str,
+        sender: dict,
+        sugg_row: dict | None = None,
     ) -> None:
         """Custom-button behavior: dispatch a synthesized "[agency-button]
         LABEL (tapped by …)" message into the SAME topic so the agent
         receives the tap as if the user typed it. Labels containing
         "different" / "rethink" / "redo" get follow-up instructions."""
-        who = sender.get("username") or sender.get("first_name") or sender.get("id")
-        prompt = f"[agency-button] {label} (tapped by @{who})"
-        low = label.lower()
-        if any(w in low for w in ("different", "differently")):
-            prompt += (
-                "\n\nThe user wants you to do this differently. Reply asking "
-                "what they would change, then wait for their next message."
-            )
-        elif any(w in low for w in ("rethink", "redo")):
-            prompt += (
-                "\n\nThe user wants you to rethink this suggestion. Re-evaluate "
-                "the underlying ask and propose a different approach as a fresh "
-                "suggestion (with new buttons via tg-buttons)."
-            )
+        prompt = _agency_build_custom_dispatch_prompt(label, sender, sugg_row)
         try:
             self.run_task(
                 (chat_id, target_thread),

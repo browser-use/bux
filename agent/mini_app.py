@@ -377,6 +377,33 @@ def _is_default_action_button(label: str) -> bool:
     return normalized in {"yes", "yes new thread", "do it", "start"}
 
 
+def _custom_button_prompt(row: dict[str, Any], button_label: str) -> str:
+    parts = [f"[agency-button] {button_label}", "\nAgency card context:"]
+    if row.get("id") is not None:
+        parts.append(f"Suggestion id: {row['id']}")
+    title = (row.get("title") or "").strip()
+    if title:
+        parts.append(f"Title: {title}")
+    source = (row.get("source") or "").strip()
+    if source:
+        parts.append(f"Source: {source}")
+    buttons = _button_labels(row)
+    if buttons:
+        parts.append("Buttons shown: " + " | ".join(buttons))
+    description = (row.get("description") or "").strip()
+    if description:
+        parts.append(f"\nCard context:\n{description}")
+    prompt = (row.get("prompt") or "").strip()
+    if prompt:
+        parts.append(f"\nOriginal action prompt:\n{prompt}")
+    parts.append(
+        "\nUse the card context to execute the tapped button. If the label names "
+        "a path or variant that lives in the lane's local log/draft files, find "
+        "the matching entry by source or title before asking the user for more context."
+    )
+    return "\n".join(parts)
+
+
 def _clip_text(value: str, limit: int) -> str:
     text = " ".join((value or "").split())
     if len(text) <= limit:
@@ -984,7 +1011,7 @@ def _start_agent_work(
     prompt = (row.get("prompt") or "").strip()
     button_label = (button_label or "").strip()
     if button_label and not _is_default_action_button(button_label):
-        prompt = f"[agency-button] {button_label}" + (f"\n\n{prompt}" if prompt else "")
+        prompt = _custom_button_prompt(row, button_label)
     if not prompt:
         return {"started": False, "error": "card has no action prompt"}
     dispatch_prompt = _start_agent_prompt(row, prompt, button_label)

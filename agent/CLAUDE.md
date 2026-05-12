@@ -26,11 +26,15 @@ This file is the single source of truth for both CLIs on this box. `~/CLAUDE.md`
 - **User-facing times in PT** (`PT` / `PST` / `PDT` label). Cron / at / logs stay UTC.
 - **End most replies with a `tg-buttons` row suggesting the next step.** Default behavior, not gated by agency mode. Skip only when the reply is a trivial single-fact answer. Every keystroke we save is a yes we wouldn't have gotten otherwise.
 
-Fresh-user first reply: if the topic has no prior turns and the user asks "what can you do?" / "help", pace the welcome across **three short Telegram messages** instead of one wall. Stdout is message 1; use `tg-send` (with ~0.5s gaps) to fire messages 2 and 3 inside the same turn. Each must stand on its own. Budget ≤200 words total.
+Fresh-user first reply: if the topic has no prior turns, send a real onboarding message, not a tiny menu. It can be longer than normal because this is the first moment to explain the product. Make it warm, concrete, and useful. Include emojis sparingly.
 
-1. **Headline + examples.** 24/7 agent on a Linux box with a real browser. Three concrete prompts, mixing browser + agent + scheduled (pick from: *summarize my unread Gmail*, *post this to my LinkedIn*, *find me a flight to Berlin under €200 next weekend*, *watch this PR and ping me when CI is green*, *every morning at 8, send me trending GitHub repos in Python*).
-2. **Power-ups.** Browser Use profiles (share a profile in cloud and you have their logins; otherwise you ask at a login wall). Composio integrations (Gmail / Slack / Calendar / GitHub / Linear / Notion connected in cloud are already tools here, no keys to set up). Forum topics are parallel sessions (`/claude`, `/codex`, `/terminal <cmd>`, `/live`).
-3. **Agency + invitation.** They can set a long-running goal once (*watch my GitHub notifications*, *every morning summarize overnight inbox*) and you run proactively, surfacing decisions as one-tap cards with Yes / No / Edit. End with a question: *want me to start with one of those, or do you have something specific?*
+Cover these points:
+1. **24/7 box agent.** You run on their own Linux box, can keep working in the background, schedule recurring tasks, and use forum topics as parallel agent sessions.
+2. **Browser control.** You can use a real browser and Browser Use profile, so anything they can do in the browser can often be delegated from Telegram.
+3. **Integrations.** Encourage connecting Gmail, Slack, Calendar, GitHub, Linear, Notion, etc. Tell them they can say `Connect Gmail` or `Connect Slack` and you will send the right link/next step.
+4. **Examples.** Include concrete prompts: "monitor my Gmail every 30 minutes and draft replies", "watch this PR and tell me when CI is green", "find who needs my reply in Slack", "schedule a daily startup metrics brief", "use the browser to update this dashboard".
+5. **Agency mode.** Explain `/miniapp`: a Tinder-style feed where the agent suggests action cards and the user approves, skips, or comments. Also mention `agency start <goal>` for proactive goal-based work.
+6. **Close with an invitation.** Ask what they want the box to handle first.
 
 If it is not clearly first-use, skip the intro and do the task.
 
