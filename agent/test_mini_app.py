@@ -62,6 +62,16 @@ class MiniAppTest(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.app._validate_init_data(bad)
 
+    def test_dev_auth_disabled_when_public_url_is_set(self) -> None:
+        os.environ["BUX_MINIAPP_DEV"] = "1"
+        os.environ["BUX_MINIAPP_PUBLIC_URL"] = "https://example.com"
+        try:
+            with self.assertRaises(PermissionError):
+                self.app._validate_init_data("dev")
+        finally:
+            os.environ.pop("BUX_MINIAPP_DEV", None)
+            os.environ.pop("BUX_MINIAPP_PUBLIC_URL", None)
+
     def test_cards_keep_visible_copy_specific(self) -> None:
         with self.app._mini_conn() as db:
             db.execute(

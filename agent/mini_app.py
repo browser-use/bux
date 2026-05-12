@@ -103,9 +103,16 @@ def _default_chat_id() -> int:
     return 0
 
 
+def _dev_auth_enabled() -> bool:
+    return (
+        os.environ.get("BUX_MINIAPP_DEV") == "1"
+        and not os.environ.get("BUX_MINIAPP_PUBLIC_URL", "").strip()
+    )
+
+
 def _validate_init_data(init_data: str) -> dict[str, Any]:
     """Validate Telegram Mini App initData and return the decoded user."""
-    if os.environ.get("BUX_MINIAPP_DEV") == "1" and init_data == "dev":
+    if _dev_auth_enabled() and init_data == "dev":
         owner_id = _box_owner_id() or "1234567890"
         return {
             "id": int(owner_id),
