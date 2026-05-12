@@ -496,16 +496,17 @@ button {
 }
 
 .post-actions {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(178px, 56%);
-  align-items: start;
-  gap: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 14px;
   min-height: 42px;
   margin-top: 14px;
 }
 
 .post-actions.no-primary {
-  grid-template-columns: 1fr;
+  justify-content: flex-start;
 }
 
 .post-actions.no-primary .primary-actions {
@@ -581,6 +582,7 @@ button {
 }
 
 .secondary-actions {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 18px;
@@ -588,11 +590,12 @@ button {
 }
 
 .primary-actions {
+  flex: 1 1 174px;
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 6px;
-  max-width: 230px;
+  min-width: min(100%, 174px);
 }
 
 .post-actions .start-inline {
