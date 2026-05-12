@@ -690,6 +690,20 @@ button {
   font-size: 14px;
 }
 
+.end-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 14px;
+}
+
+.create-goal.secondary {
+  color: #e7e9ea;
+  background: transparent;
+  border: 1px solid #2f3336;
+}
+
 .icon-action svg {
   width: 19px;
   height: 19px;
@@ -1054,6 +1068,12 @@ button {
   background: #1d9bf0;
   font-size: 14px;
   font-weight: 800;
+}
+
+.empty .create-goal.secondary {
+  color: #e7e9ea;
+  background: transparent;
+  border: 1px solid #2f3336;
 }
 
 .toast {

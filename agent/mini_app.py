@@ -147,6 +147,8 @@ def _mini_conn() -> sqlite3.Connection:
           context TEXT NOT NULL DEFAULT '',
           cadence TEXT NOT NULL DEFAULT '',
           status TEXT NOT NULL DEFAULT 'active',
+          tg_chat_id INTEGER,
+          tg_thread_id INTEGER,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         );
@@ -183,6 +185,15 @@ def _mini_conn() -> sqlite3.Connection:
         );
         """
     )
+    for ddl in (
+        "ALTER TABLE goals ADD COLUMN tg_chat_id INTEGER",
+        "ALTER TABLE goals ADD COLUMN tg_thread_id INTEGER",
+    ):
+        try:
+            db.execute(ddl)
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
     db.commit()
     return db
 
@@ -570,6 +581,92 @@ def _settings() -> dict[str, str]:
         return {str(row["key"]): str(row["value"]) for row in db.execute("SELECT * FROM settings")}
 
 
+def _can_create_telegram_topics() -> bool:
+    return os.environ.get("BUX_MINIAPP_DEV") != "1" and MINI_DB == Path("/var/lib/bux/miniapp.db")
+
+
+def _goal_agent_prompt(
+    title: str,
+    context: str,
+    cadence: str = "",
+    *,
+    mode: str = "initial",
+) -> str:
+    count = "10 more" if mode == "more" else "10"
+    header = "Generate more Mini App action items." if mode == "more" else "Mini App goal created."
+    cadence_line = f"\nCadence or schedule mentioned by the user: {cadence}" if cadence else ""
+    return (
+        f"{header}\n\n"
+        f"Goal: {title}\n\n"
+        f"User context:\n{context or title}"
+        f"{cadence_line}\n\n"
+        "Use the Agency skill and /opt/bux/repo/agent/AGENCY.md. "
+        f"Scan the user's available context and generate {count} high-signal action items for this goal. "
+        "Post them as Agency cards using the normal agency-report/agency-card flow so they appear in the Mini App feed. "
+        "Keep each card short, concrete, and easy to swipe. Prefer real useful images when available. "
+        "If the user mentioned a schedule, set up or propose the recurring monitoring cadence instead of treating it as a one-off."
+    )
+
+
+def _topic_generate_prompt(thread_id: int, title: str) -> str:
+    recent: list[str] = []
+    with agency_db.conn() as db:
+        rows = db.execute(
+            """
+            SELECT title FROM suggestions
+             WHERE tg_thread_id = ?
+             ORDER BY id DESC
+             LIMIT 12
+            """,
+            (thread_id,),
+        ).fetchall()
+        recent = [str(row["title"] or "").strip() for row in rows if str(row["title"] or "").strip()]
+    context = "\n".join(f"- {item}" for item in recent[:8]) or "- No existing cards in this topic yet."
+    return (
+        "Generate more Mini App action items.\n\n"
+        f"Topic: {title}\n"
+        f"Existing recent cards:\n{context}\n\n"
+        "Use the Agency skill and /opt/bux/repo/agent/AGENCY.md. "
+        "The user explicitly wants more cards/action items for this topic. "
+        "Generate 10 more high-signal cards through the normal agency-report/agency-card flow so they appear in the Mini App feed."
+    )
+
+
+def _ensure_goal_topic(goal_id: int, title: str) -> tuple[int, int]:
+    with _mini_conn() as db:
+        row = db.execute(
+            "SELECT tg_chat_id, tg_thread_id FROM goals WHERE id = ?",
+            (goal_id,),
+        ).fetchone()
+        if row and int(row["tg_chat_id"] or 0) and int(row["tg_thread_id"] or 0):
+            return int(row["tg_chat_id"]), int(row["tg_thread_id"])
+    chat_id = _default_chat_id()
+    if not chat_id or not _can_create_telegram_topics():
+        return 0, 0
+    try:
+        import telegram_bot
+
+        env = _tg_env()
+        bot = telegram_bot.Bot(env["TG_BOT_TOKEN"], env.get("TG_SETUP_TOKEN", ""))
+        res = bot.call("createForumTopic", chat_id=chat_id, name=title[:128])
+        if not res.get("ok"):
+            return 0, 0
+        thread_id = int(res["result"].get("message_thread_id") or 0)
+        if not thread_id:
+            return 0, 0
+        _upsert_topic(chat_id, thread_id, title, "miniapp-goal")
+        with _mini_conn() as db:
+            db.execute(
+                "UPDATE goals SET tg_chat_id = ?, tg_thread_id = ?, updated_at = ? WHERE id = ?",
+                (chat_id, thread_id, _now(), goal_id),
+            )
+            db.commit()
+        return chat_id, thread_id
+    except Exception as exc:
+        print(f"bux-miniapp: goal topic create failed: {exc}", file=sys.stderr)
+        return 0, 0
+
+
 def _append_event(suggestion_id: int, event: str, user: dict[str, Any], detail: str = "") -> None:
     with _mini_conn() as db:
         db.execute(
@@ -588,19 +685,20 @@ def _dispatch_topic_context(
     comment: str,
     user: dict[str, Any],
     reply_to: int | None = None,
+    heading: str = "Context from Mini App",
 ) -> bool:
-    if not chat_id or not thread_id or not comment:
+    if not chat_id or not comment:
         return False
     try:
         import telegram_bot
 
         env = _tg_env()
         bot = telegram_bot.Bot(env["TG_BOT_TOKEN"], env.get("TG_SETUP_TOKEN", ""))
-        text = "Context from Mini App:\n" + comment
+        text = f"{heading}:\n" + comment
         sent = bot.call(
             "sendMessage",
             chat_id=chat_id,
-            message_thread_id=thread_id,
+            message_thread_id=thread_id or None,
             text=text,
             reply_parameters={"message_id": reply_to} if reply_to else None,
         )
@@ -631,6 +729,8 @@ def _dispatch_topic_context(
 def _dispatch_card_context(row: dict[str, Any], comment: str, user: dict[str, Any]) -> bool:
     chat_id = int(row.get("tg_chat_id") or 0) or _default_chat_id()
     thread_id = int(row.get("worker_topic_id") or row.get("tg_thread_id") or 0)
+    if not thread_id:
+        return False
     source_thread_id = int(row.get("tg_thread_id") or 0)
     reply_to = int(row.get("tg_message_id") or 0) if thread_id == source_thread_id else None
     return _dispatch_topic_context(chat_id, thread_id, comment, user, reply_to=reply_to)
@@ -834,6 +934,7 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return
                 now = _now()
                 active_id = ""
+                dispatched = False
                 with _mini_conn() as db:
                     cur = db.execute(
                         """
@@ -844,22 +945,21 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     )
                     db.commit()
                     goal_id = int(cur.lastrowid)
-                chat_id = _default_chat_id()
-                if chat_id and os.environ.get("BUX_MINIAPP_DEV") != "1" and MINI_DB == Path("/var/lib/bux/miniapp.db"):
-                    try:
-                        import telegram_bot
-
-                        env = _tg_env()
-                        bot = telegram_bot.Bot(env["TG_BOT_TOKEN"], env.get("TG_SETUP_TOKEN", ""))
-                        res = bot.call("createForumTopic", chat_id=chat_id, name=title[:128])
-                        if res.get("ok"):
-                            thread_id = int(res["result"].get("message_thread_id") or 0)
-                            if thread_id:
-                                _upsert_topic(chat_id, thread_id, title, "miniapp-goal")
-                                active_id = f"topic:{thread_id}"
-                    except Exception as exc:
-                        print(f"bux-miniapp: goal topic create failed: {exc}", file=sys.stderr)
-                _json_response(self, 200, {"ok": True, "goal_id": goal_id, "active_id": active_id})
+                chat_id, thread_id = _ensure_goal_topic(goal_id, title)
+                if chat_id and thread_id:
+                    active_id = f"topic:{thread_id}"
+                    dispatched = _dispatch_topic_context(
+                        chat_id,
+                        thread_id,
+                        _goal_agent_prompt(title, context, cadence),
+                        user,
+                        heading="Mini App goal created",
+                    )
+                _json_response(
+                    self,
+                    200,
+                    {"ok": True, "goal_id": goal_id, "active_id": active_id, "dispatched": dispatched},
+                )
                 return
             if parsed.path == "/api/settings":
                 provider = (body.get("provider") or "").strip().lower()
@@ -877,7 +977,10 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     _json_response(self, 400, {"error": "comment required"})
                     return
                 with _mini_conn() as db:
-                    row = db.execute("SELECT context FROM goals WHERE id = ?", (goal_id,)).fetchone()
+                    row = db.execute(
+                        "SELECT title, context, cadence FROM goals WHERE id = ?",
+                        (goal_id,),
+                    ).fetchone()
                     if not row:
                         _json_response(self, 404, {"error": "goal not found"})
                         return
@@ -888,7 +991,72 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                         (updated, _now(), goal_id),
                     )
                     db.commit()
-                _json_response(self, 200, {"ok": True})
+                title = str(row["title"] or "Mini App goal")
+                cadence = str(row["cadence"] or "")
+                chat_id, thread_id = _ensure_goal_topic(goal_id, title)
+                dispatched = False
+                if chat_id and thread_id:
+                    dispatched = _dispatch_topic_context(
+                        chat_id,
+                        thread_id,
+                        _goal_agent_prompt(title, updated, cadence),
+                        user,
+                        heading="Mini App goal context added",
+                    )
+                _json_response(self, 200, {"ok": True, "dispatched": dispatched})
+                return
+            if len(path) == 4 and path[:2] == ["api", "goals"] and path[3] == "generate":
+                goal_id = int(path[2])
+                with _mini_conn() as db:
+                    row = db.execute(
+                        "SELECT title, context, cadence FROM goals WHERE id = ?",
+                        (goal_id,),
+                    ).fetchone()
+                if not row:
+                    _json_response(self, 404, {"error": "goal not found"})
+                    return
+                title = str(row["title"] or "Mini App goal")
+                chat_id, thread_id = _ensure_goal_topic(goal_id, title)
+                dispatched = False
+                if chat_id and thread_id:
+                    dispatched = _dispatch_topic_context(
+                        chat_id,
+                        thread_id,
+                        _goal_agent_prompt(
+                            title,
+                            str(row["context"] or ""),
+                            str(row["cadence"] or ""),
+                            mode="more",
+                        ),
+                        user,
+                        heading="Mini App generate more",
+                    )
+                _json_response(self, 200, {"ok": True, "dispatched": dispatched})
+                return
+            if len(path) == 4 and path[:2] == ["api", "topics"] and path[3] == "generate":
+                thread_id = int(path[2])
+                chat_id = _default_chat_id()
+                topic = next((item for item in _topics() if int(item.get("thread_id") or 0) == thread_id), None)
+                title = str((topic or {}).get("title") or _topic_title(chat_id, thread_id) or f"Topic {thread_id}")
+                dispatched = _dispatch_topic_context(
+                    chat_id,
+                    thread_id,
+                    _topic_generate_prompt(thread_id, title),
+                    user,
+                    heading="Mini App generate more",
+                )
+                _json_response(self, 200, {"ok": True, "dispatched": dispatched})
+                return
+            if parsed.path == "/api/generate":
+                chat_id = _default_chat_id()
+                dispatched = _dispatch_topic_context(
+                    chat_id,
+                    0,
+                    _goal_agent_prompt("General Agency feed", "Generate fresh action items for Magnus.", mode="more"),
+                    user,
+                    heading="Mini App generate more",
+                )
+                _json_response(self, 200, {"ok": True, "dispatched": dispatched})
                 return
             if len(path) >= 4 and path[:2] == ["api", "cards"]:
                 suggestion_id = int(path[2])

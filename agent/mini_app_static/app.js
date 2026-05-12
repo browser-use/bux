@@ -114,11 +114,15 @@ function render() {
         <div>
           <h1>${escapeHtml(title)}</h1>
           <p>${escapeHtml(copy)}</p>
-          <button class="create-goal" type="button" data-open-goal>${active ? "Add context" : "Create goal"}</button>
+          <div class="end-actions">
+            <button class="create-goal" type="button" data-open-goal>${active ? "Add context" : "Create goal"}</button>
+            ${active ? `<button class="create-goal secondary" type="button" data-generate-more>Generate more</button>` : ""}
+          </div>
         </div>
       </article>
     `;
     els.feed.querySelector("[data-open-goal]").addEventListener("click", openGoal);
+    els.feed.querySelector("[data-generate-more]")?.addEventListener("click", generateMore);
     syncDock();
     return;
   }
@@ -136,10 +140,14 @@ function renderEndCard() {
   article.innerHTML = `
     <div>
       <strong>Tell me your goals so I know what to work on next.</strong>
-      <button class="create-goal" type="button">Give context</button>
+      <div class="end-actions">
+        <button class="create-goal" type="button" data-end-context>Give context</button>
+        <button class="create-goal secondary" type="button" data-generate-more>Generate more</button>
+      </div>
     </div>
   `;
-  article.querySelector("button").addEventListener("click", openEndContext);
+  article.querySelector("[data-end-context]").addEventListener("click", openEndContext);
+  article.querySelector("[data-generate-more]").addEventListener("click", generateMore);
   return article;
 }
 
@@ -760,6 +768,22 @@ function openEndContext() {
   openGoal();
 }
 
+async function generateMore() {
+  try {
+    if (state.activeGoalId.startsWith("topic:")) {
+      const topicId = state.activeGoalId.slice("topic:".length);
+      await api(`/api/topics/${topicId}/generate`, { method: "POST", body: "{}" });
+    } else if (state.activeGoalId !== "all") {
+      await api(`/api/goals/${state.activeGoalId}/generate`, { method: "POST", body: "{}" });
+    } else {
+      await api("/api/generate", { method: "POST", body: "{}" });
+    }
+    toast("Asked Agency for more action items.");
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
 async function openInlineContext(id) {
   state.openContextCardId = String(id);
   if (!state.comments[id]) {
@@ -875,7 +899,7 @@ els.goalForm.addEventListener("submit", async (event) => {
     els.goalDialog.close();
     closeDrawer();
     await load();
-    toast("Goal created.");
+    toast(result.dispatched ? "Goal created. Agency is generating action items." : "Goal created.");
   } catch (error) {
     toast(error.message);
   }
@@ -909,7 +933,7 @@ els.contextForm.addEventListener("submit", async (event) => {
     state.contextTarget = null;
     els.contextDialog.close();
     await refreshStats();
-    toast("Context sent.");
+    toast("Context sent. Agency is working on action items.");
   } catch (error) {
     toast(error.message);
   }
