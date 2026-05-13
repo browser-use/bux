@@ -183,6 +183,9 @@ function actionsHtml(buttons, hasAction) {
         <button class="round no" data-delete type="button" aria-label="Skip">${xSvg()}</button>
         <button class="round comment" data-comment type="button" aria-label="Comment">${commentSvg()}</button>
       </div>
+      <form class="inline-comment" data-comment-form>
+        <input data-comment-input type="text" autocomplete="off" placeholder="Add context..." />
+      </form>
       <div class="choices">
         ${buttons.map((button) => `<button class="choice" data-start data-button="${escapeAttr(button.raw)}">${escapeHtml(button.text)}</button>`).join("")}
       </div>
@@ -193,7 +196,8 @@ function actionsHtml(buttons, hasAction) {
 function bindCard(card) {
   const item = els.deck.querySelector(".card");
   els.deck.querySelectorAll("[data-delete]").forEach((button) => button.addEventListener("click", () => dismissCard(card.id, item)));
-  els.deck.querySelectorAll("[data-comment]").forEach((button) => button.addEventListener("click", openContext));
+  els.deck.querySelectorAll("[data-comment]").forEach((button) => button.addEventListener("click", () => openInlineComment(item)));
+  els.deck.querySelectorAll("[data-comment-form]").forEach((form) => form.addEventListener("submit", (event) => sendInlineComment(event, card, item)));
   els.deck.querySelectorAll("[data-start]").forEach((button) => button.addEventListener("click", () => startCard(card.id, button.dataset.button || "", item)));
   let startX = 0;
   let startY = 0;
@@ -265,9 +269,19 @@ function blocksHtml(card) {
 }
 
 function sourceInline(card) {
-  const url = card.source_url || firstUrl([card.title, card.why].join(" "));
+  const url = displaySourceUrl(card) || firstUrl([card.title, card.why].join(" "));
   if (!url) return "";
   return ` · <a class="source-link" href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(card.source_label || "Source")}</a>`;
+}
+
+function displaySourceUrl(card) {
+  const url = String(card.source_url || "").trim();
+  if (!url) return "";
+  const host = sourceHost(url);
+  const labelText = [card.source_label, card.source, card.title, card.why].join(" ").toLowerCase();
+  const genericBuxRepo = host === "github.com" && /github\.com\/browser-use\/bux\/?$/i.test(url);
+  if (genericBuxRepo && !/\b(github|pull request|pr #|repo|issue)\b/i.test(labelText)) return "";
+  return url;
 }
 
 function firstUrl(value) {
@@ -293,9 +307,18 @@ function buttonText(label) {
 }
 
 function sourceMeta(card) {
-  const host = sourceHost(card.source_url);
+  const url = displaySourceUrl(card);
+  const host = sourceHost(url);
   const brands = [
     ["producthunt.com", "Product Hunt", "producthunt.com"],
+    ["product hunt", "Product Hunt", "producthunt.com"],
+    ["linkedin.com", "LinkedIn", "linkedin.com"],
+    ["linkedin", "LinkedIn", "linkedin.com"],
+    ["news.ycombinator.com", "Hacker News", "news.ycombinator.com"],
+    ["hacker news", "Hacker News", "news.ycombinator.com"],
+    ["show hn", "Hacker News", "news.ycombinator.com"],
+    ["bookface", "YC", "ycombinator.com"],
+    ["ycombinator.com", "YC", "ycombinator.com"],
     ["mail.google.com", "Gmail", "mail.google.com"],
     ["gmail", "Gmail", "mail.google.com"],
     ["slack.com", "Slack", "slack.com"],
@@ -309,9 +332,15 @@ function sourceMeta(card) {
     ["x.com", "X", "x.com"],
     ["twitter.com", "X", "x.com"],
     ["tweet", "X", "x.com"],
+    ["linear.app", "Linear", "linear.app"],
+    ["linear", "Linear", "linear.app"],
+    ["datadoghq.com", "Datadog", "datadoghq.com"],
+    ["datadog", "Datadog", "datadoghq.com"],
   ];
-  const sourceText = [host, card.source_label, card.source, card.title].join(" ").toLowerCase();
-  const found = brands.find(([needle]) => sourceText.includes(needle));
+  const explicitText = [card.source_label, card.source, card.title, card.why].join(" ").toLowerCase();
+  const explicit = brands.find(([needle]) => explicitText.includes(needle));
+  if (explicit) return { name: explicit[1], domain: explicit[2], mark: explicit[1][0] };
+  const found = brands.find(([needle]) => host.toLowerCase().includes(needle));
   if (found) return { name: found[1], domain: found[2], mark: found[1][0] };
   const name = String(card.source || "Agency").split("-").filter(Boolean).slice(0, 2).join(" ") || "Agency";
   return { name: titleCase(name), mark: initials(name) };
@@ -397,6 +426,31 @@ function removeLocal(id) {
 function openContext() {
   els.sheet.showModal();
   els.input.focus({ preventScroll: true });
+}
+
+function openInlineComment(item) {
+  const form = item?.querySelector("[data-comment-form]");
+  const input = item?.querySelector("[data-comment-input]");
+  if (!form || !input) return openContext();
+  form.classList.add("open");
+  input.focus({ preventScroll: true });
+}
+
+async function sendInlineComment(event, card, item) {
+  event.preventDefault();
+  const input = item?.querySelector("[data-comment-input]");
+  const comment = input?.value.trim() || "";
+  if (!comment) return;
+  input.disabled = true;
+  toast("Refining it...");
+  try {
+    await api(`/api/cards/${card.id}/comment`, { method: "POST", body: JSON.stringify({ comment }) });
+    input.value = "";
+    removeLocal(card.id);
+  } catch (error) {
+    input.disabled = false;
+    toast(error.message);
+  }
 }
 
 async function sendContext(event) {
@@ -532,6 +586,9 @@ async function refresh(options = {}) {
 
 try {
   await refresh();
+  setInterval(() => {
+    refresh().catch((error) => toast(error.message));
+  }, 15000);
 } catch (error) {
   els.deck.innerHTML = `<article class="empty"><strong>Login failed</strong><p>${escapeHtml(error.message)}</p></article>`;
 }

@@ -46,6 +46,8 @@ Every generator cycle reads:
 
 The generator runs on a cadence, default hourly unless the user chose another schedule. It should continuously monitor connected context, generate cards that are concrete to the user's goals, and learn from every tap. If the user repeatedly skips a theme, record that as a preference and stop repitching it with different wording.
 
+On a fresh box, Agency is active by default. The bot should nudge the user toward goals, connections, and useful starter cards without waiting for the user to discover the mode. Default heartbeat: every 30 minutes. On each heartbeat, read the goals file and DB history, observe connected context, ask for missing goals/access when needed, and create cards when there is a concrete useful action.
+
 **Be ruthlessly proactive.** Don't ask "should I look?" — look. Don't ask "want me to draft?" — draft, attach, ask `send?`. Don't ask "which option?" — show 2-3 as variant buttons. Maximize accepted suggestions per tap.
 
 Do all reversible/private work before the card. Draft the reply, inspect the PR, fetch the screenshot, prepare the launch copy, query the dashboard, or build the asset. Stop only at the visible boundary where another person, public system, money, or irreversible state would be affected.
@@ -249,6 +251,20 @@ agency-report --emoji "✍️" \
 
 **Hard rule for reply/message cards:** create 3 contrasting options by default (for example yes / no / neutral, or warm / terse / technical). Each option must be its own `--block`, and each option must have a matching `--button` (`Send A`, `Send B`, `Send C`). A card with variant buttons but no matching expandable variant blocks is invalid.
 
+### Source and icon correctness
+
+`--source-label` and `--source-url` must describe the real object the card acts on. Never use the bux repo URL as a generic source for a LinkedIn, X, Reddit, Gmail, Slack, Bookface, Product Hunt, Datadog, or browser action card.
+
+Examples:
+
+- LinkedIn draft -> `--source-label "LinkedIn draft"` and no URL unless you have the actual LinkedIn URL.
+- X thread -> `--source-label "X draft"` and actual X URL only if real.
+- Reddit post -> subreddit/thread URL.
+- GitHub PR/issue/repo -> GitHub URL.
+- Local/generated asset -> source label like `Bux demo clip` and the asset path in a block, not a fake source URL.
+
+The Mini App icon is derived from this metadata. Wrong source metadata makes the feed look wrong and trains the user not to trust it.
+
 ### Build the asset before posting
 
 If the action is "make a video / chart / screenshot / draft", **build it first**, attach to the card, ask Yes/No on whether to *publish*. Never `should I make a video?` — by the time the card lands, the asset must already exist.
@@ -443,7 +459,7 @@ Check each topic's brief before drafting.
 
 When a Mini App card is accepted, start a fresh worker session for that card. The goal topic remains the generator lane. If the user accepts 10 cards from one goal, that creates 10 worker sessions tied back to the same goal and card history. The generator should still learn from their outcomes before creating the next batch.
 
-When you receive an accepted Mini App card, treat the card as a full ticket. Read the title, why-it-matters sentence, source, expandable sections, and picked button before acting. If the ticket is a bigger project or recurring monitor, create a dedicated Telegram topic and send the agent there; otherwise keep working in the current goal session.
+When you receive an accepted Mini App card, treat the card as a full ticket. Read the title, why-it-matters sentence, source, expandable sections, media, comments, and picked button before acting. The Mini App and Telegram cards are two views of the same `agency.db` row: Telegram button taps and Mini App taps must both update the row status/decision so the other view stops showing stale pending cards.
 
 If a worker needs more user input, do not lose the original ticket. Create a follow-up Agency card linked to the same task/version family. The Mini App should show the newest version first and let the user inspect older versions/comments. A fully completed task can end with an info card and an acknowledgement button.
 

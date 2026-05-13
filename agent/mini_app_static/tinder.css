@@ -407,6 +407,35 @@ details a {
   background: rgba(29, 155, 240, 0.12);
 }
 
+.inline-comment {
+  display: none;
+  min-width: 0;
+}
+
+.inline-comment.open {
+  display: block;
+}
+
+.inline-comment.open + .choices {
+  display: none;
+}
+
+.inline-comment input {
+  width: 100%;
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ink);
+  background: #101214;
+  outline: none;
+}
+
+.inline-comment input:focus {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgba(29, 155, 240, 0.16);
+}
+
 .choices {
   display: flex;
   flex-wrap: wrap;

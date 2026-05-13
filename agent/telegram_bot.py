@@ -4610,6 +4610,7 @@ class Bot:
             "Pick the agent you want to drive this box:",
             reply_markup=_login_picker_reply_markup(),
         )
+        self._ensure_default_agency_heartbeat(chat_id)
 
     def _auto_allow_chat(
         self,
@@ -4639,6 +4640,52 @@ class Bot:
                 )
             except Exception:
                 LOG.exception("auto-allow welcome send failed for chat_id=%s", chat_id)
+        self._ensure_default_agency_heartbeat(chat_id)
+
+    def _ensure_default_agency_heartbeat(self, chat_id: int) -> None:
+        """Schedule the first Agency heartbeat once per allowed chat.
+
+        The heartbeat prompt asks the agent to reschedule itself. This keeps
+        Agency proactive by default without adding another always-on worker.
+        """
+        key = str(chat_id)
+        heartbeats = self.state.setdefault("agency_heartbeats", {})
+        if heartbeats.get(key):
+            return
+        prompt = (
+            "Agency heartbeat. Use /opt/bux/repo/agent/AGENCY.md. "
+            "Read /opt/bux/repo/private/goals.md and /var/lib/bux/agency.db. "
+            "If the user has no clear goals, ask one short goal question or create high-level goal cards. "
+            "If goals are clear, observe connected context and create concrete Agency cards in Telegram and the Mini App. "
+            "Avoid duplicates and skipped ideas. Schedule your next heartbeat for +30 minutes."
+        )
+        env = os.environ.copy()
+        env["TG_CHAT_ID"] = str(chat_id)
+        env["TG_THREAD_ID"] = "0"
+        try:
+            result = subprocess.run(
+                [
+                    "/usr/local/bin/tg-schedule",
+                    "+30 minutes",
+                    "--fresh",
+                    "--name",
+                    "Agency heartbeat",
+                    prompt,
+                ],
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                heartbeats[key] = {"scheduled_at": int(time.time()), "cadence": "30m"}
+                save_state(self.state)
+                LOG.info("agency heartbeat scheduled for chat_id=%s: %s", chat_id, result.stdout.strip())
+            else:
+                LOG.warning("agency heartbeat schedule failed for chat_id=%s: %s", chat_id, result.stdout.strip())
+        except Exception:
+            LOG.exception("agency heartbeat schedule failed for chat_id=%s", chat_id)
 
     def _handle_my_chat_member(self, update: dict) -> None:
         """React to the bot's own membership changing in some chat.

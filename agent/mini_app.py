@@ -933,6 +933,7 @@ def _goal_agent_prompt(
         "but still ground every card in real context and a specific action. "
         "Post them as Agency cards in this same Telegram topic using the normal agency-report/agency-card flow "
         "so they appear in the Mini App feed for this topic. "
+        "Set source_label/source_url to the real platform object; never use https://github.com/browser-use/bux as a generic source for non-GitHub cards. "
         "Keep each card short, concrete, and easy to swipe. Prefer real useful images when available. "
         "If the user mentioned a schedule, set up or propose the recurring monitoring cadence instead of treating it as a one-off."
     )
@@ -967,6 +968,7 @@ def _topic_generate_prompt(thread_id: int, title: str) -> str:
         "The user explicitly wants more cards/action items for this topic. "
         "Treat this topic as a generator lane. Read the private goals and the existing card history, learn from skipped/accepted decisions, and avoid duplicates. "
         "Do not generate generic channel/workflow ideas. Each card must name a specific person, company, thread, repo, PR, incident, signup, page, post, or file and explain why it moves the topic goal. "
+        "Set source_label/source_url to the real platform object; never use the bux GitHub repo URL as a generic source for non-GitHub cards. "
         "If the topic goal is unclear, generate high-level goal-lock cards or ask one short clarifying goal question instead of posting filler. "
         "Generate 10 more high-signal cards in this same Telegram topic through the normal agency-report/agency-card flow "
         "so they appear in the Mini App feed for this topic."
