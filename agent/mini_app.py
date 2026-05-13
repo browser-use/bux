@@ -606,6 +606,42 @@ STARTER_IDEAS: list[dict[str, Any]] = [
         "buttons": ["Start this"],
         "image_text": "NEXT MOVES\nstartup + health",
     },
+    {
+        "source": "miniapp-starter:github-prs",
+        "title": "GitHub: find PRs and issues I should unblock",
+        "description": "Watch open work, summarize what matters, and suggest the next concrete merge or review.",
+        "prompt": (
+            "Starter idea accepted from the Mini App.\n\n"
+            "Inspect connected GitHub repositories for PRs, issues, failing checks, and stale reviews where the user can unblock progress. "
+            "Create concise Agency cards with the exact next action and enough context to approve or skip."
+        ),
+        "buttons": ["Start this"],
+        "image_text": "GITHUB RADAR\nmerge + review",
+    },
+    {
+        "source": "miniapp-starter:browser-automation",
+        "title": "Browser: automate repetitive web tasks",
+        "description": "Turn recurring browser chores into cards the user can approve before the agent runs them.",
+        "prompt": (
+            "Starter idea accepted from the Mini App.\n\n"
+            "Ask what browser workflows the user repeats, then propose useful automations as Agency cards. "
+            "For each card, explain the website, the exact action, and what confirmation is needed before running it."
+        ),
+        "buttons": ["Start this"],
+        "image_text": "BROWSER TASKS\nautomate chores",
+    },
+    {
+        "source": "miniapp-starter:weekly-planning",
+        "title": "Planning: turn my week into action cards",
+        "description": "Look at priorities, reminders, and connected context, then propose focused next steps.",
+        "prompt": (
+            "Starter idea accepted from the Mini App.\n\n"
+            "Help the user plan the week from connected context, reminders, messages, and stated goals. "
+            "Create Agency cards for the highest-leverage actions, each short enough to decide on quickly."
+        ),
+        "buttons": ["Start this"],
+        "image_text": "WEEKLY PLAN\nfocus cards",
+    },
 ]
 
 
@@ -929,6 +965,9 @@ def _dispatch_topic_context(
 
         env = _tg_env()
         bot = telegram_bot.Bot(env["TG_BOT_TOKEN"], env.get("TG_SETUP_TOKEN", ""))
+        provider = (_settings().get("provider") or "").strip().lower()
+        if provider in {"codex", "claude"} and hasattr(telegram_bot, "_set_agent_for"):
+            telegram_bot._set_agent_for((chat_id, thread_id), provider, bot.state)
         text = f"{heading}:\n" + comment
         sent = bot.call(
             "sendMessage",
@@ -1040,6 +1079,9 @@ def _start_agent_work(
                 work_thread = int(res["result"].get("message_thread_id") or thread_id)
                 topic_created = True
                 _upsert_topic(chat_id, work_thread, topic_name, "miniapp-start")
+        provider = (_settings().get("provider") or "").strip().lower()
+        if provider in {"codex", "claude"} and hasattr(telegram_bot, "_set_agent_for"):
+            telegram_bot._set_agent_for((chat_id, work_thread), provider, bot.state)
         with agency_db.conn() as db:
             if row.get("tg_chat_id") and row.get("tg_message_id"):
                 agency_db.record_decision(

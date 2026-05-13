@@ -247,7 +247,6 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("enter", "send Enter to the active terminal session"),
     ("eof", "send Ctrl-D to the active terminal session"),
     ("compact", "summarize this topic's session to free up context"),
-    ("agent", "switch this topic's agent (claude|codex)"),
     ("claude", "switch/login/logout Claude"),
     ("codex", "switch/login/logout Codex"),
     ("fast", "switch this topic's Codex lane to fast mode"),
@@ -802,21 +801,64 @@ def _write_tg_env_value(key: str, value: str) -> None:
     _chmod_root_bux_640(TG_ENV)
 
 
+def _start_miniapp_service() -> None:
+    try:
+        subprocess.run(
+            ["systemctl", "start", "bux-miniapp.service"],
+            timeout=5,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        LOG.exception("miniapp: failed to start bux-miniapp.service before launch")
+
+
+def _miniapp_local_error() -> str | None:
+    deadline = time.time() + 5
+    last = ""
+    while time.time() < deadline:
+        try:
+            resp = httpx.get("http://127.0.0.1:8787/", timeout=1)
+            if resp.status_code < 500:
+                return None
+            last = f"HTTP {resp.status_code}"
+        except Exception as exc:
+            last = str(exc)
+        time.sleep(0.25)
+    return f"Mini App backend is not reachable on `127.0.0.1:8787` ({last})."
+
+
+def _miniapp_public_error(url: str) -> str | None:
+    try:
+        resp = httpx.get(url, timeout=5, follow_redirects=False)
+        if resp.status_code < 500:
+            return None
+        return f"HTTP {resp.status_code}"
+    except Exception as exc:
+        return str(exc)
+
+
 def _ensure_miniapp_public_url() -> tuple[str, str | None]:
+    _start_miniapp_service()
+    local_error = _miniapp_local_error()
+    if local_error:
+        return "", local_error
+
     url = os.environ.get("BUX_MINIAPP_PUBLIC_URL", "").strip()
     if url:
-        if url.startswith("https://"):
+        if not url.startswith("https://"):
+            return "", "`BUX_MINIAPP_PUBLIC_URL` must start with https:// for Telegram."
+        if ".trycloudflare.com" not in url:
             return url, None
-        return "", "`BUX_MINIAPP_PUBLIC_URL` must start with https:// for Telegram."
+        public_error = _miniapp_public_error(url)
+        if not public_error:
+            return url, None
+        LOG.warning("miniapp: existing tunnel URL is unhealthy (%s); creating a fresh tunnel", public_error)
 
     cloudflared = shutil.which("cloudflared")
     if not cloudflared:
         return "", "Mini App needs an HTTPS URL. Install `cloudflared` or set `BUX_MINIAPP_PUBLIC_URL=https://...`."
-
-    try:
-        subprocess.run(["systemctl", "start", "bux-miniapp.service"], timeout=5, check=False)
-    except Exception:
-        LOG.exception("miniapp: failed to start bux-miniapp.service before tunnel")
 
     try:
         proc = subprocess.Popen(
@@ -846,6 +888,19 @@ def _ensure_miniapp_public_url() -> tuple[str, str | None]:
         match = re.search(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", line)
         if match:
             url = match.group(0)
+            public_error = None
+            public_deadline = time.time() + 30
+            while time.time() < public_deadline:
+                public_error = _miniapp_public_error(url)
+                if not public_error:
+                    break
+                time.sleep(0.5)
+            if public_error:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                return "", f"Mini App tunnel started but is not reachable yet ({public_error}). Try `/agency` again."
             os.environ["BUX_MINIAPP_PUBLIC_URL"] = url
             try:
                 _write_tg_env_value("BUX_MINIAPP_PUBLIC_URL", url)
@@ -1441,7 +1496,7 @@ def _is_agent_authed(agent: str) -> bool:
 
 
 def _agent_for(key: LaneKey, state: dict) -> str:
-    """Resolve which agent handles this lane. /agent <claude|codex> sets it.
+    """Resolve which agent handles this lane. /claude or /codex sets it.
 
     For unbound lanes (no explicit /claude or /codex), prefer the CLI
     that's actually signed in. If both are signed in, keep claude as
@@ -5203,8 +5258,6 @@ class Bot:
                 "/claude login — sign in Claude through a terminal flow\n"
                 "/claude logout — sign out Claude\n"
                 "/agency — open the Mini App\n"
-                "/agent — open the Mini App\n"
-                "/agent claude|codex — switch this topic to a different agent\n"
                 "/miniapp — open the Mini App\n"
                 "/live — live-view URL of the active browser\n"
                 "/queue — pending tasks in this topic\n"
@@ -5221,7 +5274,7 @@ class Bot:
                 thread_id=thread_id,
             )
             return
-        if cmd in ("/agency", "/miniapp") or (cmd == "/agent" and not arg.strip()):
+        if cmd in ("/agency", "/miniapp"):
             if not owner or not _is_owner(sender, owner):
                 self.send(
                     chat_id,
@@ -5321,9 +5374,6 @@ class Bot:
             return
         if cmd in ("/schedules", "/schedule"):
             self._cmd_schedules(chat_id, mid, thread_id)
-            return
-        if cmd == "/agent":
-            self._cmd_agent(key, chat_id, mid, thread_id, arg)
             return
         if cmd == "/codex":
             action = arg.strip().lower()

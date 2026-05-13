@@ -104,7 +104,7 @@ class MiniAppTest(unittest.TestCase):
         second = self.app._cards()
 
         starter_cards = [card for card in first if str(card["source"]).startswith("miniapp-starter:")]
-        self.assertGreaterEqual(len(starter_cards), 3)
+        self.assertEqual(len(starter_cards), len(self.app.STARTER_IDEAS))
         self.assertEqual(
             sorted(card["id"] for card in first if str(card["source"]).startswith("miniapp-starter:")),
             sorted(card["id"] for card in second if str(card["source"]).startswith("miniapp-starter:")),
@@ -246,6 +246,57 @@ class MiniAppTest(unittest.TestCase):
             ).fetchone()
         self.assertEqual(row["status"], "accepted")
         self.assertEqual(row["worker_topic_id"], 123)
+
+    def test_start_dispatch_applies_miniapp_provider_setting(self) -> None:
+        runs: list[tuple[tuple[int, int], str]] = []
+        bindings: list[tuple[tuple[int, int], str]] = []
+
+        class FakeBot:
+            def __init__(self, token: str, setup_token: str) -> None:
+                self.token = token
+                self.setup_token = setup_token
+                self.state = {"agents": {}}
+
+            def call(self, method: str, **params: object) -> dict:
+                return {"ok": True, "result": {"message_id": 55}}
+
+            def run_task(
+                self,
+                key: tuple[int, int],
+                prompt: str,
+                reply_to: int | None = None,
+                sender: dict | None = None,
+            ) -> None:
+                del reply_to, sender
+                runs.append((key, prompt))
+
+        def fake_set_agent_for(key: tuple[int, int], provider: str, state: dict) -> None:
+            state.setdefault("agents", {})[f"{key[0]}_{key[1]}"] = provider
+            bindings.append((key, provider))
+
+        sys.modules["telegram_bot"] = types.SimpleNamespace(
+            Bot=FakeBot,
+            _set_agent_for=fake_set_agent_for,
+        )
+        self.app._write_setting("provider", "codex", {"id": 42})
+        with self.agency_db.conn() as db:
+            suggestion_id = self.agency_db.insert(
+                db,
+                title="Generate with Codex",
+                description="",
+                chat_id=100,
+                thread_id=123,
+                prompt="Do the work",
+            )
+
+        result = self.app._start_agent_work(suggestion_id, {"id": 42, "first_name": "Magnus"})
+        deadline = time.time() + 2
+        while not runs and time.time() < deadline:
+            time.sleep(0.02)
+
+        self.assertTrue(result["started"])
+        self.assertEqual(bindings, [((100, 123), "codex")])
+        self.assertEqual(runs[0][0], (100, 123))
 
     def test_start_dispatch_custom_button_includes_card_context(self) -> None:
         calls: list[tuple[str, dict]] = []
