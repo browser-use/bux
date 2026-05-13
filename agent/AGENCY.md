@@ -11,27 +11,44 @@ Personal preferences (voice, team, filters, user-specific patterns) belong in pr
 ## Architecture
 
 ```
-agent → agency-report → agency.db + TG card
-                              │
-                              ▼
-                       user taps button
-                              │
-                              ▼
-              bot._handle_agency_callback
-                ├─ records decision (DB)
-                ├─ marks picked button visually
-                └─ routes per kind:
-                    • action  → run_task in (new or current) thread
-                    • dismiss → 1-line ack, no dispatch
-                    • refine  → "what would you change?" + wait
-                    • custom  → synthesized [agency-button] dispatch
+generator agent/topic → agency-report → agency.db + TG/Mini App card
+                                             │
+                                             ▼
+                                      user taps button
+                                             │
+                                             ▼
+                             bot._handle_agency_callback / Mini App API
+                               ├─ records decision (DB)
+                               ├─ marks picked button visually
+                               └─ routes per kind:
+                                   • action  → fresh worker agent session for that card
+                                   • dismiss → 1-line ack/delete, no dispatch
+                                   • refine  → comment/context into the card's worker session
+                                   • custom  → synthesized [agency-button] dispatch
 ```
 
 ## Concept
 
-One topic, one goal, one ongoing mission. Each forum topic is a long-running lane working a single high-level goal. Every card ties back to that goal. The agent re-checks on a cadence set during onboarding (every 30 min / hour / twice a day / only-when-asked).
+Agency is a personalized social feed fully managed by the generator agent. The feed exists to create the next best thing the user can approve, refine, or skip. The optimization target is not volume; it is useful accepted actions that move the user's goals.
+
+One generator lane keeps creating cards. Each accepted action card becomes its own fresh worker session. If that worker later needs another decision, it posts a follow-up version of the same card family, and the Mini App shows the newest version first while preserving the older versions and comments. If the task is fully done, the final card is an info/done card the user can acknowledge or comment on.
+
+High-level goals live in the private goals file at `/opt/bux/repo/private/goals.md` (or `BUX_GOALS_FILE` when configured). This file is never committed. It contains what the user cares about, current preferences, rejected themes, cadence, and goal-level learnings. The concrete history lives in `/var/lib/bux/agency.db`: every card, decision, skipped idea, accepted action, worker topic, and completion signal.
+
+If the feed is empty, that is not a valid steady state. Generate more cards from the goals file and decision history. If the goals file is empty or vague, generate goal-discovery cards or ask one short high-level question like "Should I optimize for more users, health, inbox peace, or founder focus?" Once the user accepts a high-level goal, save it to the goals file and start creating more specific cards.
+
+Every generator cycle reads:
+
+1. `/opt/bux/repo/private/goals.md` for high-level goals and preferences.
+2. `MEMORY.md` / private profile memory for voice, relationships, integrations, and source priorities.
+3. `/var/lib/bux/agency.db` for accepted, skipped, regenerated, completed, and stale cards.
+4. Connected sources such as Gmail, Slack, GitHub, WhatsApp, Calendar, Linear, Datadog, and browser context.
+
+The generator runs on a cadence, default hourly unless the user chose another schedule. It should continuously monitor connected context, generate cards that are concrete to the user's goals, and learn from every tap. If the user repeatedly skips a theme, record that as a preference and stop repitching it with different wording.
 
 **Be ruthlessly proactive.** Don't ask "should I look?" — look. Don't ask "want me to draft?" — draft, attach, ask `send?`. Don't ask "which option?" — show 2-3 as variant buttons. Maximize accepted suggestions per tap.
+
+Do all reversible/private work before the card. Draft the reply, inspect the PR, fetch the screenshot, prepare the launch copy, query the dashboard, or build the asset. Stop only at the visible boundary where another person, public system, money, or irreversible state would be affected.
 
 **The user has 2 seconds.** Phone screen, late-night, mid-workout, between meetings. Every card must answer in one glance:
 
@@ -49,7 +66,7 @@ Never post generic channel/workflow cards like "monitor Slack", "automate browse
 
 A real Agency card must name a concrete user problem or goal and a concrete object: person, company, thread, repository, PR, incident, signup, customer, page, post, or file. If the card cannot say exactly **who/what/where** it acts on, do not post it.
 
-If the user's goal is unknown, ask one short goal-lock question before generating cards. If you must infer, assume the default goal is "make my startup successful" and generate only cards that directly help distribution, revenue, users, product quality, fundraising, hiring, or founder focus. Still ground every card in real context; never invent plausible startup chores.
+If the user's goal is unknown, ask one short goal-lock question or post high-level goal cards before generating concrete cards. Suggested first goals can include: make my startup successful, get more users, monitor important inboxes, keep relationships warm, stay healthy, improve distribution, ship faster, or find demo/case-study opportunities. If you must infer, assume the default goal is "make my startup successful" and generate only cards that directly help distribution, revenue, users, product quality, fundraising, hiring, or founder focus. Still ground every card in real context; never invent plausible startup chores.
 
 ## Two zones
 
@@ -75,7 +92,7 @@ No profile in private memory (`~/.claude/projects/-home-bux/memory/<user>_profil
 
 1. **Read mode.** Parallel `Agent` sub-agents over connected surfaces (Gmail headers + sent samples, Slack channels, GitHub activity, Calendar, Linear / Notion, `list_integrations`). Each returns one paragraph: who they are, what they're working on, who they work with, voice cues. Read headers / samples / top-N — never whole inboxes.
 2. **Save profile** to `<user>_profile.md` + index line in `MEMORY.md`. Private, never echoed, never committed.
-3. **Button-ask the goal.** `tg-buttons` with options derived from the scan (startup success / fitness / shipping `<repo>` / customer calls / something else). Save as `<user>_endgoal.md`.
+3. **Button-ask the goal.** `tg-buttons` with options derived from the scan (startup success / fitness / shipping `<repo>` / customer calls / something else). Save the universal high-level goals and preferences to `/opt/bux/repo/private/goals.md` (or `BUX_GOALS_FILE`). Older per-user goal memories may still exist; treat the private goals file as the canonical Agency input.
 4. **Button-ask the cadence.** `tg-buttons`: every 30 min / hour / twice a day / only when I ask. Wire `tg-schedule` self-pings for non-manual choices.
 5. **Then go proactive.** Acceptance-rate doctrine applies — post nothing if nothing's high-impact.
 
@@ -83,18 +100,20 @@ Profile exists but no goal → run a lighter goal-lock card first (options: `com
 
 ## Scan process
 
-When the trigger fires ("start agency", "what's pending", "scan everything") and profile + goal are locked:
+When the trigger fires ("start agency", "what's pending", "scan everything", heartbeat, or Mini App "generate more") and profile + goal are locked:
 
-1. **Read MEMORY.md** for voice, delegation map, spam heuristics, key relationships, current priorities. Don't re-derive.
-2. **Dispatch parallel sub-agents in one assistant message** — one per surface. Defaults:
+1. **Read `/opt/bux/repo/private/goals.md` first.** This is the generator's product brief for the user's personal feed.
+2. **Read MEMORY.md** for voice, delegation map, spam heuristics, key relationships, current priorities. Don't re-derive.
+3. **Read agency.db history.** Check accepted, skipped, completed, regenerated, and ignored cards before proposing anything. Do not recreate a skipped idea unless the context materially changed.
+4. **Dispatch parallel sub-agents in one assistant message** — one per surface. Defaults:
    - **Email** — last 14 days unread + in-flight. Triage: NEEDS REPLY (drafts saved) / DRAFTABLE FORWARD (saved to the right teammate) / IMPORTANT FYI / SPAM (counted).
    - **Slack** — last 3-7 days of personal channels (`#wall-*`, DMs, mentions, hot customer channels). Identify what's blocked on the user. Paste-ready 1-liners.
    - **GitHub** — review-requested PRs, user's own open PRs (merge/close call per PR), assigned issues, flagship-repo CI health.
    - **Calendar** — week ahead in user's TZ, conflicts, prep flags. Also: integrations not yet authed + exact connect step.
    - **Observability** — fires first (open incidents, firing monitors, error spikes), then opportunities (demo traces, eval candidates).
-3. **Brief each sub-agent** like a colleague (no shared context): who the user is, scope, tools to load, triage rules, hard boundaries (DO NOT SEND / POST / MERGE — drafts only), return format.
-4. **Save drafts to private surfaces** (Gmail drafts, local files). Capture IDs. Surface only snippet + action. For Slack / GitHub (no draft surface), write paste-ready text in the card.
-5. **Compose cards, not one summary.** One `agency-report` card per decision. The user can't button-tap a wall of text.
+5. **Brief each sub-agent** like a colleague (no shared context): who the user is, scope, tools to load, triage rules, hard boundaries (DO NOT SEND / POST / MERGE — drafts only), return format.
+6. **Save drafts to private surfaces** (Gmail drafts, local files). Capture IDs. Surface only snippet + action. For Slack / GitHub (no draft surface), write paste-ready text in the card.
+7. **Compose cards, not one summary.** One `agency-report` card per decision. The user can't button-tap a wall of text.
 
 When a brief explicitly asks for a "report" shape, use:
 
@@ -114,11 +133,11 @@ End with a numbered concrete follow-up list. Each item self-contained. Never ask
 
 `(accepted + completed) / posted`. Every other choice — title, length, image, urgency — serves that. 5 accepted beats 20 ignored. Each ignored card costs trust; two in a row, the user starts skimming; five, they mute.
 
-**If nothing's high-impact this cycle, post nothing.** Silence beats slop.
+**If nothing's high-impact this cycle but the feed is empty, ask/suggest goals instead of posting slop.** If there are still pending cards, silence beats filler. If there are no pending cards, the generator must create either useful goal-grounded cards or high-level goal-discovery cards.
 
 ### Tie every card to the locked goal
 
-The user's locked goal is in `<user>_endgoal.md`. Each card must tell the user why this action matters for that goal in simple language:
+The user's locked goals are in `/opt/bux/repo/private/goals.md` (or `BUX_GOALS_FILE`). Each card must tell the user why this action matters for one of those goals in simple language:
 
 - ❌ "submit to Smithery, virgin slot" *(so what?)*
 - ✅ "Ship this now so more MCP devs discover the project while the launch window is hot."
@@ -327,9 +346,9 @@ Each interaction costs one tap, not one keystroke. `--button` overrides defaults
 - Any forum topic → in-place. Treat the topic as the goal/session lane.
 - No forum topic → spawn a fresh forum topic.
 
-Override with `--spawn-topic` / `--no-spawn-topic`. Use `--spawn-topic` only when the card truly needs a separate lane; Mini App cards are rendered inside one goal section and should stay in that goal by default.
+Override with `--spawn-topic` / `--no-spawn-topic` for Telegram-only cards when needed.
 
-Policy: default to in-place `✅ Yes` for short work. If the accepted action is likely one small action or a few tool calls, keep it in the current topic/session. Use `🧵 Yes (new thread)` / `--spawn-topic` only for bigger projects: recurring monitors, multi-step investigations, work likely to take >10 tool calls, or anything that will produce multiple follow-ups over time.
+Policy: Mini App/Tinder accepted cards launch a fresh worker session by default because each card is its own actionable ticket. Telegram cards outside the Mini App may still default to in-place for tiny one-step work. Use a new topic/session for recurring monitors, multi-step investigations, work likely to take >10 tool calls, anything that will produce multiple follow-ups over time, or any accepted Mini App card.
 
 **Multi-tap dedupes the worker topic.** Tapping Yes twice doesn't spawn two; subsequent taps reuse the first `worker_topic_id`.
 
@@ -422,9 +441,11 @@ Check each topic's brief before drafting.
 
 `/miniapp` opens the per-box Telegram Mini App. "Agency start <goal>" or a new Mini App goal creates/uses one Telegram topic as the goal lane, records context there, and asks the agent to generate initial cards. "Generate more" means: continue from that topic's current context and produce more high-signal action cards, not a new goal. Cards should use short, phone-readable copy, clickable sources, real images/videos when available, and no internal IDs.
 
-When a Mini App card is accepted, run it in the same goal topic/session by default. If the user accepts 10 cards from one goal, push all 10 into that goal's agent session. The agent can create sub-agents or new Telegram topics later only when it is clearly useful: recurring monitor, larger project, or >10-tool-call investigation.
+When a Mini App card is accepted, start a fresh worker session for that card. The goal topic remains the generator lane. If the user accepts 10 cards from one goal, that creates 10 worker sessions tied back to the same goal and card history. The generator should still learn from their outcomes before creating the next batch.
 
 When you receive an accepted Mini App card, treat the card as a full ticket. Read the title, why-it-matters sentence, source, expandable sections, and picked button before acting. If the ticket is a bigger project or recurring monitor, create a dedicated Telegram topic and send the agent there; otherwise keep working in the current goal session.
+
+If a worker needs more user input, do not lose the original ticket. Create a follow-up Agency card linked to the same task/version family. The Mini App should show the newest version first and let the user inspect older versions/comments. A fully completed task can end with an info card and an acknowledgement button.
 
 ## Honor access gaps
 

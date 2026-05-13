@@ -45,6 +45,7 @@ class MiniAppTest(unittest.TestCase):
         os.environ["TG_OWNER_ID"] = "42"
         os.environ["BUX_AGENCY_DB"] = str(root / "agency.db")
         os.environ["BUX_MINIAPP_DB"] = str(root / "miniapp.db")
+        os.environ["BUX_GOALS_FILE"] = str(root / "private" / "goals.md")
         os.environ["BUX_MINIAPP_SEED_STARTERS"] = "0"
         os.environ.pop("BUX_MINIAPP_DEV", None)
         for name in ("agency_db", "mini_app"):
@@ -55,6 +56,7 @@ class MiniAppTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         os.environ.pop("BUX_MINIAPP_SEED_STARTERS", None)
+        os.environ.pop("BUX_GOALS_FILE", None)
         self.tmp.cleanup()
 
     def test_validate_init_data_rejects_wrong_owner(self) -> None:
@@ -174,7 +176,15 @@ class MiniAppTest(unittest.TestCase):
         thread.start()
         base = f"http://127.0.0.1:{server.server_port}"
         try:
-            self._request(base + "/api/goals", method="POST", body={"title": "Win"})
+            self._request(
+                base + "/api/goals",
+                method="POST",
+                body={"title": "Win", "context": "Get more users", "cadence": "hourly"},
+            )
+            goals_text = Path(os.environ["BUX_GOALS_FILE"]).read_text()
+            self.assertIn("## Win", goals_text)
+            self.assertIn("Get more users", goals_text)
+            self.assertIn("Cadence: hourly", goals_text)
             cards = self._request(base + "/api/cards")
             self.assertEqual(cards["cards"][0]["id"], suggestion_id)
             self._request(
@@ -190,7 +200,7 @@ class MiniAppTest(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
-    def test_start_dispatch_runs_in_goal_topic_by_default(self) -> None:
+    def test_start_dispatch_creates_worker_topic_by_default(self) -> None:
         calls: list[tuple[str, dict]] = []
         runs: list[tuple[tuple[int, int], str]] = []
 
@@ -232,10 +242,11 @@ class MiniAppTest(unittest.TestCase):
             time.sleep(0.02)
 
         self.assertTrue(result["started"])
-        self.assertFalse(result["topic_created"])
-        self.assertEqual(result["thread_id"], 123)
-        self.assertEqual(calls[0][0], "sendMessage")
-        self.assertEqual(runs[0][0], (100, 123))
+        self.assertTrue(result["topic_created"])
+        self.assertEqual(result["thread_id"], 777)
+        self.assertEqual(calls[0][0], "createForumTopic")
+        self.assertEqual(calls[1][0], "sendMessage")
+        self.assertEqual(runs[0][0], (100, 777))
         self.assertIn("The user accepted this Mini App card", runs[0][1])
         self.assertIn("Card title: Start visible work", runs[0][1])
         self.assertIn("Action prompt:\nDo the work", runs[0][1])
@@ -245,7 +256,7 @@ class MiniAppTest(unittest.TestCase):
                 (suggestion_id,),
             ).fetchone()
         self.assertEqual(row["status"], "accepted")
-        self.assertEqual(row["worker_topic_id"], 123)
+        self.assertEqual(row["worker_topic_id"], 777)
 
     def test_start_dispatch_applies_miniapp_provider_setting(self) -> None:
         runs: list[tuple[tuple[int, int], str]] = []
@@ -258,6 +269,8 @@ class MiniAppTest(unittest.TestCase):
                 self.state = {"agents": {}}
 
             def call(self, method: str, **params: object) -> dict:
+                if method == "createForumTopic":
+                    return {"ok": True, "result": {"message_thread_id": 777}}
                 return {"ok": True, "result": {"message_id": 55}}
 
             def run_task(
@@ -295,8 +308,8 @@ class MiniAppTest(unittest.TestCase):
             time.sleep(0.02)
 
         self.assertTrue(result["started"])
-        self.assertEqual(bindings, [((100, 123), "codex")])
-        self.assertEqual(runs[0][0], (100, 123))
+        self.assertEqual(bindings, [((100, 777), "codex")])
+        self.assertEqual(runs[0][0], (100, 777))
 
     def test_start_dispatch_custom_button_includes_card_context(self) -> None:
         calls: list[tuple[str, dict]] = []

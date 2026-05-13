@@ -32,6 +32,7 @@ TG_ENV = Path("/etc/bux/tg.env")
 TG_STATE = Path("/etc/bux/tg-state.json")
 TG_ALLOWED = Path("/etc/bux/tg-allowed.txt")
 MINI_DB = Path(os.environ.get("BUX_MINIAPP_DB", "/var/lib/bux/miniapp.db"))
+GOALS_FILE = Path(os.environ.get("BUX_GOALS_FILE", "/opt/bux/repo/private/goals.md"))
 HOST = os.environ.get("BUX_MINIAPP_HOST", "127.0.0.1")
 PORT = int(os.environ.get("BUX_MINIAPP_PORT", "8787"))
 AUTH_MAX_AGE_SEC = int(os.environ.get("BUX_MINIAPP_AUTH_MAX_AGE", "86400"))
@@ -857,6 +858,43 @@ def _settings() -> dict[str, str]:
         return {str(row["key"]): str(row["value"]) for row in db.execute("SELECT * FROM settings")}
 
 
+def _goals_file_text() -> str:
+    try:
+        text = GOALS_FILE.read_text().strip()
+    except FileNotFoundError:
+        return ""
+    except Exception as exc:
+        print(f"bux-miniapp: goals file read failed: {exc}", file=sys.stderr)
+        return ""
+    return text[:12000]
+
+
+def _append_goal_file_entry(title: str, context: str, cadence: str = "") -> None:
+    now = time.strftime("%Y-%m-%d", time.gmtime())
+    lines = [
+        "",
+        f"## {title}",
+        f"- Added: {now}",
+    ]
+    if cadence:
+        lines.append(f"- Cadence: {cadence}")
+    if context:
+        lines.append(f"- Context: {context.strip()}")
+    lines.append("- Preference signals: learn from accepted, skipped, and completed Agency cards before suggesting more.")
+    try:
+        GOALS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        if not GOALS_FILE.exists() or not GOALS_FILE.read_text().strip():
+            GOALS_FILE.write_text(
+                "# Goals\n\n"
+                "Private high-level goals and Agency preferences for this box.\n"
+                "The Agency generator reads this before creating cards and updates it when the user clarifies goals.\n"
+            )
+        with GOALS_FILE.open("a") as fh:
+            fh.write("\n".join(lines) + "\n")
+    except Exception as exc:
+        print(f"bux-miniapp: goals file append failed: {exc}", file=sys.stderr)
+
+
 def _can_create_telegram_topics() -> bool:
     return os.environ.get("BUX_MINIAPP_DEV") != "1" and MINI_DB == Path("/var/lib/bux/miniapp.db")
 
@@ -871,16 +909,26 @@ def _goal_agent_prompt(
     count = "10 more" if mode == "more" else "10"
     header = "Generate more Mini App action items." if mode == "more" else "Mini App goal created."
     cadence_line = f"\nCadence or schedule mentioned by the user: {cadence}" if cadence else ""
+    goals_text = _goals_file_text()
+    goals_block = (
+        f"\n\nPrivate goals file ({GOALS_FILE}):\n{goals_text}"
+        if goals_text
+        else f"\n\nPrivate goals file ({GOALS_FILE}) is empty or missing. First lock the user's high-level goals."
+    )
     return (
         f"{header}\n\n"
         f"Goal: {title}\n\n"
         f"User context:\n{context or title}"
-        f"{cadence_line}\n\n"
+        f"{cadence_line}"
+        f"{goals_block}\n\n"
         "Use the Agency skill and /opt/bux/repo/agent/AGENCY.md. "
         f"Scan the user's available context and generate {count} high-signal action items for this goal. "
+        "This is the generator lane for a personal social feed: create cards the user will want to accept. "
+        "Read the goals file and agency.db history first so you do not repeat skipped ideas. "
+        "Do all reversible/internal work before posting a card, then ask only at the visible boundary. "
         "Do not generate generic channel ideas like 'monitor Slack' or 'check GitHub'. "
-        "Every card must name a concrete person, company, thread, repo, PR, incident, signup, page, post, or file. "
-        "If there is not enough concrete context, ask one short goal/context question instead of filling the feed. "
+        "Every concrete card must name a person, company, thread, repo, PR, incident, signup, page, post, or file. "
+        "If goals or context are still unknown, create high-level goal-lock cards or ask one short goal question instead of leaving the feed empty. "
         "If the goal is vague, assume the user is a startup founder trying to make the startup successful, "
         "but still ground every card in real context and a specific action. "
         "Post them as Agency cards in this same Telegram topic using the normal agency-report/agency-card flow "
@@ -904,14 +952,22 @@ def _topic_generate_prompt(thread_id: int, title: str) -> str:
         ).fetchall()
         recent = [str(row["title"] or "").strip() for row in rows if str(row["title"] or "").strip()]
     context = "\n".join(f"- {item}" for item in recent[:8]) or "- No existing cards in this topic yet."
+    goals_text = _goals_file_text()
+    goals_block = (
+        f"\nPrivate goals file ({GOALS_FILE}):\n{goals_text}\n"
+        if goals_text
+        else f"\nPrivate goals file ({GOALS_FILE}) is empty or missing; ask or suggest high-level goals first.\n"
+    )
     return (
         "Generate more Mini App action items.\n\n"
         f"Topic: {title}\n"
-        f"Existing recent cards:\n{context}\n\n"
+        f"Existing recent cards:\n{context}\n"
+        f"{goals_block}\n"
         "Use the Agency skill and /opt/bux/repo/agent/AGENCY.md. "
         "The user explicitly wants more cards/action items for this topic. "
+        "Treat this topic as a generator lane. Read the private goals and the existing card history, learn from skipped/accepted decisions, and avoid duplicates. "
         "Do not generate generic channel/workflow ideas. Each card must name a specific person, company, thread, repo, PR, incident, signup, page, post, or file and explain why it moves the topic goal. "
-        "If the topic goal is unclear, ask one short clarifying goal question instead of posting filler. "
+        "If the topic goal is unclear, generate high-level goal-lock cards or ask one short clarifying goal question instead of posting filler. "
         "Generate 10 more high-signal cards in this same Telegram topic through the normal agency-report/agency-card flow "
         "so they appear in the Mini App feed for this topic."
     )
@@ -1051,8 +1107,9 @@ def _start_agent_prompt(row: dict[str, Any], action_prompt: str, button_label: s
     picked = button_label or "Mini App Start"
     return (
         "The user accepted this Mini App card. Work from the full card context below.\n"
-        "If this is a bigger ongoing project or recurring monitor, you may create a dedicated Telegram topic "
-        "and continue the agent session there. Otherwise continue in the current goal topic/session.\n\n"
+        "This accepted card is now its own worker session. Complete the task in this session when possible. "
+        "If you need more user confirmation, post a follow-up Agency card linked to this task instead of asking vaguely. "
+        "Do all private/reversible work first and stop only before a visible third-party action.\n\n"
         f"Picked button: {picked}\n"
         f"Card title: {row.get('title') or 'Action'}\n"
         f"Why it matters: {row.get('description') or ''}\n"
@@ -1084,10 +1141,10 @@ def _start_agent_work(
         if not chat_id:
             return {"started": False, "error": "no Telegram chat bound"}
         thread_id = int(row.get("tg_thread_id") or 0)
-        work_thread = thread_id
+        work_thread = int(row.get("worker_topic_id") or 0) or thread_id
         topic_created = False
         topic_name = (row.get("title") or "Mini App task")[:128]
-        if bool(row.get("spawn_topic")):
+        if not int(row.get("worker_topic_id") or 0):
             res = bot.call("createForumTopic", chat_id=chat_id, name=topic_name)
             if res.get("ok"):
                 work_thread = int(res["result"].get("message_thread_id") or thread_id)
@@ -1318,6 +1375,7 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     )
                     db.commit()
                     goal_id = int(cur.lastrowid)
+                _append_goal_file_entry(title, context, cadence)
                 chat_id, thread_id = _ensure_goal_topic(goal_id, title)
                 if chat_id and thread_id:
                     active_id = f"topic:{thread_id}"
