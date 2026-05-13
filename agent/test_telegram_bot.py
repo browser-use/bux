@@ -61,6 +61,35 @@ class CodexSettingsTest(unittest.TestCase):
         self.assertEqual(settings, {"model": "gpt-5.4"})
 
 
+class LoginRoutingTest(unittest.TestCase):
+    def test_login_provider_binds_lane_even_when_already_connected(self) -> None:
+        class ConnectedProvider:
+            label = "Codex"
+
+            def check(self) -> tuple[bool, str]:
+                return True, "ok"
+
+        sent: list[str] = []
+        bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
+        bot.state = {"offset": 0, "agents": {}, "codex_settings": {}, "owners": {}}
+        bot.send = lambda _chat, text, **_kwargs: sent.append(text)  # type: ignore[method-assign]
+
+        with mock.patch.object(telegram_bot, "save_state"):
+            bot._start_login_provider("codex", ConnectedProvider(), 100, 55, 123)
+
+        self.assertEqual(bot.state["agents"]["100_123"], "codex")
+        self.assertIn("already connected", sent[0])
+
+    def test_auth_and_quota_errors_trigger_login_picker_detection(self) -> None:
+        self.assertTrue(
+            telegram_bot._is_claude_auth_error(
+                "Failed to authenticate. API Error: 401 authentication_error"
+            )
+        )
+        self.assertTrue(telegram_bot._is_claude_auth_error("You are out of extra usage."))
+        self.assertTrue(telegram_bot._is_codex_auth_error("usage limit reached"))
+
+
 class AgencyButtonPromptTest(unittest.TestCase):
     def test_custom_button_prompt_includes_card_context(self) -> None:
         prompt = telegram_bot._agency_build_custom_dispatch_prompt(

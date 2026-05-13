@@ -2890,6 +2890,8 @@ def _is_codex_auth_error(text: str) -> bool:
         ("401 unauthorized" in low and "api.openai.com/v1/responses" in low)
         or ("http error: 401" in low and "responses_websocket" in low)
         or ("not logged in" in low and "codex login" in low)
+        or "out of extra usage" in low
+        or "usage limit reached" in low
     )
 
 
@@ -2915,6 +2917,10 @@ def _is_claude_auth_error(text: str) -> bool:
     if "invalid authentication credentials" in low:
         return True
     if "failed to authenticate" in low and "401" in low:
+        return True
+    if "out of extra usage" in low:
+        return True
+    if "usage limit reached" in low:
         return True
     return False
 
@@ -4203,44 +4209,13 @@ class Bot:
                     if not out:
                         out = (fb.stderr or "").strip() or f"(no output; rc={fb.returncode})"
                     if _is_claude_auth_error(out):
-                        # All cached status is now stale (a creds-expired
-                        # 401 is the canonical "you got logged out" event,
-                        # and on the cloud-wizard path the codex side of
-                        # the cache also pre-dates the user's sign-in).
-                        # Bust everything so the re-checks below read
-                        # fresh state.
-                        _login_status_cache_invalidate(None)
-                        _AGENT_AUTH_CACHE.clear()
-                        # Before asking the user to re-auth Claude, check
-                        # whether Codex is already signed in on this box —
-                        # that's the common case after the cloud wizard:
-                        # user picked Codex in step 3, Codex is good to
-                        # go, but the bot's auto-pick raced the auth-poll
-                        # and dispatched to Claude anyway. If Codex is
-                        # authed, bind this lane to Codex and re-dispatch
-                        # the task there instead of forcing a Claude OAuth
-                        # the user didn't ask for.
-                        if _is_agent_authed(AGENT_CODEX):
-                            _set_agent_for(key, AGENT_CODEX, self.state)
-                            self.send(
-                                chat_id,
-                                "Switching to Codex (Claude isn't signed in here yet).",
-                                reply_to=reply_to,
-                                thread_id=thread_id,
-                            )
-                            # Re-enter the run with the new binding —
-                            # _agent_for will pick up the lane's explicit
-                            # codex binding from state.
-                            return self.run_task(
-                                key,
-                                prompt,
-                                reply_to=reply_to,
-                                sender=sender,
-                            )
-                        # Neither agent is authed. Do not dump raw
-                        # "not logged in; run login" CLI text into Telegram:
-                        # show the same two-button agent picker used for a
-                        # fresh box so the user can choose Codex or Claude.
+                        # Auth/quota failures mean the selected provider
+                        # cannot currently run. Do not silently reroute to a
+                        # different LLM: show the same two-button picker so
+                        # the user chooses whether to reconnect Claude or
+                        # switch to Codex.
+                        _login_status_cache_invalidate("claude")
+                        _AGENT_AUTH_CACHE.pop(AGENT_CLAUDE, None)
                         self._send_login_picker(chat_id, reply_to, thread_id)
                         return
                     self.send(
@@ -5378,6 +5353,8 @@ class Bot:
         if cmd == "/codex":
             action = arg.strip().lower()
             if action in ("login", "auth"):
+                _set_agent_for(key, AGENT_CODEX, self.state)
+                _login_status_cache_invalidate("codex")
                 self._start_login_provider(
                     "codex", CODEX_AUTH_PROVIDER, chat_id, mid, thread_id,
                     minimal_login_mode=True,
@@ -5410,6 +5387,8 @@ class Bot:
         if cmd == "/claude":
             action = arg.strip().lower()
             if action in ("login", "auth"):
+                _set_agent_for(key, AGENT_CLAUDE, self.state)
+                _login_status_cache_invalidate("claude")
                 self._cmd_claude_login(chat_id, mid, thread_id, slug, sender, owner)
                 return
             if action in ("logout", "disconnect"):
@@ -6249,6 +6228,8 @@ class Bot:
         force: bool = False,
         minimal_login_mode: bool = False,
     ) -> None:
+        if name in AGENTS:
+            _set_agent_for((chat_id, thread_id), name, self.state)
         # If already connected, short-circuit. Saves the user a redundant
         # device-code dance and prevents accidentally rotating their token.
         connected, status = prov.check()
@@ -6380,6 +6361,8 @@ class Bot:
                 markdown=True,
             )
             return
+        _set_agent_for((chat_id, thread_id), AGENT_CLAUDE, self.state)
+        _login_status_cache_invalidate("claude")
         existing = _get_shell_session(slug)
         if existing is not None:
             if force_existing:
