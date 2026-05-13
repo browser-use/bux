@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -88,6 +89,38 @@ class LoginRoutingTest(unittest.TestCase):
         )
         self.assertTrue(telegram_bot._is_claude_auth_error("You are out of extra usage."))
         self.assertTrue(telegram_bot._is_codex_auth_error("usage limit reached"))
+
+
+class AgentEnvTest(unittest.TestCase):
+    def test_codex_gets_box_token_for_mcp_but_claude_does_not(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            box_env = root / "box.env"
+            browser_env = root / "browser.env"
+            openai_env = root / "openai.env"
+            box_env.write_text(
+                "BROWSER_USE_API_KEY=bu_test\n"
+                "BUX_PROFILE_ID=profile_123\n"
+                "BUX_BOX_TOKEN=box_secret\n"
+            )
+            browser_env.write_text("")
+            openai_env.write_text("OPENAI_API_KEY=sk_test\n")
+
+            bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
+            bot.state = {"offset": 0, "agents": {}, "codex_settings": {}, "owners": {}}
+
+            with (
+                mock.patch.object(telegram_bot, "BOX_ENV", box_env),
+                mock.patch.object(telegram_bot, "BROWSER_ENV", browser_env),
+                mock.patch.object(telegram_bot, "OPENAI_ENV", openai_env),
+            ):
+                codex_env = bot._build_env((100, 55), telegram_bot.AGENT_CODEX)
+                claude_env = bot._build_env((100, 55), telegram_bot.AGENT_CLAUDE)
+
+        self.assertEqual(codex_env["BUX_BOX_TOKEN"], "box_secret")
+        self.assertEqual(codex_env["BROWSER_USE_API_KEY"], "bu_test")
+        self.assertEqual(codex_env["OPENAI_API_KEY"], "sk_test")
+        self.assertNotIn("BUX_BOX_TOKEN", claude_env)
 
 
 class AgencyButtonPromptTest(unittest.TestCase):

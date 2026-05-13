@@ -131,19 +131,22 @@ install -d -o bux -g bux -m 0755 /var/lib/bux
 # Why MCP at all: cloud holds the platform's Composio API key plus every
 # integration the user OAuth'd via cloud.browser-use.com. Rather than
 # duplicating that ceremony on each box (Composio key, per-toolkit auth
-# configs, OAuth callbacks, refresh-token storage), we point Claude Code
+# configs, OAuth callbacks, refresh-token storage), we point the local CLIs
 # at a cloud-hosted MCP endpoint that proxies tool calls through with the
 # box's project_id as the Composio entity_id. Net effect: any toolkit the
 # user has connected on cloud (Gmail, Calendar, Slack, …) is automatically
 # available to the box agent as native tools — zero per-box setup.
 #
-# Token rotation: BUX_BOX_TOKEN gets baked into ~/.claude.json by
-# `claude mcp add` at registration time. If the cloud rotates the token,
+# Token rotation: Claude stores the bearer header in ~/.claude.json at
+# registration time, while Codex stores the env-var name in ~/.codex/config.toml
+# and reads BUX_BOX_TOKEN when a turn starts. If the cloud rotates the token,
 # the next /update re-runs this section, which removes + re-adds the MCP
-# server with the fresh token. Manual rotation: re-run bootstrap.sh.
+# server with the fresh token/header shape. Manual rotation: re-run
+# bootstrap.sh.
 #
-# To disable: as the bux user, `claude mcp remove composio`. The next
-# /update will re-add it unless this section is removed too.
+# To disable: as the bux user, `claude mcp remove composio` and/or
+# `codex mcp remove composio`. The next /update will re-add it unless this
+# section is removed too.
 if [ -f /etc/bux/env ]; then
   # shellcheck disable=SC1091
   . /etc/bux/env || true
@@ -190,6 +193,26 @@ else
     echo "bootstrap: WARN composio MCP registration didn't take" >&2
   else
     echo "bootstrap: registered cloud Composio MCP server"
+  fi
+fi
+
+if [ -z "${BUX_BOX_TOKEN:-}" ]; then
+  echo "bootstrap: BUX_BOX_TOKEN not set; skipping Codex Composio MCP registration" >&2
+elif ! sudo -iu bux command -v codex >/dev/null 2>&1; then
+  echo "bootstrap: codex CLI not on PATH; skipping Codex Composio MCP registration" >&2
+else
+  # Codex keeps MCP configuration separately from Claude. Register the same
+  # cloud proxy here so `/codex` Agency workers can inspect connected context
+  # instead of seeing an empty MCP tool list while Claude has Composio.
+  sudo -iu bux codex mcp remove composio >/dev/null 2>&1 || true
+  sudo -iu bux codex mcp add composio \
+    --url https://api.browser-use.com/cloud/composio/mcp \
+    --bearer-token-env-var BUX_BOX_TOKEN >/dev/null || \
+    echo "bootstrap: WARN failed to register Codex cloud Composio MCP server; continuing bootstrap" >&2
+  if ! sudo -iu bux codex mcp list 2>/dev/null | grep -q '^composio[[:space:]]'; then
+    echo "bootstrap: WARN Codex composio MCP registration didn't take" >&2
+  else
+    echo "bootstrap: registered Codex cloud Composio MCP server"
   fi
 fi
 

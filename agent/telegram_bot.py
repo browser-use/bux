@@ -3829,6 +3829,8 @@ class Bot:
             the per-user `~/.npm-global/bin/codex` lookup, ~/.local/bin tools).
           - BU_* + BROWSER_USE_API_KEY + BUX_PROFILE_ID so claude can drive
             the browser without re-fetching credentials.
+          - BUX_BOX_TOKEN for Codex only, so Codex's Composio MCP server can
+            read its configured bearer-token env var at turn runtime.
           - OPENAI_* from /home/bux/.secrets/openai.env (codex needs this).
           - TG_CHAT_ID + TG_THREAD_ID so `tg-send` routes back to this
             forum topic when the agent shells out for background work.
@@ -3852,6 +3854,8 @@ class Bot:
         }
         if box_env.get("BROWSER_USE_API_KEY"):
             env["BROWSER_USE_API_KEY"] = box_env["BROWSER_USE_API_KEY"]
+        if agent == AGENT_CODEX and box_env.get("BUX_BOX_TOKEN"):
+            env["BUX_BOX_TOKEN"] = box_env["BUX_BOX_TOKEN"]
         if box_env.get("BUX_PROFILE_ID"):
             env["BUX_PROFILE_ID"] = box_env["BUX_PROFILE_ID"]
             env["BU_PROFILE_ID"] = box_env["BUX_PROFILE_ID"]
