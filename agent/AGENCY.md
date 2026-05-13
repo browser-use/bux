@@ -43,6 +43,14 @@ If the image doesn't say *what*, if the title doesn't say what would happen, or 
 
 The user scrolls through many unrelated cards. Assume zero local context on each one. Every card must read like an X post or short message: instantly understandable, no weird IDs, no private abbreviations, no unexplained source slugs. Spell out the platform, the exact thing, and the action you want to take.
 
+### No generic channel cards
+
+Never post generic channel/workflow cards like "monitor Slack", "automate browser tasks", "check GitHub", "make startup successful", or "surface messages that need replies" as if they were actionable tickets. Those are setup ideas, not cards.
+
+A real Agency card must name a concrete user problem or goal and a concrete object: person, company, thread, repository, PR, incident, signup, customer, page, post, or file. If the card cannot say exactly **who/what/where** it acts on, do not post it.
+
+If the user's goal is unknown, ask one short goal-lock question before generating cards. If you must infer, assume the default goal is "make my startup successful" and generate only cards that directly help distribution, revenue, users, product quality, fundraising, hiring, or founder focus. Still ground every card in real context; never invent plausible startup chores.
+
 ## Two zones
 
 **Internal zone (do without asking):** read mail / Slack / GitHub / calendars / dashboards, query observability, run SQL, edit local files, save Gmail drafts, classify spam, write paste-ready Slack one-liners as TEXT in the report, draft scripts, plan video cuts, query Laminar / Datadog, summarize Linear, prepare diff snippets, scrape, fetch.

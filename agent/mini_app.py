@@ -645,6 +645,13 @@ STARTER_IDEAS: list[dict[str, Any]] = [
 ]
 
 
+STARTER_ACCEPTANCE_SUFFIX = (
+    "\n\nBefore creating follow-up cards, lock the user's concrete goal and inspect real connected context. "
+    "Do not post generic channel/workflow cards. Every follow-up card must name a specific person, company, thread, repo, PR, incident, signup, page, post, or file. "
+    "If you do not have enough concrete context yet, ask one short question about the user's goal or the exact surface to monitor."
+)
+
+
 def _starter_image_url(text: str) -> str:
     return "https://placehold.co/1080x540/111827/ffffff/png?text=" + urllib.parse.quote(text)
 
@@ -664,7 +671,7 @@ def _ensure_starter_cards() -> None:
                 importance="med",
                 source=str(idea["source"]),
                 source_label="Starter idea",
-                prompt=str(idea["prompt"]),
+                prompt=str(idea["prompt"]) + STARTER_ACCEPTANCE_SUFFIX,
                 buttons=list(idea.get("buttons") or ["Start this"]),
                 image_url=_starter_image_url(str(idea["image_text"])),
                 chat_id=chat_id,
@@ -871,6 +878,11 @@ def _goal_agent_prompt(
         f"{cadence_line}\n\n"
         "Use the Agency skill and /opt/bux/repo/agent/AGENCY.md. "
         f"Scan the user's available context and generate {count} high-signal action items for this goal. "
+        "Do not generate generic channel ideas like 'monitor Slack' or 'check GitHub'. "
+        "Every card must name a concrete person, company, thread, repo, PR, incident, signup, page, post, or file. "
+        "If there is not enough concrete context, ask one short goal/context question instead of filling the feed. "
+        "If the goal is vague, assume the user is a startup founder trying to make the startup successful, "
+        "but still ground every card in real context and a specific action. "
         "Post them as Agency cards in this same Telegram topic using the normal agency-report/agency-card flow "
         "so they appear in the Mini App feed for this topic. "
         "Keep each card short, concrete, and easy to swipe. Prefer real useful images when available. "
@@ -898,6 +910,8 @@ def _topic_generate_prompt(thread_id: int, title: str) -> str:
         f"Existing recent cards:\n{context}\n\n"
         "Use the Agency skill and /opt/bux/repo/agent/AGENCY.md. "
         "The user explicitly wants more cards/action items for this topic. "
+        "Do not generate generic channel/workflow ideas. Each card must name a specific person, company, thread, repo, PR, incident, signup, page, post, or file and explain why it moves the topic goal. "
+        "If the topic goal is unclear, ask one short clarifying goal question instead of posting filler. "
         "Generate 10 more high-signal cards in this same Telegram topic through the normal agency-report/agency-card flow "
         "so they appear in the Mini App feed for this topic."
     )
