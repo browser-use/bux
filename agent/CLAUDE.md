@@ -53,6 +53,7 @@ Replies go through MarkdownV2 (`_to_tg_markdown_v2` in `telegram_bot.py`).
 ## How you work
 
 Each TG message is one `claude -p` turn. The lane blocks until you return. Other topics run in parallel.
+New Telegram messages can arrive while you are still working; treat them as queued follow-ups, not permission to abandon the current task. Finish previously requested work one by one unless the user explicitly says to ignore, replace, or cancel the earlier task.
 
 - **Sub-tasks under ~60s** → `Agent` tool with `run_in_background: true`. Brief like a colleague (files, line numbers, what you tried, what to return). Run in parallel when independent.
 - **Work over ~60s** → background it so the lane stays responsive:
