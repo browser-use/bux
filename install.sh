@@ -73,14 +73,17 @@ fi
 # --- collect config --------------------------------------------------------
 BROWSER_USE_API_KEY="${BROWSER_USE_API_KEY:-}"
 BUX_PROFILE_ID="${BUX_PROFILE_ID:-}"
+BUX_BOX_TOKEN="${BUX_BOX_TOKEN:-}"
 
 # If /etc/bux/env already exists (rerun), seed missing values from it so the
 # script is truly idempotent without making the user re-type secrets.
-if [ -z "$BROWSER_USE_API_KEY" ] && [ -r /etc/bux/env ]; then
+if [ -r /etc/bux/env ]; then
 	# shellcheck disable=SC1091
-	BROWSER_USE_API_KEY="$(. /etc/bux/env && printf %s "${BROWSER_USE_API_KEY:-}")"
+	BROWSER_USE_API_KEY="${BROWSER_USE_API_KEY:-$(. /etc/bux/env && printf %s "${BROWSER_USE_API_KEY:-}")}"
 	# shellcheck disable=SC1091
 	BUX_PROFILE_ID="${BUX_PROFILE_ID:-$(. /etc/bux/env && printf %s "${BUX_PROFILE_ID:-}")}"
+	# shellcheck disable=SC1091
+	BUX_BOX_TOKEN="${BUX_BOX_TOKEN:-$(. /etc/bux/env && printf %s "${BUX_BOX_TOKEN:-}")}"
 fi
 
 if [ -z "$BROWSER_USE_API_KEY" ] && [ -t 0 ]; then
@@ -483,6 +486,9 @@ if [ ! -f /etc/bux/env ]; then
 BROWSER_USE_API_KEY=$BROWSER_USE_API_KEY
 BUX_PROFILE_ID=$BUX_PROFILE_ID
 EOF
+	if [ -n "$BUX_BOX_TOKEN" ]; then
+		printf 'BUX_BOX_TOKEN=%s\n' "$BUX_BOX_TOKEN" >> /etc/bux/env
+	fi
 	chmod 640 /etc/bux/env
 	chown root:bux /etc/bux/env
 else
@@ -543,6 +549,21 @@ if ! sudo -iu bux command -v codex >/dev/null 2>&1; then
 	say 'installing Codex CLI for bux'
 	sudo -iu bux npm install -g @openai/codex \
 		|| warn 'codex install failed (non-fatal — /codex login will hint how to install later)'
+fi
+
+# Codex keeps MCP configuration separately from Claude. Register the same
+# cloud Composio proxy that bootstrap.sh registers for Claude so `/codex`
+# Agency workers can inspect connected Gmail / Slack / GitHub context.
+if [ -z "${BUX_BOX_TOKEN:-}" ]; then
+	warn 'BUX_BOX_TOKEN not set; skipping Codex Composio MCP registration'
+elif sudo -iu bux command -v codex >/dev/null 2>&1; then
+	sudo -iu bux codex mcp remove composio >/dev/null 2>&1 || true
+	sudo -iu bux codex mcp add composio \
+		--url https://api.browser-use.com/cloud/composio/mcp \
+		--bearer-token-env-var BUX_BOX_TOKEN >/dev/null \
+		|| warn 'failed to register Codex cloud Composio MCP server'
+else
+	warn 'codex CLI not on PATH; skipping Codex Composio MCP registration'
 fi
 
 # --- login banner: print live browser URL on each ssh login ---------------
