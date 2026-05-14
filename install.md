@@ -12,6 +12,8 @@ curl -fsSL https://raw.githubusercontent.com/browser-use/bux/main/install.sh \
 
 That's it. Skip to [first run](#first-run).
 
+[Watch the 14-second Browser Use Box demo on TikTok](https://www.tiktok.com/@browser_use/video/7639824093721758989).
+
 ---
 
 ## Step by step
