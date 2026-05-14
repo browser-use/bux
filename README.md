@@ -60,6 +60,7 @@ Three small services under systemd. Agent state lives in `/home/bux`, so reboots
 ## Docs
 
 - [install.md](install.md) — full install guide and troubleshooting
+- [Playwright automation use case](docs/playwright-automation.md) — run logged-in browser automation from a 24/7 box
 - [agent/CLAUDE.md](agent/CLAUDE.md) — the context claude loads on every session. Edit it to customize behavior (working dir layout, skill policies, allowed tools), then rerun `install.sh` — it's idempotent and the next claude turn picks up the change.
 
 ## Managed offering
