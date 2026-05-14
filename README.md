@@ -14,6 +14,10 @@ $ curl -fsSL https://raw.githubusercontent.com/browser-use/bux/main/install.sh \
 
 Three minutes from a blank VPS to *"hey claude, check my email and summarize the unread ones"* via Telegram.
 
+<a href="https://www.tiktok.com/@browser_use/video/7639824093721758989">
+  <img src="docs/tiktok-demo-thumbnail.jpg" alt="Watch the 14-second Browser Use Box demo on TikTok" width="280" />
+</a>
+
 [Watch the 14-second Browser Use Box demo on TikTok](https://www.tiktok.com/@browser_use/video/7639824093721758989).
 
 ## Setup prompt
