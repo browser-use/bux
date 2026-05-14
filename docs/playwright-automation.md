@@ -23,6 +23,10 @@ Check Gmail every 30 minutes, draft replies, and ask before sending anything.
 
 The browser is maintained by Browser Use Cloud through `bux-browser-keeper`, and the agent drives it with `browser-harness` over CDP. Cookies persist through the Browser Use profile, so repeated automations can reuse the same session.
 
+<a href="https://www.tiktok.com/@browser_use/video/7639824093721758989">
+  <img src="tiktok-demo-thumbnail.jpg" alt="Watch the 14-second Browser Use Box demo on TikTok" width="280" />
+</a>
+
 Watch the short demo: [Browser Use Box on TikTok](https://www.tiktok.com/@browser_use/video/7639824093721758989).
 
 Install it from the repo root:
