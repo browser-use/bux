@@ -1,0 +1,19 @@
+[Unit]
+Description=bux Slack bot (Socket Mode listener, claude replies)
+After=network-online.target
+ConditionPathExists=/etc/bux/slack.env
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=/etc/bux/slack.env
+WorkingDirectory=/opt/bux/agent
+ExecStart=/opt/bux/venv/bin/python /opt/bux/agent/slack_bot.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/bux/slack.log
+StandardError=append:/var/log/bux/slack.log
+
+[Install]
+WantedBy=multi-user.target

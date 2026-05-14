@@ -242,6 +242,7 @@ polkit.addRule(function(action, subject) {
             unit == "box-agent.service" ||
             unit == "bux-browser-keeper.service" ||
             unit == "bux-miniapp.service" ||
+            unit == "bux-slack.service" ||
             unit == "bux-ttyd.service") {
             return polkit.Result.YES;
         }
@@ -253,7 +254,7 @@ chmod 644 /etc/polkit-1/rules.d/50-bux-chat.rules
 # --- systemd units --------------------------------------------------------
 # Symlink rather than copy so a `git pull` propagates without re-running
 # bootstrap. systemd reads via the symlink fine.
-for unit in box-agent.service bux-ttyd.service bux-browser-keeper.service bux-tg.service bux-miniapp.service; do
+for unit in box-agent.service bux-ttyd.service bux-browser-keeper.service bux-tg.service bux-miniapp.service bux-slack.service; do
   ln -sf "$AGENT_DIR/$unit" "/etc/systemd/system/$unit"
 done
 
@@ -291,9 +292,8 @@ WantedBy=multi-user.target
 UNITEOF
 
 # Drop any unit from a previous version that no longer exists in this
-# commit (e.g. bux-slack.service after Slack removal). Keeps systemd's
-# unit registry in sync with the repo.
-for stale in bux-slack.service; do
+# commit. Keeps systemd's unit registry in sync with the repo.
+for stale in ; do
   if [ -e "/etc/systemd/system/$stale" ] && [ ! -e "$AGENT_DIR/$stale" ]; then
     systemctl disable --now "$stale" 2>/dev/null || true
     rm -f "/etc/systemd/system/$stale"
@@ -312,6 +312,10 @@ systemctl enable bux-browser-keeper.service
 # is written by the agent's tg_install handler.
 systemctl enable bux-tg.service
 systemctl enable bux-miniapp.service
+
+# bux-slack is enabled-but-conditional on /etc/bux/slack.env existing
+# (ConditionPathExists in the unit). Writing slack.env starts it.
+systemctl enable bux-slack.service
 
 # Boot-time pull runs ahead of the others on every reboot.
 systemctl enable bux-boot-update.service
