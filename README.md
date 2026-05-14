@@ -14,6 +14,8 @@ $ curl -fsSL https://raw.githubusercontent.com/browser-use/bux/main/install.sh \
 
 Three minutes from a blank VPS to *"hey claude, check my email and summarize the unread ones"* via Telegram.
 
+[Watch the 14-second Browser Use Box demo on TikTok](https://www.tiktok.com/@browser_use/video/7639824093721758989).
+
 ## Setup prompt
 
 Paste into Claude Code (on your laptop) and it will set up your VPS for you:
