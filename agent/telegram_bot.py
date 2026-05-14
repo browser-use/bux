@@ -78,6 +78,7 @@ MINIAPP_DB = Path(os.environ.get("BUX_MINIAPP_DB", "/var/lib/bux/miniapp.db"))
 MINIAPP_TUNNEL_URL_FILE = Path(
     os.environ.get("BUX_MINIAPP_TUNNEL_URL_FILE", "/var/lib/bux/miniapp-tunnel/url")
 )
+GOALS_FILE = Path(os.environ.get("BUX_GOALS_FILE", "/opt/bux/repo/private/goals.md"))
 
 # Marker for "I've already told the user about this SHA". Lets transient
 # bux-tg restarts (systemd flaps, polling backoff) stay silent while
@@ -189,6 +190,90 @@ def _record_miniapp_topic(chat_id: int, thread_id: int, title: str, source: str 
     except Exception:
         LOG.debug("could not record mini app topic", exc_info=True)
 
+
+def _append_private_goal(title: str, context: str = "", cadence: str = "") -> None:
+    now = time.strftime("%Y-%m-%d", time.gmtime())
+    lines = ["", f"## {title}", f"- Added: {now}"]
+    if cadence:
+        lines.append(f"- Cadence: {cadence}")
+    if context:
+        lines.append(f"- Context: {context.strip()}")
+    lines.append("- Preference signals: learn from accepted, skipped, and completed Agency cards before suggesting more.")
+    try:
+        GOALS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        if not GOALS_FILE.exists() or not GOALS_FILE.read_text().strip():
+            GOALS_FILE.write_text(
+                "# Goals\n\n"
+                "Private high-level goals and Agency preferences for this box.\n"
+                "The Agency generator reads this before creating cards and updates it when the user clarifies goals.\n"
+            )
+        with GOALS_FILE.open("a") as fh:
+            fh.write("\n".join(lines) + "\n")
+    except Exception:
+        LOG.debug("could not append private goal", exc_info=True)
+
+
+def _record_miniapp_goal(title: str, context: str, cadence: str, chat_id: int, thread_id: int) -> int | None:
+    try:
+        MINIAPP_DB.parent.mkdir(parents=True, exist_ok=True)
+        now = int(time.time())
+        with sqlite3.connect(str(MINIAPP_DB)) as db:
+            db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS goals (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  title TEXT NOT NULL,
+                  context TEXT NOT NULL DEFAULT '',
+                  cadence TEXT NOT NULL DEFAULT '',
+                  status TEXT NOT NULL DEFAULT 'active',
+                  tg_chat_id INTEGER,
+                  tg_thread_id INTEGER,
+                  created_at INTEGER NOT NULL,
+                  updated_at INTEGER NOT NULL
+                )
+                """
+            )
+            cur = db.execute(
+                """
+                INSERT INTO goals (title, context, cadence, tg_chat_id, tg_thread_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (title, context, cadence, chat_id or None, thread_id or None, now, now),
+            )
+            return int(cur.lastrowid)
+    except Exception:
+        LOG.debug("could not record mini app goal", exc_info=True)
+        return None
+
+
+def _agency_goal_prompt(title: str, context: str, cadence: str = "") -> str:
+    try:
+        goals_text = GOALS_FILE.read_text().strip()[:12000]
+    except Exception:
+        goals_text = ""
+    goals_block = (
+        f"\n\nPrivate goals file ({GOALS_FILE}):\n{goals_text}"
+        if goals_text
+        else f"\n\nPrivate goals file ({GOALS_FILE}) is empty or missing. First lock the user's high-level goals."
+    )
+    cadence_line = f"\nCadence or schedule mentioned by the user: {cadence}" if cadence else ""
+    return (
+        "Mini App goal created.\n\n"
+        f"Goal: {title}\n\n"
+        f"User context:\n{context or title}"
+        f"{cadence_line}"
+        f"{goals_block}\n\n"
+        "Use the Agency skill and /opt/bux/repo/agent/AGENCY.md. "
+        "This is the generator lane for a personal social feed: create cards the user will want to accept. "
+        "Read the goals file and agency.db history first so you do not repeat skipped ideas. "
+        "Do reversible/internal work before posting a card, then ask only at the visible boundary. "
+        "Generate 10 high-signal Agency cards for this goal in this same Telegram topic using agency-report. "
+        "Every concrete card must name a specific person, company, thread, repo, PR, incident, signup, page, post, or file. "
+        "If this goal is still too vague, ask one short goal/context question or create high-level goal-lock cards instead of filler. "
+        "Set source_label/source_url to the real platform object; never use the bux GitHub repo URL as a generic source for non-GitHub cards. "
+        "Keep each card short, concrete, visual when useful, and easy to approve from the Mini App."
+    )
+
 # Failure reaction on the user's message. Telegram's free-tier reaction
 # allowlist excludes ⏳/✅/⚠️/❌ — this is a verified-allowed pick.
 EMOJI_ERROR = "💔"
@@ -255,6 +340,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("fast", "switch this topic's Codex lane to fast mode"),
     ("model", "show/set this topic's Codex model"),
     ("agency", "open the goal card feed"),
+    ("goal", "create an Agency goal"),
     ("miniapp", "open the goal card feed"),
     ("live", "live-view URL of the active browser"),
     ("queue", "pending tasks in this topic"),
@@ -4727,6 +4813,66 @@ class Bot:
         except Exception:
             LOG.exception("agency heartbeat schedule failed for chat_id=%s", chat_id)
 
+    def _start_agency_goal_from_command(
+        self,
+        chat_id: int,
+        thread_id: int,
+        title: str,
+        sender: dict,
+        reply_to: int | None = None,
+    ) -> None:
+        title = " ".join((title or "").split()).strip()
+        if not title:
+            self.send(
+                chat_id,
+                "Use `/goal <what should Agency optimize for?>`",
+                reply_to=reply_to,
+                thread_id=thread_id,
+                markdown=True,
+            )
+            return
+        context = title
+        goal_thread = thread_id
+        chat_type_hint = "topic"
+        if chat_id < 0:
+            try:
+                res = self.call("createForumTopic", chat_id=chat_id, name=title[:128])
+                if res.get("ok"):
+                    goal_thread = int(res["result"].get("message_thread_id") or thread_id)
+                    _record_miniapp_topic(chat_id, goal_thread, title, "telegram-goal")
+                    chat_type_hint = "new topic"
+            except Exception:
+                LOG.exception("goal: createForumTopic failed")
+        _append_private_goal(title, context)
+        goal_id = _record_miniapp_goal(title, context, "", chat_id, goal_thread)
+        prompt = _agency_goal_prompt(title, context)
+        self.send(
+            chat_id,
+            f"Goal created: {title}\n\nAgency is generating cards for it now.",
+            reply_to=reply_to,
+            thread_id=goal_thread or thread_id,
+        )
+        try:
+            self.run_task(
+                (chat_id, goal_thread),
+                prompt,
+                reply_to=None,
+                sender={
+                    "user_id": str(sender.get("user_id") or ""),
+                    "username": sender.get("username") or "",
+                    "name": sender.get("name") or "",
+                },
+            )
+            LOG.info("goal: started goal_id=%s chat=%s thread=%s via %s", goal_id, chat_id, goal_thread, chat_type_hint)
+        except Exception:
+            LOG.exception("goal: run_task failed")
+            self.send(
+                chat_id,
+                "Goal was saved, but I couldn't start the generator turn.",
+                reply_to=reply_to,
+                thread_id=goal_thread or thread_id,
+            )
+
     def _handle_my_chat_member(self, update: dict) -> None:
         """React to the bot's own membership changing in some chat.
 
@@ -5320,6 +5466,7 @@ class Bot:
                 "/claude login — sign in Claude through a terminal flow\n"
                 "/claude logout — sign out Claude\n"
                 "/agency — open the Mini App\n"
+                "/goal <goal> — create an Agency goal and generate cards\n"
                 "/miniapp — open the Mini App\n"
                 "/live — live-view URL of the active browser\n"
                 "/queue — pending tasks in this topic\n"
@@ -5335,6 +5482,18 @@ class Bot:
                 reply_to=mid,
                 thread_id=thread_id,
             )
+            return
+        if cmd == "/goal":
+            if not owner or not _is_owner(sender, owner):
+                self.send(
+                    chat_id,
+                    "`/goal` is owner-only.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
+            self._start_agency_goal_from_command(chat_id, thread_id, arg, sender, reply_to=mid)
             return
         if cmd in ("/agency", "/miniapp"):
             if not owner or not _is_owner(sender, owner):
