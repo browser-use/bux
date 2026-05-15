@@ -46,6 +46,7 @@ class MiniAppTest(unittest.TestCase):
         os.environ["BUX_AGENCY_DB"] = str(root / "agency.db")
         os.environ["BUX_MINIAPP_DB"] = str(root / "miniapp.db")
         os.environ["BUX_GOALS_FILE"] = str(root / "private" / "goals.md")
+        os.environ["BUX_AGENCY_FEEDBACK_FILE"] = str(root / "private" / "feedback.md")
         os.environ["BUX_MINIAPP_SEED_STARTERS"] = "0"
         os.environ.pop("BUX_MINIAPP_DEV", None)
         for name in ("agency_db", "mini_app"):
@@ -57,6 +58,7 @@ class MiniAppTest(unittest.TestCase):
     def tearDown(self) -> None:
         os.environ.pop("BUX_MINIAPP_SEED_STARTERS", None)
         os.environ.pop("BUX_GOALS_FILE", None)
+        os.environ.pop("BUX_AGENCY_FEEDBACK_FILE", None)
         self.tmp.cleanup()
 
     def test_validate_init_data_rejects_wrong_owner(self) -> None:
@@ -105,14 +107,15 @@ class MiniAppTest(unittest.TestCase):
         first = self.app._cards()
         second = self.app._cards()
 
-        starter_cards = [card for card in first if str(card["source"]).startswith("miniapp-starter:")]
+        starter_cards = [card for card in first if str(card["source"]).startswith("miniapp-goal:")]
         self.assertEqual(len(starter_cards), len(self.app.STARTER_IDEAS))
         self.assertEqual(
-            sorted(card["id"] for card in first if str(card["source"]).startswith("miniapp-starter:")),
-            sorted(card["id"] for card in second if str(card["source"]).startswith("miniapp-starter:")),
+            sorted(card["id"] for card in first if str(card["source"]).startswith("miniapp-goal:")),
+            sorted(card["id"] for card in second if str(card["source"]).startswith("miniapp-goal:")),
         )
         self.assertTrue(starter_cards[0]["buttons"])
         self.assertEqual(starter_cards[0]["visual"]["kind"], "image")
+        self.assertTrue(all(card["source_label"] == "Starter goal" for card in starter_cards))
 
     def test_cards_include_local_image_data_url(self) -> None:
         image_path = Path(self.tmp.name) / "card.png"
@@ -196,9 +199,45 @@ class MiniAppTest(unittest.TestCase):
             with self.agency_db.conn() as db:
                 row = db.execute("SELECT status FROM suggestions WHERE id = ?", (suggestion_id,)).fetchone()
             self.assertEqual(row["status"], "dismissed")
+            feedback = Path(os.environ["BUX_AGENCY_FEEDBACK_FILE"]).read_text()
+            self.assertIn("Review pull request", feedback)
+            self.assertIn("do not re-pitch", feedback)
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_topic_generate_prompt_includes_decision_history(self) -> None:
+        with self.agency_db.conn() as db:
+            accepted_id = self.agency_db.insert(
+                db,
+                title="Make New Goal a one-tap goal picker in tinder.html",
+                description="Goal creation should be fast.",
+                importance="high",
+                source="goal-ui",
+                source_label="tinder.html",
+                thread_id=4292,
+                buttons=["Yes"],
+            )
+            dismissed_id = self.agency_db.insert(
+                db,
+                title="Start generic Slack monitor",
+                description="Too vague.",
+                importance="med",
+                source="slack-monitor",
+                source_label="Starter idea",
+                thread_id=4292,
+                buttons=["Skip"],
+            )
+            self.agency_db.set_status(db, accepted_id, "accepted")
+            self.agency_db.set_status(db, dismissed_id, "dismissed")
+
+        prompt = self.app._topic_generate_prompt(4292, "Agency UI")
+
+        self.assertIn("Recent tap history:", prompt)
+        self.assertIn("accepted/completed:", prompt)
+        self.assertIn("Make New Goal a one-tap goal picker", prompt)
+        self.assertIn("dismissed:", prompt)
+        self.assertIn("Start generic Slack monitor", prompt)
 
     def test_start_dispatch_creates_worker_topic_by_default(self) -> None:
         calls: list[tuple[str, dict]] = []

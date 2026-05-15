@@ -189,6 +189,7 @@ function cardHtml(card) {
         </div>
       </header>
       <section class="card-body">
+        ${workStripHtml(card)}
         <p class="post-text">${text}</p>
         ${blocksHtml(card)}
         ${detailHtml(card)}
@@ -315,23 +316,62 @@ function cardActionButtons(card) {
   const prompt = String(card.action || "").trim();
   const labels = Array.isArray(card.buttons) ? card.buttons : [];
   const buttons = labels
-    .map((raw) => ({ raw: String(raw || "").trim(), text: buttonText(raw) }))
+    .map((raw) => ({ raw: String(raw || "").trim(), text: buttonText(raw, card) }))
     .filter((button) => button.raw && button.text);
   if (!prompt && !buttons.length) return [];
-  if (!buttons.length) return [{ raw: "Do it", text: "Do it" }];
+  if (!buttons.length) return [{ raw: "Do it", text: inferredActionLabel(card) }];
   return buttons;
 }
 
-function buttonText(label) {
+function buttonText(label, card = {}) {
   const raw = String(label || "").trim();
   if (/(skip|dismiss|delete|no\b|pass|edit|refine|change|context)/i.test(raw)) return "";
-  if (/^(yes|yes new thread|do it|start)$/i.test(raw.replace(/[^a-z ]/gi, " ").trim())) return "Do it";
+  if (/^(yes|yes new thread|do it|start)$/i.test(raw.replace(/[^a-z ]/gi, " ").trim())) return inferredActionLabel(card);
   return raw.replace(/^[^\p{L}\p{N}]+/u, "").replace(/\s+/g, " ").trim().slice(0, 32);
+}
+
+function inferredActionLabel(card) {
+  const text = [card.title, card.why, card.action, card.source_label, card.source].join(" ").toLowerCase();
+  const rules = [
+    [/\b(send|reply|dm|email|message)\b/, "Send draft"],
+    [/\b(post|tweet|quote|repost|linkedin|reddit|hacker news|bookface)\b/, "Post it"],
+    [/\b(merge|approve pr|pull request)\b/, "Merge PR"],
+    [/\b(publish|launch|submit listing|ship live)\b/, "Publish"],
+    [/\b(buy|purchase|pay|book|billing)\b/, "Review spend"],
+    [/\b(close|delete|remove|archive)\b/, "Review change"],
+    [/\b(draft|stage|prepare|write)\b/, "Open draft"],
+    [/\b(test|check|inspect|review|analyze|triage)\b/, "Run check"],
+    [/\b(build|implement|patch|add|replace|fix|store|feed|save)\b/, "Implement"],
+  ];
+  return (rules.find(([pattern]) => pattern.test(text)) || [null, "Start"])[1];
+}
+
+function workStripHtml(card) {
+  const tags = completedWorkTags(card);
+  if (!tags.length) return "";
+  return `<div class="work-strip" aria-label="Completed internal work"><span>Done</span>${tags.map((tag) => `<b>${escapeHtml(tag)}</b>`).join("")}</div>`;
+}
+
+function completedWorkTags(card) {
+  if (String(card.source || "").startsWith("miniapp-goal:")) return [];
+  if ((Array.isArray(card.buttons) ? card.buttons : []).some((label) => /lock goal/i.test(String(label)))) return [];
+  const tags = new Set();
+  const blocks = Array.isArray(card.blocks) ? card.blocks : [];
+  const blockText = blocks.map((block) => `${block.title || ""} ${block.body || ""}`).join(" ").toLowerCase();
+  const allText = [card.title, card.why, card.action, blockText].join(" ").toLowerCase();
+  if (/\b(draft|variant|reply|message|post copy|script)\b/.test(blockText)) tags.add("draft ready");
+  if (/\b(diff|pr|pull request|patch|test)\b/.test(allText)) tags.add("code inspected");
+  if (/\b(asset|image|video|screenshot|clip|media)\b/.test(allText) || card.visual?.kind === "image" || card.visual?.kind === "video") tags.add("asset ready");
+  if (/\b(analy[sz]e|data|metrics|scoreboard|signup|flight|compare|research)\b/.test(allText)) tags.add("research done");
+  return [...tags].slice(0, 3);
 }
 
 function sourceMeta(card) {
   const url = displaySourceUrl(card);
   const host = sourceHost(url);
+  if (String(card.source || "").startsWith("miniapp-goal:")) {
+    return { name: "Agency", mark: "" };
+  }
   const brands = [
     ["producthunt.com", "Product Hunt", "producthunt.com"],
     ["product hunt", "Product Hunt", "producthunt.com"],
@@ -610,7 +650,7 @@ els.goalSheet.addEventListener("click", (event) => {
 document.querySelectorAll("[data-goal-example]").forEach((button) => {
   button.addEventListener("click", () => {
     els.goalInput.value = button.dataset.goalExample || "";
-    els.goalInput.focus({ preventScroll: true });
+    els.goalForm.requestSubmit();
   });
 });
 attachSpeech();

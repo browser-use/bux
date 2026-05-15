@@ -33,6 +33,12 @@ TG_STATE = Path("/etc/bux/tg-state.json")
 TG_ALLOWED = Path("/etc/bux/tg-allowed.txt")
 MINI_DB = Path(os.environ.get("BUX_MINIAPP_DB", "/var/lib/bux/miniapp.db"))
 GOALS_FILE = Path(os.environ.get("BUX_GOALS_FILE", "/opt/bux/repo/private/goals.md"))
+FEEDBACK_FILE = Path(
+    os.environ.get(
+        "BUX_AGENCY_FEEDBACK_FILE",
+        "/opt/bux/repo/private/feedback_agency_acceptance_signals.md",
+    )
+)
 HOST = os.environ.get("BUX_MINIAPP_HOST", "127.0.0.1")
 PORT = int(os.environ.get("BUX_MINIAPP_PORT", "8787"))
 AUTH_MAX_AGE_SEC = int(os.environ.get("BUX_MINIAPP_AUTH_MAX_AGE", "86400"))
@@ -523,125 +529,66 @@ def _source_url(row: dict[str, Any]) -> str:
 
 STARTER_IDEAS: list[dict[str, Any]] = [
     {
-        "source": "miniapp-starter:gmail-monitor",
-        "title": "Gmail: monitor important replies every 30 minutes",
-        "description": "Catch important email fast, ignore spam, and draft three reply options in your voice.",
+        "source": "miniapp-goal:make-bux-successful",
+        "title": "Goal: make bux successful",
+        "description": "Build the product into a reliable 24/7 personal agent box that users keep using.",
         "prompt": (
-            "Starter idea accepted from the Mini App.\n\n"
-            "Set up or propose a recurring Gmail monitor: every 30 minutes, scan important inbox threads, "
-            "ignore spam/cold outreach, and create Agency cards with three concise reply drafts based on the user's style. "
-            "If this should run continuously, create a dedicated Telegram topic for the monitor and continue there."
+            "Goal-lock card accepted from the Mini App.\n\n"
+            "Save this as a high-level Agency goal: make bux successful. "
+            "Then inspect concrete connected context and create cards that improve activation, retention, distribution, product quality, or trust. "
+            "Do reversible/internal work first and ask only before visible or hard-to-revert actions."
         ),
-        "buttons": ["Start this"],
-        "image_text": "GMAIL MONITOR\nimportant replies",
+        "buttons": ["Lock goal"],
+        "image_text": "MAKE BUX\nsuccessful",
     },
     {
-        "source": "miniapp-starter:slack-whatsapp-monitor",
-        "title": "Slack/WhatsApp: surface messages that need a reply",
-        "description": "Find the conversations where the user is blocking someone and draft the next response.",
+        "source": "miniapp-goal:get-more-users",
+        "title": "Goal: reach 1000 users",
+        "description": "Find real distribution openings, draft assets, and ask only before public posts or messages.",
         "prompt": (
-            "Starter idea accepted from the Mini App.\n\n"
-            "Monitor Slack and WhatsApp for messages that need the user's response. Triage what matters, skip noise, "
-            "and create Agency cards with paste-ready replies. If this becomes a standing workflow, create a dedicated topic."
+            "Goal-lock card accepted from the Mini App.\n\n"
+            "Save this as a high-level Agency goal: reach 1000 users. "
+            "Scan for specific launch moments, communities, posts, signups, warm intros, and demo angles. "
+            "Draft assets before asking; stop at sending, posting, purchasing, or external changes."
         ),
-        "buttons": ["Start this"],
-        "image_text": "REPLY RADAR\nSlack + WhatsApp",
+        "buttons": ["Lock goal"],
+        "image_text": "1000 USERS\ndraft first",
     },
     {
-        "source": "miniapp-starter:datadog-pulse",
-        "title": "Datadog: send a 24-hour health pulse",
-        "description": "Turn incidents, latency spikes, and product signals into cards the user can act on.",
+        "source": "miniapp-goal:make-agency-useful",
+        "title": "Goal: make Agency useful every day",
+        "description": "Keep the feed concrete, visual when helpful, and tied to what the user already cares about.",
         "prompt": (
-            "Starter idea accepted from the Mini App.\n\n"
-            "Check Datadog for the last 24 hours: incidents, error spikes, latency, notable product usage, and anything "
-            "that should become an Agency card. If recurring monitoring is useful, create a dedicated Telegram topic."
+            "Goal-lock card accepted from the Mini App.\n\n"
+            "Save this as a high-level Agency goal: make Agency mode useful every day. "
+            "Read goals and Agency history, avoid repeated skipped themes, and generate only cards tied to a concrete source object."
         ),
-        "buttons": ["Start this"],
-        "image_text": "DATADOG PULSE\n24h health",
+        "buttons": ["Lock goal"],
+        "image_text": "USEFUL FEED\nconcrete cards",
     },
     {
-        "source": "miniapp-starter:signup-enrichment",
-        "title": "CDP: enrich new signups and draft outreach",
-        "description": "Spot promising users, enrich them, and suggest a message the user can accept or reject.",
+        "source": "miniapp-goal:stay-healthy-relationships",
+        "title": "Goal: stay healthy and keep relationships warm",
+        "description": "Suggest low-friction actions for energy, focus, fitness, and important people.",
         "prompt": (
-            "Starter idea accepted from the Mini App.\n\n"
-            "Inspect recent signups, enrich them from available CDP/context, identify high-potential accounts, "
-            "and create cards with suggested outreach or accept/reject decisions."
+            "Goal-lock card accepted from the Mini App.\n\n"
+            "Save this as a high-level Agency goal: stay healthy and keep relationships warm. "
+            "Look for practical, specific opportunities and draft messages before asking to send anything."
         ),
-        "buttons": ["Start this"],
-        "image_text": "SIGNUP RADAR\nenrich + draft",
+        "buttons": ["Lock goal"],
+        "image_text": "HEALTH + PEOPLE\nsmall moves",
     },
     {
-        "source": "miniapp-starter:gratitude-messages",
-        "title": "Comms: find moments to send gratitude",
-        "description": "Look across channels for people worth thanking and draft warm short messages.",
+        "source": "miniapp-goal:plan-incredible-trip",
+        "title": "Goal: plan an incredible trip",
+        "description": "Research routes, stays, schedules, and tradeoffs; ask before bookings or payments.",
         "prompt": (
-            "Starter idea accepted from the Mini App.\n\n"
-            "Scan connected communication channels for moments where the user can express gratitude to peers, customers, "
-            "or supporters. Create Agency cards with short messages ready to send."
+            "Goal-lock card accepted from the Mini App.\n\n"
+            "Save this as a high-level Agency goal: plan an incredible trip. "
+            "Research concrete options, prepare itineraries and booking drafts, and ask before purchases, reservations, or external messages."
         ),
-        "buttons": ["Start this"],
-        "image_text": "THANK SOMEONE\nwarm replies",
-    },
-    {
-        "source": "miniapp-starter:demo-case-studies",
-        "title": "Slack: turn great demo use cases into case studies",
-        "description": "Watch for strong customer/demo moments and pitch a video or case study card.",
-        "prompt": (
-            "Starter idea accepted from the Mini App.\n\n"
-            "Monitor Slack for great demo use cases, customer quotes, surprising wins, or product moments. "
-            "Create Agency cards that pitch a demo video, launch clip, or case study with a clear next action."
-        ),
-        "buttons": ["Start this"],
-        "image_text": "DEMO MOMENTS\ncase studies",
-    },
-    {
-        "source": "miniapp-starter:distribution-health",
-        "title": "Agent: suggest creative moves for startup, distribution, and health",
-        "description": "Generate useful reminders and action ideas that move the user's goals forward.",
-        "prompt": (
-            "Starter idea accepted from the Mini App.\n\n"
-            "Generate creative Agency cards for startup success, distribution, staying healthy, and useful reminders. "
-            "Keep every card short, visual when possible, and tied to a clear user goal."
-        ),
-        "buttons": ["Start this"],
-        "image_text": "NEXT MOVES\nstartup + health",
-    },
-    {
-        "source": "miniapp-starter:github-prs",
-        "title": "GitHub: find PRs and issues I should unblock",
-        "description": "Watch open work, summarize what matters, and suggest the next concrete merge or review.",
-        "prompt": (
-            "Starter idea accepted from the Mini App.\n\n"
-            "Inspect connected GitHub repositories for PRs, issues, failing checks, and stale reviews where the user can unblock progress. "
-            "Create concise Agency cards with the exact next action and enough context to approve or skip."
-        ),
-        "buttons": ["Start this"],
-        "image_text": "GITHUB RADAR\nmerge + review",
-    },
-    {
-        "source": "miniapp-starter:browser-automation",
-        "title": "Browser: automate repetitive web tasks",
-        "description": "Turn recurring browser chores into cards the user can approve before the agent runs them.",
-        "prompt": (
-            "Starter idea accepted from the Mini App.\n\n"
-            "Ask what browser workflows the user repeats, then propose useful automations as Agency cards. "
-            "For each card, explain the website, the exact action, and what confirmation is needed before running it."
-        ),
-        "buttons": ["Start this"],
-        "image_text": "BROWSER TASKS\nautomate chores",
-    },
-    {
-        "source": "miniapp-starter:weekly-planning",
-        "title": "Planning: turn my week into action cards",
-        "description": "Look at priorities, reminders, and connected context, then propose focused next steps.",
-        "prompt": (
-            "Starter idea accepted from the Mini App.\n\n"
-            "Help the user plan the week from connected context, reminders, messages, and stated goals. "
-            "Create Agency cards for the highest-leverage actions, each short enough to decide on quickly."
-        ),
-        "buttons": ["Start this"],
-        "image_text": "WEEKLY PLAN\nfocus cards",
+        "buttons": ["Lock goal"],
+        "image_text": "TRIP PLAN\noptions ready",
     },
 ]
 
@@ -671,7 +618,7 @@ def _ensure_starter_cards() -> None:
                 description=str(idea["description"]),
                 importance="med",
                 source=str(idea["source"]),
-                source_label="Starter idea",
+                source_label="Starter goal",
                 prompt=str(idea["prompt"]) + STARTER_ACCEPTANCE_SUFFIX,
                 buttons=list(idea.get("buttons") or ["Start this"]),
                 image_url=_starter_image_url(str(idea["image_text"])),
@@ -895,6 +842,36 @@ def _append_goal_file_entry(title: str, context: str, cadence: str = "") -> None
         print(f"bux-miniapp: goals file append failed: {exc}", file=sys.stderr)
 
 
+def _append_dismiss_feedback(row: dict[str, Any], user: dict[str, Any]) -> None:
+    title = _clean_mobile_text(row.get("title") or "").strip()
+    if not title:
+        return
+    source_label = _clean_mobile_text(row.get("source_label") or row.get("source") or "").strip()
+    source_url = str(row.get("source_url") or "").strip()
+    now = time.strftime("%Y-%m-%d", time.gmtime())
+    actor = str(user.get("username") or user.get("first_name") or user.get("id") or "miniapp")
+    pattern_bits = [title]
+    if source_label:
+        pattern_bits.append(source_label)
+    pattern = " | ".join(pattern_bits)
+    lines = [
+        "",
+        f"- {now}: skipped `{pattern}`",
+        f"  - Signal: do not re-pitch this exact card shape unless the underlying source materially changes.",
+    ]
+    if source_url:
+        lines.append(f"  - Source: {source_url}")
+    lines.append(f"  - Recorded from: {actor}")
+    try:
+        FEEDBACK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        if not FEEDBACK_FILE.exists() or not FEEDBACK_FILE.read_text().strip():
+            FEEDBACK_FILE.write_text("# Agency Acceptance Signals\n")
+        with FEEDBACK_FILE.open("a") as fh:
+            fh.write("\n".join(lines) + "\n")
+    except Exception as exc:
+        print(f"bux-miniapp: feedback write failed: {exc}", file=sys.stderr)
+
+
 def _can_create_telegram_topics() -> bool:
     return os.environ.get("BUX_MINIAPP_DEV") != "1" and MINI_DB == Path("/var/lib/bux/miniapp.db")
 
@@ -940,6 +917,55 @@ def _goal_agent_prompt(
     )
 
 
+def _topic_decision_history(thread_id: int, limit: int = 24) -> str:
+    if not thread_id:
+        return "- No topic-specific decisions yet."
+    with agency_db.conn() as db:
+        rows = db.execute(
+            """
+            SELECT title, status, decision, source_label, source_url
+              FROM suggestions
+             WHERE tg_thread_id = ?
+             ORDER BY id DESC
+             LIMIT ?
+            """,
+            (thread_id, limit),
+        ).fetchall()
+    if not rows:
+        return "- No topic-specific decisions yet."
+    grouped: dict[str, list[str]] = {
+        "accepted/completed": [],
+        "pending": [],
+        "dismissed": [],
+        "other": [],
+    }
+    for row in rows:
+        status = str(row["status"] or "pending")
+        title = _clip_text(_clean_mobile_text(row["title"] or ""), 96)
+        source = _clip_text(_clean_mobile_text(row["source_label"] or ""), 42)
+        decision = _clip_text(_clean_mobile_text(row["decision"] or ""), 38)
+        label = title
+        if source:
+            label += f" [{source}]"
+        if decision:
+            label += f" -> {decision}"
+        if status in {"accepted", "completed"}:
+            bucket = "accepted/completed"
+        elif status == "pending":
+            bucket = "pending"
+        elif status == "dismissed":
+            bucket = "dismissed"
+        else:
+            bucket = "other"
+        grouped[bucket].append(label)
+    lines: list[str] = []
+    for bucket, items in grouped.items():
+        if items:
+            lines.append(f"{bucket}:")
+            lines.extend(f"- {item}" for item in items[:8])
+    return "\n".join(lines) if lines else "- No topic-specific decisions yet."
+
+
 def _topic_generate_prompt(thread_id: int, title: str) -> str:
     recent: list[str] = []
     with agency_db.conn() as db:
@@ -954,6 +980,7 @@ def _topic_generate_prompt(thread_id: int, title: str) -> str:
         ).fetchall()
         recent = [str(row["title"] or "").strip() for row in rows if str(row["title"] or "").strip()]
     context = "\n".join(f"- {item}" for item in recent[:8]) or "- No existing cards in this topic yet."
+    history = _topic_decision_history(thread_id)
     goals_text = _goals_file_text()
     goals_block = (
         f"\nPrivate goals file ({GOALS_FILE}):\n{goals_text}\n"
@@ -964,6 +991,7 @@ def _topic_generate_prompt(thread_id: int, title: str) -> str:
         "Generate more Mini App action items.\n\n"
         f"Topic: {title}\n"
         f"Existing recent cards:\n{context}\n"
+        f"Recent tap history:\n{history}\n"
         f"{goals_block}\n"
         "Use the Agency skill and /opt/bux/repo/agent/AGENCY.md. "
         "The user explicitly wants more cards/action items for this topic. "
@@ -977,6 +1005,9 @@ def _topic_generate_prompt(thread_id: int, title: str) -> str:
 
 
 def _autopilot_prompt(title: str, context: str = "") -> str:
+    topic_match = re.search(r"\bTopic id:\s*(\d+)", context or "", re.I)
+    history = _topic_decision_history(int(topic_match.group(1))) if topic_match else ""
+    history_block = f"Recent tap history:\n{history}\n" if history else ""
     goals_text = _goals_file_text()
     goals_block = (
         f"\nPrivate goals file ({GOALS_FILE}):\n{goals_text}\n"
@@ -987,6 +1018,7 @@ def _autopilot_prompt(title: str, context: str = "") -> str:
         "Mini App Autopilot started.\n\n"
         f"Goal: {title or 'Agency'}\n"
         f"Context:\n{context or title or 'Improve this goal autonomously.'}\n"
+        f"{history_block}"
         f"{goals_block}\n"
         "Work autonomously now. Do not just create approval cards unless you genuinely need a visible human decision. "
         "Do all reversible/internal work directly: inspect files, improve the app, draft assets, analyze data, create local artifacts, and test. "
@@ -1591,6 +1623,7 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     with agency_db.conn() as db:
                         agency_db.set_status(db, suggestion_id, "dismissed")
                     _append_event(suggestion_id, "dismiss", user)
+                    _append_dismiss_feedback(row, user)
                     _json_response(self, 200, {"ok": True})
                     return
                 if action == "different":

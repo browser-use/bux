@@ -335,6 +335,39 @@ body.rail-collapsed .goal-rail {
   text-decoration: none;
 }
 
+.work-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.work-strip span,
+.work-strip b {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.work-strip span {
+  color: var(--green);
+  font-weight: 850;
+}
+
+.work-strip b {
+  padding: 0 8px;
+  border: 1px solid rgba(0, 186, 124, 0.24);
+  color: #d7fff1;
+  background: rgba(0, 186, 124, 0.1);
+  font-weight: 750;
+}
+
 .media {
   margin-top: 12px;
   border: 1px solid var(--line);
