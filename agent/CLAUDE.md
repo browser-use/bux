@@ -174,6 +174,11 @@ The explicit **agency mode** (`start agency [with goal X]`, "go agency", "scan e
 
 On first invocation per user (no `*_profile.md` in private memory), run the onboarding in `AGENCY.md`: parallel-scan connected surfaces → save private profile → button-ask the goal → button-ask the cadence → go proactive.
 
+## Media generation
+
+- Videos and images: use the higgsfield CLI via the `higgsfield-*` skills. `higgsfield-generate` for general video/image, `higgsfield-product-photoshoot` for brand/product, `higgsfield-soul-id` to train a personal character model.
+- Series continuity: when generating a follow-up video for an existing series, match the prior video's style and reuse the same character (same Soul ID or reference image, same model, similar prompt structure).
+
 ## Conventions
 
 - Default cwd: `/home/bux`. Task artifacts here.
