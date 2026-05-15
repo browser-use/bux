@@ -85,13 +85,22 @@ GOALS_FILE = Path(os.environ.get("BUX_GOALS_FILE", "/opt/bux/repo/private/goals.
 # update-driven restarts (different SHA) announce themselves once.
 LAST_ANNOUNCED_SHA = Path("/var/lib/bux/last-announced.sha")
 
-# One-shot file written by /update before it kicks off bootstrap.sh. The next
-# time the bot starts, _announce_online_if_new_sha reads this and unconditionally
-# pings the listed lane(s) with a "back online" confirmation — even if the SHA
-# didn't change and even if the lane was idle. The user explicitly asked for the
-# restart, so they get a confirmation.  Format: one "<chat_id>\t<thread_id>" per
-# line (thread_id may be empty). Consumed (deleted) after read.
+# One-shot file written before a restart so the post-boot handler can act on
+# the in-flight lane(s) instead of leaving the user staring at a half-streamed
+# message bubble. Two writers, two kinds:
+#
+#   • `back-online` (default; written by _cmd_update / TG /update) — post-boot
+#     sends "✅ back online (sha=…)" into the lane, regardless of SHA delta.
+#   • `self-restart` (written by bux-restart) — post-boot enqueues a fresh
+#     continuation turn into the lane. claude --resume keeps the session UUID,
+#     so the agent picks up mid-conversation with the full transcript above
+#     it intact, instead of the killed in-flight job just disappearing.
+#
+# Line format: "<chat_id>\t<thread_id>[\t<kind>]\n" (thread_id may be empty;
+# missing kind = back-online for legacy rows). Consumed (deleted) after read.
 UPDATE_REQUEST_LANES = Path("/var/lib/bux/update-request.lanes")
+UPDATE_REQUEST_KIND_BACK_ONLINE = "back-online"
+UPDATE_REQUEST_KIND_SELF_RESTART = "self-restart"
 
 # Per-lane session-uuid root. Bot creates lazily as bux-owned.
 SESSIONS_DIR = Path("/home/bux/.bux/sessions")
@@ -7509,23 +7518,34 @@ class Bot:
             LOG.exception("agency callback dispatch failed")
 
 
-def _consume_update_request_lanes() -> set["LaneKey"]:
-    """Read + delete the one-shot file written by /update. Lanes listed here get
-    a "back online" confirmation regardless of SHA delta or pending work."""
+def _consume_update_request_lanes() -> dict["LaneKey", str]:
+    """Read + delete the restart-request file. Returns lane → kind.
+
+    Legacy 2-column rows (and any unknown kind) fall back to back-online —
+    that's the safer default, since back-online is a passive notification
+    and self-restart triggers an actual agent turn.
+
+    If a lane shows up twice, self-restart wins. The agent was mid-task in
+    that lane and explicitly asked for the continuation; downgrading to a
+    plain "back online" ping would lose work the user is still waiting on.
+    """
     try:
         text = UPDATE_REQUEST_LANES.read_text()
     except FileNotFoundError:
-        return set()
+        return {}
     try:
         UPDATE_REQUEST_LANES.unlink()
     except FileNotFoundError:
         pass
-    out: set[LaneKey] = set()
+    out: dict[LaneKey, str] = {}
     for line in text.splitlines():
         line = line.strip()
         if not line:
             continue
-        chat_str, _, thread_str = line.partition("\t")
+        parts = line.split("\t")
+        chat_str = parts[0] if parts else ""
+        thread_str = parts[1] if len(parts) > 1 else ""
+        kind = parts[2].strip() if len(parts) > 2 else ""
         try:
             chat_id = int(chat_str)
         except ValueError:
@@ -7534,22 +7554,107 @@ def _consume_update_request_lanes() -> set["LaneKey"]:
             thread_id = int(thread_str) if thread_str else 0
         except ValueError:
             thread_id = 0
-        out.add((chat_id, thread_id))
+        if kind != UPDATE_REQUEST_KIND_SELF_RESTART:
+            kind = UPDATE_REQUEST_KIND_BACK_ONLINE
+        existing = out.get((chat_id, thread_id))
+        if existing == UPDATE_REQUEST_KIND_SELF_RESTART:
+            continue
+        out[(chat_id, thread_id)] = kind
     return out
+
+
+def _build_self_restart_continuation_prompt(sha: str, branch: str) -> str:
+    """Synthetic prompt for the post-boot continuation turn.
+
+    Lands as a normal job into the lane's FIFO. The lane's claude/codex
+    session UUID is on disk, so --resume keeps the full transcript above
+    this turn — the agent sees the whole prior conversation, including its
+    own half-streamed reply, and just keeps going. No user-facing prefix
+    is added (sender=None at enqueue time), so the agent reads this as a
+    system-style nudge rather than a new user message.
+    """
+    return (
+        "[SYSTEM] bux-restart finished. The box just rebooted at your request "
+        f"(sha={sha}, branch={branch}). Your previous reply in this topic was "
+        "cut off mid-stream when bux-tg got killed.\n\n"
+        "The full conversation transcript above is intact via session resume. "
+        "Pick up where you left off:\n"
+        "- If a task was in progress, finish it.\n"
+        "- If you restarted only to apply a code change, confirm in one short "
+        "line that you're back and stop.\n"
+        "- Do not restate the task or recap. Just continue."
+    )
+
+
+def _enqueue_self_restart_continuations(
+    bot: "Bot",
+    lanes: list["LaneKey"],
+    sha: str,
+    branch: str,
+) -> set["LaneKey"]:
+    """Drop a continuation turn at the head of each self-restart lane.
+
+    Goes through the normal `_enqueue` → `_lane_drain` → `run_task` path so
+    the user sees a streaming bubble appear in the topic immediately, with
+    the same per-turn placeholder + thinking emoji + reactions as any other
+    message. The continuation runs first via `_lane_promote_to_front` —
+    queued user follow-ups that landed during the restart window stay in
+    FIFO order behind it.
+
+    Returns the set of lanes a continuation was successfully enqueued into,
+    so the caller can skip the legacy "🔄 restarting → ✅ fully ready"
+    bubble for those lanes (the streaming reply is itself the signal).
+    """
+    enqueued: set[LaneKey] = set()
+    prompt = _build_self_restart_continuation_prompt(sha, branch)
+    for (chat_id, thread_id) in lanes:
+        slug = _lane_slug((chat_id, thread_id))
+        job = {
+            "id": _new_job_id(),
+            "chat_id": chat_id,
+            "thread_id": thread_id,
+            "message_id": None,
+            "prompt": prompt,
+            "queued_at": time.time(),
+            "status": "queued",
+            "sender": None,
+            "thinking_emoji": random_thinking_emoji(),
+        }
+        try:
+            _enqueue(slug, job, bot._lane_drain)
+            _lane_promote_to_front(slug, job["id"])
+        except Exception:
+            LOG.exception(
+                "self-restart: enqueue failed for chat=%s thread=%s",
+                chat_id,
+                thread_id,
+            )
+            continue
+        enqueued.add((chat_id, thread_id))
+    return enqueued
 
 
 def _announce_online_if_new_sha(bot: "Bot") -> None:
     """Boot announcement, scoped to lanes that care about the restart.
 
-    Two paths:
+    Three paths, picked per lane:
+
+    Self-restart continuation (bux-restart from the agent's own shell):
+    enqueue a fresh turn into the same lane with a synthetic "you just
+    restarted, continue what you were doing" prompt. `claude --resume`
+    keeps the session UUID, so the agent picks up mid-conversation
+    instead of the user being left with a half-streamed bubble that
+    never finishes. No "back online" bubble — the streaming reply is
+    the signal.
 
     Two-stage (busy lanes, fires on user-triggered restarts): a "🔄 restarting
     (sha=…)" message in each lane that had pending work when the restart hit,
     edited in place to "✅ fully ready (sha=…)" once that lane's leftover work
     has drained. Idle lanes get nothing — a restart is noise to a user whose
-    conversation wasn't mid-task.
+    conversation wasn't mid-task. Skipped for self-restart lanes (their
+    continuation turn already accounts for the leftover work).
 
-    One-shot (user-requested updates): the lane that ran /update gets a
+    One-shot back-online (TG /update path): the lane that ran /update gets a
     "✅ back online" confirmation unconditionally — even on idle lanes and
     even when the SHA didn't change (e.g. /update with no new commits).
     They explicitly asked for the restart, so they get a confirmation.
@@ -7558,7 +7663,7 @@ def _announce_online_if_new_sha(bot: "Bot") -> None:
     bux-tg gets restarted by plenty of things that aren't user-initiated —
     systemd flaps, long-poll backoff escapes, the post-update agent restart
     itself. We treat a restart as user-triggered if EITHER the SHA changed
-    (someone manually pulled + restarted) OR a /update requester is recorded.
+    (someone manually pulled + restarted) OR a requester is recorded.
     Otherwise we stay silent across the board.
     """
     try:
@@ -7592,15 +7697,37 @@ def _announce_online_if_new_sha(bot: "Bot") -> None:
         if not chats:
             return
 
+        # Split requesters by kind and filter to allowed chats. Self-restart
+        # lanes get a continuation turn; back-online lanes get the legacy
+        # one-shot ping.
+        self_restart_lanes = [
+            (c, t) for (c, t), k in requesters.items()
+            if k == UPDATE_REQUEST_KIND_SELF_RESTART and c in chats
+        ]
+        back_online_lanes = [
+            (c, t) for (c, t), k in requesters.items()
+            if k == UPDATE_REQUEST_KIND_BACK_ONLINE and c in chats
+        ]
+
+        # Enqueue continuation turns BEFORE snapshotting pending work — that
+        # way the continuation job is in the snapshot and the "fully ready"
+        # watcher knows to wait for it too. We still suppress the two-stage
+        # bubble for self-restart lanes (handled below), but the snapshot
+        # has to include the continuation so other lanes' watchers don't
+        # flip green while this lane is still draining.
+        continuations_enqueued = _enqueue_self_restart_continuations(
+            bot, self_restart_lanes, sha, branch
+        )
+
         # Snapshot leftover work per lane BEFORE the worker drain has had
         # time to chew through it. We snapshot whenever the restart is
         # user-triggered (sha changed via out-of-band pull, OR a requester
-        # is present from /update) — busy lanes need the two-stage 🔄→✅
-        # treatment in either case so they know their queued work survives
-        # the restart. The original SHA-only gate was too narrow: it meant
-        # a /update on an already-current branch would silently skip
-        # busy lanes AND fire a "✅ back online" to the requester before
-        # their own pending work had drained.
+        # is present) — busy lanes need the two-stage 🔄→✅ treatment in
+        # either case so they know their queued work survives the restart.
+        # The original SHA-only gate was too narrow: it meant a /update on
+        # an already-current branch would silently skip busy lanes AND fire
+        # a "✅ back online" to the requester before their own pending work
+        # had drained.
         pending_by_lane = (
             _snapshot_pending_by_lane() if (sha_changed or requesters) else {}
         )
@@ -7614,6 +7741,13 @@ def _announce_online_if_new_sha(bot: "Bot") -> None:
                 # Respect the allow list — a stale lane for a chat that's no
                 # longer bound shouldn't get a message it can't read anyway.
                 if chat_id not in chats:
+                    continue
+                # Self-restart lanes get their continuation streaming reply
+                # instead of a separate "restarting → fully ready" bubble.
+                # We still want their ids in `all_pending_ids` so OTHER
+                # lanes' fully-ready flip waits for this lane's work too.
+                all_pending_ids |= ids
+                if (chat_id, thread_id) in continuations_enqueued:
                     continue
                 try:
                     mid = bot.send_returning_id(
@@ -7630,17 +7764,16 @@ def _announce_online_if_new_sha(bot: "Bot") -> None:
                     continue
                 if isinstance(mid, int):
                     msg_ids[(chat_id, thread_id)] = mid
-                    all_pending_ids |= ids
 
-        # User-requested update: send a single "back online" to each
-        # requester lane that wasn't already covered by the two-stage
-        # announce above (avoid duplicate ping for a busy lane that also
-        # ran /update).
+        # User-requested update (legacy back-online): send a single
+        # "back online" to each requester lane that wasn't already covered
+        # by the two-stage announce above or a self-restart continuation
+        # (avoid duplicate ping).
         back_text = f"✅ back online (sha={sha}, branch={branch})"
-        for (chat_id, thread_id) in sorted(requesters):
-            if chat_id not in chats:
-                continue
+        for (chat_id, thread_id) in sorted(back_online_lanes):
             if (chat_id, thread_id) in msg_ids:
+                continue
+            if (chat_id, thread_id) in continuations_enqueued:
                 continue
             try:
                 bot.send(

@@ -203,5 +203,112 @@ class AgencyButtonPromptTest(unittest.TestCase):
         self.assertIn("rethink this suggestion", prompt)
 
 
+class UpdateRequestLanesTest(unittest.TestCase):
+    """Parse + dispatch behavior for /var/lib/bux/update-request.lanes."""
+
+    def test_legacy_two_column_rows_are_back_online(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "update-request.lanes"
+            f.write_text("100\t\n200\t300\n", encoding="utf-8")
+            with mock.patch.object(telegram_bot, "UPDATE_REQUEST_LANES", f):
+                got = telegram_bot._consume_update_request_lanes()
+            self.assertEqual(
+                got,
+                {
+                    (100, 0): telegram_bot.UPDATE_REQUEST_KIND_BACK_ONLINE,
+                    (200, 300): telegram_bot.UPDATE_REQUEST_KIND_BACK_ONLINE,
+                },
+            )
+            self.assertFalse(f.exists(), "file should be consumed (unlinked)")
+
+    def test_three_column_self_restart_kind_parses(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "update-request.lanes"
+            f.write_text("100\t300\tself-restart\n", encoding="utf-8")
+            with mock.patch.object(telegram_bot, "UPDATE_REQUEST_LANES", f):
+                got = telegram_bot._consume_update_request_lanes()
+            self.assertEqual(
+                got,
+                {(100, 300): telegram_bot.UPDATE_REQUEST_KIND_SELF_RESTART},
+            )
+
+    def test_self_restart_wins_when_lane_appears_twice(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "update-request.lanes"
+            f.write_text(
+                "100\t300\n100\t300\tself-restart\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(telegram_bot, "UPDATE_REQUEST_LANES", f):
+                got = telegram_bot._consume_update_request_lanes()
+            self.assertEqual(
+                got[(100, 300)],
+                telegram_bot.UPDATE_REQUEST_KIND_SELF_RESTART,
+            )
+
+    def test_unknown_kind_falls_back_to_back_online(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "update-request.lanes"
+            f.write_text("100\t300\tbogus\n", encoding="utf-8")
+            with mock.patch.object(telegram_bot, "UPDATE_REQUEST_LANES", f):
+                got = telegram_bot._consume_update_request_lanes()
+            self.assertEqual(
+                got[(100, 300)],
+                telegram_bot.UPDATE_REQUEST_KIND_BACK_ONLINE,
+            )
+
+    def test_missing_file_returns_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "update-request.lanes"
+            with mock.patch.object(telegram_bot, "UPDATE_REQUEST_LANES", f):
+                self.assertEqual(telegram_bot._consume_update_request_lanes(), {})
+
+
+class SelfRestartContinuationTest(unittest.TestCase):
+    """Continuation turn is enqueued into the same lane, front of queue."""
+
+    def setUp(self) -> None:
+        # Reset module-level lane state — these tests poke it directly.
+        telegram_bot._lanes.clear()
+        telegram_bot._lane_workers.clear()
+
+    def test_enqueues_one_job_per_lane_at_front_of_queue(self) -> None:
+        bot = mock.MagicMock()
+        # Pre-existing user follow-up that arrived during the restart window.
+        slug = telegram_bot._lane_slug((100, 300))
+        existing_job = {
+            "id": "deadbeef",
+            "chat_id": 100,
+            "thread_id": 300,
+            "prompt": "user follow-up sent while box was down",
+            "queued_at": 1.0,
+            "status": "queued",
+        }
+        with mock.patch.object(telegram_bot, "_save_lanes_to_disk_locked"):
+            telegram_bot._lanes[slug] = [existing_job]
+            enqueued = telegram_bot._enqueue_self_restart_continuations(
+                bot, [(100, 300)], sha="abc123", branch="main"
+            )
+
+        self.assertEqual(enqueued, {(100, 300)})
+        lane = telegram_bot._lanes[slug]
+        self.assertEqual(len(lane), 2)
+        # Continuation runs first; user follow-up stays queued behind it.
+        self.assertEqual(lane[0]["status"], "queued")
+        self.assertIn("bux-restart finished", lane[0]["prompt"])
+        self.assertIn("abc123", lane[0]["prompt"])
+        self.assertIn("main", lane[0]["prompt"])
+        self.assertIsNone(lane[0]["sender"])
+        self.assertEqual(lane[1]["id"], "deadbeef")
+
+    def test_skips_lane_when_enqueue_fails(self) -> None:
+        bot = mock.MagicMock()
+        with mock.patch.object(telegram_bot, "_enqueue", side_effect=RuntimeError("boom")):
+            enqueued = telegram_bot._enqueue_self_restart_continuations(
+                bot, [(100, 300), (400, 0)], sha="abc", branch="main"
+            )
+        self.assertEqual(enqueued, set())
+
+
 if __name__ == "__main__":
     unittest.main()

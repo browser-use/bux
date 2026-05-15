@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# bux-restart — restart bux-tg with a back-online ping into the current lane.
+# bux-restart — restart bux-tg with a continuation turn into the current lane.
 #
 # Drop-in replacement for `sudo systemctl restart bux-tg` when the agent
-# (or a user on the box) wants the restart to be announced. Records the
-# current lane in /var/lib/bux/update-request.lanes so the post-boot
-# announce in telegram_bot.py sends "✅ back online (sha=…)" — same UX
-# as /update from TG, but callable from the shell when claude/codex is
-# the one driving the restart in response to natural-language requests.
+# (or a user on the box) wants the restart to be picked up cleanly.
+# Records the current lane in /var/lib/bux/update-request.lanes tagged
+# `self-restart`, so the post-boot handler in telegram_bot.py enqueues a
+# continuation turn — claude --resume keeps the session UUID, so the agent
+# picks up mid-conversation instead of leaving a half-streamed bubble dead
+# in the topic. (`/update` from TG writes the same file with no `kind`,
+# which falls back to the legacy "✅ back online" message.)
 #
 # Usage:
 #   bux-restart                # sudo systemctl restart bux-tg (fast path)
@@ -32,11 +34,15 @@ case "${1:-}" in
 esac
 
 if [ -n "${TG_CHAT_ID:-}" ]; then
-  # Append "<chat_id>\t<thread_id>\n" — same shape _cmd_update writes
-  # in telegram_bot.py. The post-boot consumer reads + unlinks the file,
-  # so a never-consumed line stays in queue until the next restart.
+  # Append "<chat_id>\t<thread_id>\tself-restart\n". Same file as _cmd_update,
+  # but with an extra `kind` column so the post-boot handler can distinguish
+  # the agent restarting itself (→ enqueue continuation turn into the same
+  # session so the conversation picks up where it left off) from a user
+  # running /update (→ send a one-shot "back online" confirmation). The
+  # post-boot consumer reads + unlinks the file, so a never-consumed line
+  # stays in queue until the next restart.
   sudo install -d -o root -g root -m 0755 /var/lib/bux
-  printf '%s\t%s\n' "$TG_CHAT_ID" "${TG_THREAD_ID:-}" \
+  printf '%s\t%s\t%s\n' "$TG_CHAT_ID" "${TG_THREAD_ID:-}" "self-restart" \
     | sudo tee -a /var/lib/bux/update-request.lanes >/dev/null
 fi
 
