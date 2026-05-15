@@ -902,12 +902,12 @@ def _goal_agent_prompt(
         f"User context:\n{context or title}"
         f"{cadence_line}"
         f"{goals_block}\n\n"
-        "Use the Agency skill and /opt/bux/repo/agent/AGENCY.md. "
+        "Card-shape doctrine is in CLAUDE.md (## Composing a card). "
         f"Scan the user's available context and generate {count} high-signal action items for this goal. "
         "This is the generator lane for a personal social feed: create cards the user will want to accept. "
         "Read the goals file and agency.db history first so you do not repeat skipped ideas. "
         "Do all reversible/internal work before posting a card, then ask only at the visible boundary. "
-        "If the user explicitly says to work autonomously, that they are going away, or that no approval is needed, switch to Autopilot: do the private/reversible work directly, post concise progress updates in this topic, and create approval cards only for visible/external side effects. "
+        "If the user explicitly says to work autonomously, that they are going away, or that no approval is needed, switch to autopilot: do the private/reversible work directly, post concise progress updates in this topic, and create approval cards only for visible/external side effects. "
         "Do not generate generic channel ideas like 'monitor Slack' or 'check GitHub'. "
         "Every concrete card must name a person, company, thread, repo, PR, incident, signup, page, post, or file. "
         "If goals or context are still unknown, create high-level goal-lock cards or ask one short goal question instead of leaving the feed empty. "
@@ -997,7 +997,7 @@ def _topic_generate_prompt(thread_id: int, title: str) -> str:
         f"Existing recent cards:\n{context}\n"
         f"Recent tap history:\n{history}\n"
         f"{goals_block}\n"
-        "Use the Agency skill and /opt/bux/repo/agent/AGENCY.md. "
+        "Card-shape doctrine is in CLAUDE.md (## Composing a card). "
         "The user explicitly wants more cards/action items for this topic. "
         "Treat this topic as a generator lane. Read the private goals and the existing card history, learn from skipped/accepted decisions, and avoid duplicates. "
         "Do not generate generic channel/workflow ideas. Each card must name a specific person, company, thread, repo, PR, incident, signup, page, post, or file and explain why it moves the topic goal. "
@@ -1385,11 +1385,7 @@ class MiniAppHandler(BaseHTTPRequestHandler):
             except PermissionError as exc:
                 _json_response(self, 401, {"error": str(exc)})
             return
-        if path == "/":
-            path = "/tinder.html"
-        if path == "/feed":
-            path = "/index.html"
-        if path == "/tinder":
+        if path in ("/", "/tinder"):
             path = "/tinder.html"
         if path == "/favicon.ico":
             self.send_response(204)

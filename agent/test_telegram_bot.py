@@ -203,5 +203,86 @@ class AgencyButtonPromptTest(unittest.TestCase):
         self.assertIn("rethink this suggestion", prompt)
 
 
+class GoalModeTest(unittest.TestCase):
+    """Tests for the /autopilot + /copilot per-topic mode flow."""
+
+    def setUp(self) -> None:
+        # Isolated mini-app DB per test so writes don't bleed.
+        self._tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self._tmp.close()
+        self._db_patch = mock.patch.object(
+            telegram_bot, "MINIAPP_DB", Path(self._tmp.name)
+        )
+        self._db_patch.start()
+        # Also isolate the goals.md file (the goal-recording path appends to it).
+        self._goals_tmp = tempfile.NamedTemporaryFile(suffix=".md", delete=False)
+        self._goals_tmp.close()
+        self._goals_patch = mock.patch.object(
+            telegram_bot, "GOALS_FILE", Path(self._goals_tmp.name)
+        )
+        self._goals_patch.start()
+
+    def tearDown(self) -> None:
+        self._db_patch.stop()
+        self._goals_patch.stop()
+        os.unlink(self._tmp.name)
+        os.unlink(self._goals_tmp.name)
+
+    def test_default_mode_is_copilot(self) -> None:
+        # No goal row yet — fall back to default.
+        self.assertEqual(telegram_bot._get_goal_mode(123, 99), "copilot")
+
+    def test_record_then_get_mode(self) -> None:
+        gid = telegram_bot._record_miniapp_goal(
+            "ship demo", "context", "", 123, 99, mode="autopilot"
+        )
+        self.assertIsNotNone(gid)
+        self.assertEqual(telegram_bot._get_goal_mode(123, 99), "autopilot")
+
+    def test_invalid_mode_falls_back_to_default(self) -> None:
+        # Junk mode -> stored as default.
+        gid = telegram_bot._record_miniapp_goal(
+            "x", "", "", 123, 99, mode="ludicrous-speed"
+        )
+        self.assertIsNotNone(gid)
+        self.assertEqual(telegram_bot._get_goal_mode(123, 99), "copilot")
+
+    def test_set_goal_mode_with_no_goal_returns_false(self) -> None:
+        # /autopilot before /goal -> can't flip a nonexistent row.
+        self.assertFalse(telegram_bot._set_goal_mode(123, 99, "autopilot"))
+
+    def test_set_goal_mode_flips_existing_row(self) -> None:
+        telegram_bot._record_miniapp_goal("x", "", "", 123, 99)  # default copilot
+        self.assertEqual(telegram_bot._get_goal_mode(123, 99), "copilot")
+        self.assertTrue(telegram_bot._set_goal_mode(123, 99, "autopilot"))
+        self.assertEqual(telegram_bot._get_goal_mode(123, 99), "autopilot")
+
+    def test_set_goal_mode_rejects_unknown_value(self) -> None:
+        telegram_bot._record_miniapp_goal("x", "", "", 123, 99)
+        self.assertFalse(telegram_bot._set_goal_mode(123, 99, "nonsense"))
+        # Mode unchanged.
+        self.assertEqual(telegram_bot._get_goal_mode(123, 99), "copilot")
+
+
+class AgencyGoalPromptTest(unittest.TestCase):
+    """The /goal cycle prompt must mention current mode + self-scheduling."""
+
+    def test_copilot_prompt_mentions_drafting_and_asking(self) -> None:
+        prompt = telegram_bot._agency_goal_prompt("100k views", "TikTok", mode="copilot")
+        self.assertIn("copilot", prompt.lower())
+        # Drafting/asking framing
+        self.assertIn("ask", prompt.lower())
+        # Self-schedule instruction
+        self.assertIn("tg-schedule", prompt)
+        # ONE concrete action per cycle
+        self.assertIn("ONE", prompt)
+
+    def test_autopilot_prompt_mentions_acting_directly(self) -> None:
+        prompt = telegram_bot._agency_goal_prompt("100k views", "TikTok", mode="autopilot")
+        self.assertIn("autopilot", prompt.lower())
+        self.assertIn("act", prompt.lower())
+        self.assertIn("tg-schedule", prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

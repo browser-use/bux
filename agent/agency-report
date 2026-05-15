@@ -232,7 +232,7 @@ def _render_image_text_file(args: argparse.Namespace) -> str | None:
     except Exception:
         return None
 
-    # AGENCY.md tells callers to write `\n` in shell args; bash double-quotes
+    # Callers write `\n` in shell args (see image-text rules); bash double-quotes
     # don't expand the escape, so argv carries the literal 2-char sequence.
     # Translate it (and `\\n`) into real newlines before splitting, otherwise
     # the renderer draws a literal "\n" glyph in the image.

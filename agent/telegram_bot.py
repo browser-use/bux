@@ -356,7 +356,7 @@ def _agency_goal_prompt(
         f"{goals_block}\n\n"
         f"{mode_block}\n\n"
         "How to work this goal:\n"
-        "1. Read /opt/bux/repo/agent/AGENCY.md for card shape, voice, anti-patterns.\n"
+        "1. Card-shape doctrine is in CLAUDE.md (## Composing a card) — already in context.\n"
         "2. Read /var/lib/bux/agency.db for what's already been suggested/accepted/skipped on this goal. "
         "Don't repeat skipped ideas.\n"
         "3. Scan the connected surfaces you actually have access to (Gmail, Slack, GitHub, etc. via composio MCP, "
@@ -4919,11 +4919,11 @@ class Bot:
         if heartbeats.get(key):
             return
         prompt = (
-            "Agency heartbeat. Use /opt/bux/repo/agent/AGENCY.md. "
+            "Agency heartbeat. Card-shape doctrine in CLAUDE.md (## Composing a card). "
             "Read /opt/bux/repo/private/goals.md and /var/lib/bux/agency.db. "
             "If the user has no clear goals, ask one short goal question or create high-level goal cards. "
-            "If goals are clear, observe connected context and create concrete Agency cards in Telegram and the Mini App. "
-            "Avoid duplicates and skipped ideas. Schedule your next heartbeat for +30 minutes."
+            "If goals are clear, observe connected context and create one concrete card in this topic. "
+            "Avoid duplicates and skipped ideas. Schedule your next heartbeat for +30 minutes via tg-schedule."
         )
         env = os.environ.copy()
         env["TG_CHAT_ID"] = str(chat_id)
@@ -7318,6 +7318,14 @@ class Bot:
         chat = msg.get("chat") or {}
         chat_id = chat.get("id")
         if not chat_id:
+            # No chat means the message was deleted before the user tapped.
+            # Toast something so the tap isn't silent.
+            self.call(
+                "answerCallbackQuery",
+                callback_query_id=cb["id"],
+                text="This card is gone (the chat or message was deleted).",
+                show_alert=False,
+            )
             return
         sender = cb.get("from") or {}
         owner = _owner_for(chat_id, self.state)
@@ -7331,7 +7339,14 @@ class Bot:
             return
         parts = data.split(":")
         if len(parts) not in (3, 4):
-            self.call("answerCallbackQuery", callback_query_id=cb["id"])
+            # Malformed callback_data — show a toast so the user doesn't
+            # tap into the void.
+            self.call(
+                "answerCallbackQuery",
+                callback_query_id=cb["id"],
+                text="This button's data is malformed — can't process it.",
+                show_alert=False,
+            )
             return
         try:
             target_thread = int(parts[1])
@@ -7365,13 +7380,34 @@ class Bot:
         # to legacy custom behavior.
         sugg_row: dict | None = None
         db = None
+        db_error: str | None = None
         try:
             import agency_db
             db = agency_db.conn()
             sugg_row = agency_db.find_by_message(db, chat_id, msg_id)
             agency_db.record_decision(db, chat_id, msg_id, label)
-        except Exception:
+        except Exception as exc:
             LOG.exception("agency_db record_decision failed")
+            db_error = str(exc)
+
+        if db_error:
+            # DB write failed; the tap is still proceeding (button kinds
+            # don't all require the DB), but we owe the user a visible
+            # signal so the tap doesn't feel like a no-op.
+            try:
+                self.call(
+                    "sendMessage",
+                    chat_id=chat_id,
+                    message_thread_id=target_thread or None,
+                    text=(
+                        "⚠️ Couldn't record this decision in agency.db "
+                        f"({_html.escape(db_error[:120], quote=False)}). "
+                        "Continuing with the tap anyway."
+                    ),
+                    parse_mode="HTML",
+                )
+            except Exception:
+                LOG.exception("agency: failed to surface DB error to user")
 
         # Pull original button labels from the DB so we can restore an
         # unpicked button losslessly when the user changes their mind.
@@ -7398,17 +7434,38 @@ class Bot:
             # suggestion. Reuse it instead of forking again.
             new_thread_id = existing_worker
         elif spawn and kind in ("action", "refine"):
+            spawn_error: str | None = None
             try:
                 res = self.call("createForumTopic", chat_id=chat_id, name=topic_title)
                 if res.get("ok"):
                     new_thread_id = int(res["result"].get("message_thread_id") or 0)
-            except Exception:
+                else:
+                    spawn_error = str(res.get("description") or "createForumTopic returned not-ok")
+            except Exception as exc:
                 LOG.exception("createForumTopic failed")
+                spawn_error = str(exc)
             if not new_thread_id:
                 LOG.warning(
                     "agency: createForumTopic returned no thread; falling back to in-place"
                 )
                 spawn = False
+                if spawn_error:
+                    # Tell the user the spawn failed and we're running here
+                    # instead — silent fall-through used to confuse users.
+                    try:
+                        self.call(
+                            "sendMessage",
+                            chat_id=chat_id,
+                            message_thread_id=target_thread or None,
+                            text=(
+                                "ℹ️ Couldn't spawn a new topic for this action "
+                                f"({_html.escape(spawn_error[:140], quote=False)}). "
+                                "Running it in this thread instead."
+                            ),
+                            parse_mode="HTML",
+                        )
+                    except Exception:
+                        LOG.exception("agency: failed to surface spawn error")
 
         # work_thread = where the lane actually runs.
         if kind in ("action", "refine"):

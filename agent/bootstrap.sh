@@ -112,18 +112,12 @@ if [ -e /home/bux/CLAUDE.md ]; then
   chown -h bux:bux /home/bux/AGENTS.md
 fi
 
-# --- agency skill stub for Claude Code -------------------------------------
-# Claude Code auto-loads skills from ~/.claude/skills/<name>/SKILL.md and
-# surfaces their trigger phrases to the skill picker. The agency skill's
-# canonical doctrine lives in agent/AGENCY.md; agent/agency-skill.md is a
-# thin stub that just owns the trigger phrases ("start agency", "scan
-# everything", etc.) and points back at AGENCY.md. We symlink the stub
-# into place so a `git pull` to a newer AGENCY.md propagates without
-# re-running bootstrap, and so the stub itself stays under version
-# control instead of drifting on-disk per-box.
-install -d -o bux -g bux -m 0755 /home/bux/.claude/skills/agency
-ln -sfn "$AGENT_DIR/agency-skill.md" /home/bux/.claude/skills/agency/SKILL.md
-chown -h bux:bux /home/bux/.claude/skills/agency/SKILL.md
+# --- clean up legacy agency-skill stub -------------------------------------
+# Before v2, agency was triggered by phrases ("start agency", "scan everything")
+# via a Claude Code skill at ~/.claude/skills/agency/SKILL.md. After v2 agency
+# is the default; the skill gate is dead. Remove it so it doesn't keep firing
+# on old boxes after a git pull.
+rm -rf /home/bux/.claude/skills/agency
 
 # Agency DB lives at /var/lib/bux/agency.db (created by agency_db on
 # first use). Make sure the directory is writable by `bux` so any
@@ -317,11 +311,15 @@ systemctl enable box-agent.service
 systemctl enable bux-ttyd.service
 systemctl enable bux-browser-keeper.service
 
-# bux-tg / bux-miniapp / bux-miniapp-tunnel stay enabled-but-conditional —
-# only run once /etc/bux/tg.env is written by the agent's tg_install handler.
+# bux-tg is the main UX, enabled-but-conditional on /etc/bux/tg.env.
 systemctl enable bux-tg.service
-systemctl enable bux-miniapp.service
-systemctl enable bux-miniapp-tunnel.service
+
+# bux-miniapp + tunnel are lazy-started by the bot on /miniapp invocation
+# (see _start_miniapp_service in telegram_bot.py). They aren't enabled at
+# boot — they only run if the user opens the Mini App, and the cloudflared
+# tunnel stops when not in use. Disable any prior enables to make this
+# rollout self-healing.
+systemctl disable bux-miniapp.service bux-miniapp-tunnel.service 2>/dev/null || true
 
 # Boot-time pull runs ahead of the others on every reboot.
 systemctl enable bux-boot-update.service
