@@ -4183,6 +4183,7 @@ class Bot:
         stream_msg = StreamingMessage(self, chat_id, reply_to, thread_id, thinking_emoji=thinking_emoji)
         stream_msg.start()
         any_text = False
+        auth_error_seen = False
         assert proc.stdout is not None
         try:
             try:
@@ -4229,9 +4230,14 @@ class Bot:
                             text = (block.get("text") or "").strip()
                             if not text:
                                 continue
+                            if _is_claude_auth_error(text):
+                                auth_error_seen = True
+                                break
                             stream_msg.append(text)
                             if not any_text:
                                 any_text = True
+                        if auth_error_seen:
+                            break
                     elif et == "user":
                         # tool_results coming back to the parent. For
                         # results matching a sub-agent we've seen, surface
@@ -4271,6 +4277,21 @@ class Bot:
                             duration_ms = None
                         stream_msg.finalize(usage=usage, duration_ms=duration_ms)
                         break
+                if auth_error_seen:
+                    _login_status_cache_invalidate("claude")
+                    _AGENT_AUTH_CACHE.pop(AGENT_CLAUDE, None)
+                    stream_msg.append("Login needed. Pick Claude or Codex to reconnect.")
+                    stream_msg.finalize()
+                    self._send_login_picker(chat_id, reply_to, thread_id)
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            _kill_inflight_proc(slug, proc, "auth-error")
+                            proc.wait(timeout=1)
+                        except Exception:
+                            pass
+                    return
             except Exception:
                 LOG.exception("stream-json loop failed; falling back to plain run")
             # Defensive: render whatever's pending even on early exit /
@@ -4529,6 +4550,7 @@ class Bot:
         stream_msg.start()
         started_at = time.time()
         any_text = False
+        auth_error_seen = False
         assert proc.stdout is not None
         try:
             try:
@@ -4566,6 +4588,9 @@ class Bot:
                         if item.get("type") == "agent_message":
                             text = (item.get("text") or "").strip()
                             if text:
+                                if _is_codex_auth_error(text):
+                                    auth_error_seen = True
+                                    break
                                 stream_msg.append(text)
                                 if not any_text:
                                     any_text = True
@@ -4584,6 +4609,20 @@ class Bot:
                         # streaming; if the failure is real, `turn.failed` will
                         # arrive next and break us out.
                         LOG.warning("codex transient error: %s", ev.get("message") or ev)
+                if auth_error_seen:
+                    _login_status_cache_invalidate("codex")
+                    stream_msg.append("Login needed. Pick Claude or Codex to reconnect.")
+                    stream_msg.finalize()
+                    self._send_login_picker(chat_id, reply_to, thread_id)
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            _kill_inflight_proc(slug, proc, "auth-error")
+                            proc.wait(timeout=1)
+                        except Exception:
+                            pass
+                    return
             except Exception:
                 LOG.exception("codex JSONL loop failed")
             # Defensive: same idempotent finalize as the claude path so a
@@ -7072,7 +7111,6 @@ class Bot:
                 chat_id,
                 mid,
                 thread_id,
-                force=True,
                 minimal_login_mode=True,
             )
         else:

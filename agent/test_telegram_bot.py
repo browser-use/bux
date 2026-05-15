@@ -91,6 +91,42 @@ class LoginRoutingTest(unittest.TestCase):
         self.assertTrue(telegram_bot._is_claude_auth_error("You are out of extra usage."))
         self.assertTrue(telegram_bot._is_codex_auth_error("usage limit reached"))
 
+    def test_login_picker_codex_does_not_force_relogin(self) -> None:
+        bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
+        bot.state = {
+            "offset": 0,
+            "agents": {},
+            "codex_settings": {},
+            "owners": {"100": {"user_id": "55", "name": "Magnus"}},
+        }
+        calls: list[tuple[str, dict]] = []
+
+        def fake_call(method: str, **kwargs):
+            calls.append((method, kwargs))
+            return {"ok": True}
+
+        bot.call = fake_call  # type: ignore[method-assign]
+        with (
+            mock.patch.object(telegram_bot, "_login_status_cache_invalidate"),
+            mock.patch.object(bot, "_start_login_provider") as start_login,
+        ):
+            bot._handle_login_picker_callback(
+                {
+                    "id": "cb1",
+                    "from": {"id": 55, "username": "Magnus_Mueller"},
+                    "message": {
+                        "chat": {"id": 100},
+                        "message_id": 99,
+                        "message_thread_id": 123,
+                    },
+                },
+                "login_pick:codex",
+            )
+
+        _, kwargs = start_login.call_args
+        self.assertNotIn("force", kwargs)
+        self.assertTrue(kwargs["minimal_login_mode"])
+
 
 class MiniAppLaunchTest(unittest.TestCase):
     def test_public_url_can_be_read_from_tg_env_when_process_env_is_stale(self) -> None:
