@@ -99,17 +99,21 @@ ln -sfn "$REPO_DIR/agent/agency-report"  /usr/local/bin/agency-report
 ln -sfn "$REPO_DIR/agent/bux-restart"    /usr/local/bin/bux-restart
 ln -sfn "$REPO_DIR/agent/bux-miniapp-tunnel" /usr/local/bin/bux-miniapp-tunnel
 
-# --- ~/AGENTS.md symlink for codex -----------------------------------------
-# install.sh creates `/home/bux/AGENTS.md → /home/bux/CLAUDE.md` on first
-# boot so codex (which reads AGENTS.md from cwd-and-up) inherits the same
-# system prompt as claude. Boxes provisioned BEFORE that line landed in
-# install.sh end up with no AGENTS.md, leaving codex with no operating
-# manual at runtime. Re-assert here on every update so existing boxes
-# self-heal. Idempotent: -f forces replacement if a stale entry exists,
-# -n keeps it from de-referencing through an existing symlink directory.
-if [ -e /home/bux/CLAUDE.md ]; then
-  ln -sfn /home/bux/CLAUDE.md /home/bux/AGENTS.md
-  chown -h bux:bux /home/bux/AGENTS.md
+# --- system prompt + CLAUDE.md/AGENTS.md symlinks --------------------------
+# The one source of truth is /home/bux/system-prompt.md (copied from the
+# repo by install.sh). Claude Code reads ~/CLAUDE.md, Codex reads ~/AGENTS.md
+# — both symlink to system-prompt.md so editing one file updates both CLIs.
+# Re-assert on every update so boxes provisioned with the older "CLAUDE.md
+# as the file" layout self-heal to the symlink layout.
+if [ -e "$AGENT_DIR/system-prompt.md" ]; then
+  install -o bux -g bux -m 0644 "$AGENT_DIR/system-prompt.md" /home/bux/system-prompt.md
+  # If a real CLAUDE.md file exists (pre-rename layout), replace it with the symlink.
+  if [ -e /home/bux/CLAUDE.md ] && [ ! -L /home/bux/CLAUDE.md ]; then
+    rm -f /home/bux/CLAUDE.md
+  fi
+  ln -sfn /home/bux/system-prompt.md /home/bux/CLAUDE.md
+  ln -sfn /home/bux/system-prompt.md /home/bux/AGENTS.md
+  chown -h bux:bux /home/bux/CLAUDE.md /home/bux/AGENTS.md
 fi
 
 # --- clean up legacy agency-skill stub -------------------------------------

@@ -1,1 +1,1 @@
-agent/CLAUDE.md
+agent/system-prompt.md

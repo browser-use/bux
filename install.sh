@@ -404,15 +404,14 @@ fi
 # /opt/bux/agent → /opt/bux/repo/agent (symlinked at the top of this script),
 # so browser_keeper.py / telegram_bot.py don't need to be copied — the
 # systemd units below execute them straight from the symlinked path. Only
-# CLAUDE.md gets installed (different destination — bux's home dir).
+# the system prompt gets installed (different destination — bux's home dir).
+# Claude Code reads ~/CLAUDE.md and Codex reads ~/AGENTS.md; both symlink to
+# the one source-of-truth file so editing once updates both CLIs.
 say 'installing bux agent files'
-install -o bux -g bux -m 0644 "$REPO_DIR/agent/CLAUDE.md"         /home/bux/CLAUDE.md
-# Codex reads AGENTS.md (its own convention) from cwd and up. The bot
-# runs codex with cwd=/home/bux, so a symlink here gives codex the same
-# system prompt as claude — keeping the two agents behaviorally aligned
-# without a second copy to keep in sync.
-ln -sfn /home/bux/CLAUDE.md /home/bux/AGENTS.md
-chown -h bux:bux /home/bux/AGENTS.md
+install -o bux -g bux -m 0644 "$REPO_DIR/agent/system-prompt.md" /home/bux/system-prompt.md
+ln -sfn /home/bux/system-prompt.md /home/bux/CLAUDE.md
+ln -sfn /home/bux/system-prompt.md /home/bux/AGENTS.md
+chown -h bux:bux /home/bux/CLAUDE.md /home/bux/AGENTS.md
 
 # --- tg-send: shell helper to push a message to the bound TG chat ---------
 # Used by `at` / cron jobs (and claude from a shell) so scheduled work can
