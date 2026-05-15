@@ -26,6 +26,7 @@ More launch links:
 - [Pinned announcement discussion](https://github.com/browser-use/bux/discussions/181)
 - [Browser Use Box wiki](https://github.com/browser-use/bux/wiki)
 - [Launch page](https://browser-use.github.io/bux/)
+- [Full LLM context](https://browser-use.github.io/bux/llms-full.txt)
 
 ## Setup prompt
 
