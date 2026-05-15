@@ -4809,6 +4809,35 @@ class Bot:
                 thread_id=goal_thread or thread_id,
             )
 
+        # Heartbeat: schedule a self-repeating tg-schedule for this topic so
+        # the bot, not the agent, drives proactive check-ins. Default cadence
+        # is 1 h. `tg-schedule-fire` re-queues itself when `repeat` is set,
+        # so this is fire-and-forget. The agent's system prompt does NOT
+        # tell it to self-schedule — the bot owns the cadence.
+        try:
+            env = os.environ.copy()
+            env["TG_CHAT_ID"] = str(chat_id)
+            env["TG_THREAD_ID"] = str(goal_thread or thread_id)
+            heartbeat_prompt = (
+                f"[heartbeat] Continue working on this goal: {title}. "
+                "Scan connected sources for changes since the last cycle, "
+                "consult agency.db history, and surface the next concrete action under your current mode."
+            )
+            subprocess.run(
+                [
+                    "/usr/local/bin/tg-schedule",
+                    "+1 hour",
+                    "--repeat", "+1 hour",
+                    heartbeat_prompt,
+                ],
+                env=env,
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            LOG.exception("goal: failed to schedule first heartbeat")
+
     def _handle_my_chat_member(self, update: dict) -> None:
         """React to the bot's own membership changing in some chat.
 

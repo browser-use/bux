@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -121,6 +122,32 @@ def main() -> int:
 
     bot = Bot(token, setup_token)
     bot.run_task((chat_id, thread_id), body, reply_to=None, sender=sender)
+
+    # Heartbeat mode: re-queue ourselves so the bot, not the agent,
+    # drives the next fire. tg-schedule's --repeat writes the interval
+    # into job.json. Inherits the same chat/thread context — the new
+    # at-job lives or dies on its own job dir.
+    repeat = str(job.get("repeat") or "").strip()
+    if repeat:
+        env = os.environ.copy()
+        env["TG_CHAT_ID"] = str(chat_id)
+        env["TG_THREAD_ID"] = str(thread_id)
+        try:
+            subprocess.run(
+                [
+                    "/usr/local/bin/tg-schedule",
+                    repeat,
+                    "--repeat",
+                    repeat,
+                    prompt,
+                ],
+                env=env,
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as exc:
+            print(f"tg-schedule-fire: heartbeat re-queue failed: {exc}", file=sys.stderr)
 
     try:
         shutil.rmtree(job_dir)
