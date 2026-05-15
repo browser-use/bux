@@ -926,6 +926,7 @@ def _goal_agent_prompt(
         "This is the generator lane for a personal social feed: create cards the user will want to accept. "
         "Read the goals file and agency.db history first so you do not repeat skipped ideas. "
         "Do all reversible/internal work before posting a card, then ask only at the visible boundary. "
+        "If the user explicitly says to work autonomously, that they are going away, or that no approval is needed, switch to Autopilot: do the private/reversible work directly, post concise progress updates in this topic, and create approval cards only for visible/external side effects. "
         "Do not generate generic channel ideas like 'monitor Slack' or 'check GitHub'. "
         "Every concrete card must name a person, company, thread, repo, PR, incident, signup, page, post, or file. "
         "If goals or context are still unknown, create high-level goal-lock cards or ask one short goal question instead of leaving the feed empty. "
@@ -972,6 +973,27 @@ def _topic_generate_prompt(thread_id: int, title: str) -> str:
         "If the topic goal is unclear, generate high-level goal-lock cards or ask one short clarifying goal question instead of posting filler. "
         "Generate 10 more high-signal cards in this same Telegram topic through the normal agency-report/agency-card flow "
         "so they appear in the Mini App feed for this topic."
+    )
+
+
+def _autopilot_prompt(title: str, context: str = "") -> str:
+    goals_text = _goals_file_text()
+    goals_block = (
+        f"\nPrivate goals file ({GOALS_FILE}):\n{goals_text}\n"
+        if goals_text
+        else f"\nPrivate goals file ({GOALS_FILE}) is empty or missing; infer a practical first goal and ask only if blocked.\n"
+    )
+    return (
+        "Mini App Autopilot started.\n\n"
+        f"Goal: {title or 'Agency'}\n"
+        f"Context:\n{context or title or 'Improve this goal autonomously.'}\n"
+        f"{goals_block}\n"
+        "Work autonomously now. Do not just create approval cards unless you genuinely need a visible human decision. "
+        "Do all reversible/internal work directly: inspect files, improve the app, draft assets, analyze data, create local artifacts, and test. "
+        "Ask for approval only before actions that send messages, post publicly, buy/pay, delete hard-to-recover data, or affect other people. "
+        "Post concise progress updates back into this Telegram topic so the user can see what is happening. "
+        "For the Agency app specifically, optimize for a simple goal-driven product: persistent goals, clear permission boundaries, concrete useful cards, and fast one-card decisions. "
+        "When finished, report what changed, what was tested, and what remains."
     )
 
 
@@ -1466,6 +1488,29 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     )
                 _json_response(self, 200, {"ok": True, "dispatched": dispatched})
                 return
+            if len(path) == 4 and path[:2] == ["api", "goals"] and path[3] == "autopilot":
+                goal_id = int(path[2])
+                with _mini_conn() as db:
+                    row = db.execute(
+                        "SELECT title, context, cadence FROM goals WHERE id = ?",
+                        (goal_id,),
+                    ).fetchone()
+                if not row:
+                    _json_response(self, 404, {"error": "goal not found"})
+                    return
+                title = str(row["title"] or "Mini App goal")
+                chat_id, thread_id = _ensure_goal_topic(goal_id, title)
+                dispatched = False
+                if chat_id and thread_id:
+                    dispatched = _dispatch_topic_context(
+                        chat_id,
+                        thread_id,
+                        _autopilot_prompt(title, str(row["context"] or "")),
+                        user,
+                        heading="Mini App Autopilot",
+                    )
+                _json_response(self, 200, {"ok": True, "dispatched": dispatched})
+                return
             if len(path) == 4 and path[:2] == ["api", "topics"] and path[3] == "generate":
                 thread_id = int(path[2])
                 chat_id = _default_chat_id()
@@ -1480,6 +1525,20 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 )
                 _json_response(self, 200, {"ok": True, "dispatched": dispatched})
                 return
+            if len(path) == 4 and path[:2] == ["api", "topics"] and path[3] == "autopilot":
+                thread_id = int(path[2])
+                chat_id = _default_chat_id()
+                topic = next((item for item in _topics() if int(item.get("thread_id") or 0) == thread_id), None)
+                title = str((topic or {}).get("title") or _topic_title(chat_id, thread_id) or f"Topic {thread_id}")
+                dispatched = _dispatch_topic_context(
+                    chat_id,
+                    thread_id,
+                    _autopilot_prompt(title, f"Continue this goal/topic autonomously. Topic id: {thread_id}."),
+                    user,
+                    heading="Mini App Autopilot",
+                )
+                _json_response(self, 200, {"ok": True, "dispatched": dispatched})
+                return
             if parsed.path == "/api/generate":
                 chat_id = _default_chat_id()
                 dispatched = _dispatch_topic_context(
@@ -1488,6 +1547,17 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     _goal_agent_prompt("General Agency feed", "Generate fresh action items for the user.", mode="more"),
                     user,
                     heading="Mini App generate more",
+                )
+                _json_response(self, 200, {"ok": True, "dispatched": dispatched})
+                return
+            if parsed.path == "/api/autopilot":
+                chat_id = _default_chat_id()
+                dispatched = _dispatch_topic_context(
+                    chat_id,
+                    0,
+                    _autopilot_prompt("General Agency feed", "Improve Agency autonomously from the user's goals and recent card history."),
+                    user,
+                    heading="Mini App Autopilot",
                 )
                 _json_response(self, 200, {"ok": True, "dispatched": dispatched})
                 return

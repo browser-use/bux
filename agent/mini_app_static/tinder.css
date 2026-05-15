@@ -134,7 +134,7 @@ body.rail-collapsed .goal-rail {
 
 .deck-shell {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   min-width: 0;
 }
 
@@ -147,12 +147,20 @@ body.rail-collapsed .goal-rail {
   border-bottom: 1px solid var(--line);
 }
 
+.topbar > div:first-child {
+  min-width: 0;
+}
+
 .topbar strong {
   display: block;
   font-size: 18px;
 }
 
 .topbar span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--muted);
   font-size: 13px;
 }
@@ -170,6 +178,32 @@ body.rail-collapsed .goal-rail {
   color: #0f1419;
   background: #eff3f4;
   font-weight: 800;
+}
+
+.topbar .autopilot-button {
+  color: #fff;
+  background: var(--blue);
+}
+
+.mode-strip {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  overflow-x: auto;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  background: #050608;
+}
+
+.mode-strip span {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .deck {
@@ -514,6 +548,31 @@ details a {
   resize: vertical;
 }
 
+.goal-examples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.goal-examples button {
+  max-width: 100%;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ink);
+  background: #101214;
+  font-size: 13px;
+  font-weight: 750;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.goal-examples button:hover {
+  border-color: var(--blue);
+}
+
 .context-actions {
   display: flex;
   justify-content: flex-end;
@@ -591,6 +650,7 @@ details a {
 
   .goal-rail button {
     width: auto;
+    max-width: 220px;
     flex: 0 0 auto;
     margin: 0;
   }
@@ -608,6 +668,10 @@ details a {
     height: 32px;
     padding: 0 11px;
     font-size: 13px;
+  }
+
+  .mode-strip {
+    padding: 7px 10px;
   }
 
   .card {

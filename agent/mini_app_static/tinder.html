@@ -23,9 +23,14 @@
             <span id="deckMeta">0 cards</span>
           </div>
           <div class="top-actions">
+            <button id="autopilotButton" class="autopilot-button" type="button">Autopilot</button>
             <button id="moreButton" type="button">Generate</button>
           </div>
         </header>
+        <section class="mode-strip" aria-label="Agency mode">
+          <span>Auto: read, draft, build, analyze</span>
+          <span>Ask: send, post, buy, delete</span>
+        </section>
         <section id="deck" class="deck" aria-live="polite"></section>
       </section>
       <dialog id="contextSheet" class="context-sheet">
@@ -43,6 +48,11 @@
         <form id="goalForm" method="dialog">
           <label for="goalInput">New goal</label>
           <textarea id="goalInput" rows="5" placeholder="What should agent work on for you?"></textarea>
+          <div class="goal-examples" aria-label="Examples">
+            <button type="button" data-goal-example="Make my startup successful. Find distribution opportunities, draft posts, improve activation, and ask only before publishing.">Make my startup successful</button>
+            <button type="button" data-goal-example="Reach 1000 users. Monitor launches, communities, signups, and outreach opportunities. Draft everything before asking me to send or post.">Reach 1000 users</button>
+            <button type="button" data-goal-example="Plan an incredible trip. Research flights, hotels, schedules, and tradeoffs. Ask before booking or paying.">Plan an incredible trip</button>
+          </div>
           <div class="context-actions">
             <button value="cancel" type="button" data-close-goal>Cancel</button>
             <button value="send" type="submit">Create</button>

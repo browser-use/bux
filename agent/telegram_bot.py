@@ -267,6 +267,7 @@ def _agency_goal_prompt(title: str, context: str, cadence: str = "") -> str:
         "This is the generator lane for a personal social feed: create cards the user will want to accept. "
         "Read the goals file and agency.db history first so you do not repeat skipped ideas. "
         "Do reversible/internal work before posting a card, then ask only at the visible boundary. "
+        "If the user explicitly says to work autonomously, that they are going away, or that no approval is needed, switch to Autopilot: do the private/reversible work directly, post concise progress updates in this topic, and create approval cards only for visible/external side effects. "
         "Generate 10 high-signal Agency cards for this goal in this same Telegram topic using agency-report. "
         "Every concrete card must name a specific person, company, thread, repo, PR, incident, signup, page, post, or file. "
         "If this goal is still too vague, ask one short goal/context question or create high-level goal-lock cards instead of filler. "

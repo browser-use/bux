@@ -27,6 +27,7 @@ const els = {
   meta: document.querySelector("#deckMeta"),
   toast: document.querySelector("#toast"),
   context: document.querySelector("#contextButton"),
+  autopilot: document.querySelector("#autopilotButton"),
   more: document.querySelector("#moreButton"),
   newGoal: document.querySelector("#newGoalButton"),
   collapseRail: document.querySelector("#collapseRailButton"),
@@ -91,13 +92,13 @@ function render() {
   renderGoals();
   const cards = visibleCards();
   const card = currentCard();
-  els.meta.textContent = `${openCount()} open · ${state.started} done`;
+  els.meta.textContent = `${goalTitle()} · ${openCount()} open · ${state.started} done`;
   localStorage.setItem(indexKey, String(state.index));
   if (!card) {
     els.deck.innerHTML = `
       <article class="empty">
-        <strong>No cards here</strong>
-        <p>Give context or generate more cards for this goal.</p>
+        <strong>${escapeHtml(emptyTitle())}</strong>
+        <p>Use Autopilot to let the agent work directly, or add context so it can create sharper cards.</p>
       </article>
     `;
     return;
@@ -141,6 +142,28 @@ function renderGoals() {
 function openCount() {
   if (state.activeGoalId === "all") return Number(state.stats.open || state.cards.length);
   return visibleCards().length;
+}
+
+function goalTitle() {
+  if (state.activeGoalId === "all") return "All goals";
+  if (state.activeGoalId.startsWith("topic:")) {
+    const topicId = state.activeGoalId.slice("topic:".length);
+    const topic = state.topics.find((item) => String(item.thread_id || item.id) === topicId);
+    const goal = state.goals.find((item) => String(item.tg_thread_id || "") === topicId);
+    return clipLabel((goal?.title || topic?.title || "Goal").trim(), 34);
+  }
+  const goal = state.goals.find((item) => String(item.id) === String(state.activeGoalId));
+  return clipLabel((goal?.title || "Goal").trim(), 34);
+}
+
+function emptyTitle() {
+  if (state.activeGoalId === "all") return "No open cards";
+  return "This goal is clear";
+}
+
+function clipLabel(value, limit) {
+  const text = String(value || "Goal").replace(/\s+/g, " ").trim();
+  return text.length > limit ? `${text.slice(0, limit - 1).trim()}…` : text;
 }
 
 function countFor(id) {
@@ -515,6 +538,22 @@ async function generateMore() {
   }
 }
 
+async function startAutopilot() {
+  try {
+    if (state.activeGoalId.startsWith("topic:")) {
+      await api(`/api/topics/${state.activeGoalId.slice("topic:".length)}/autopilot`, { method: "POST", body: "{}" });
+    } else if (state.activeGoalId !== "all") {
+      await api(`/api/goals/${state.activeGoalId}/autopilot`, { method: "POST", body: "{}" });
+    } else {
+      await api("/api/autopilot", { method: "POST", body: "{}" });
+    }
+    toast("Autopilot started.");
+    scheduleRefresh();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
 function scheduleRefresh() {
   [1600, 6500].forEach((delay) => {
     setTimeout(() => refresh({ resetToTop: true }).catch((error) => toast(error.message)), delay);
@@ -547,6 +586,7 @@ function railSvg(collapsed) {
 }
 
 els.context?.addEventListener("click", openContext);
+els.autopilot?.addEventListener("click", startAutopilot);
 els.more.addEventListener("click", generateMore);
 els.newGoal.addEventListener("click", () => {
   els.goalSheet.showModal();
@@ -566,6 +606,12 @@ els.sheet.addEventListener("click", (event) => {
 });
 els.goalSheet.addEventListener("click", (event) => {
   if (event.target === els.goalSheet) els.goalSheet.close();
+});
+document.querySelectorAll("[data-goal-example]").forEach((button) => {
+  button.addEventListener("click", () => {
+    els.goalInput.value = button.dataset.goalExample || "";
+    els.goalInput.focus({ preventScroll: true });
+  });
 });
 attachSpeech();
 
