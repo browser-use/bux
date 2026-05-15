@@ -4,8 +4,9 @@
 Spawn a fresh Telegram forum topic and drop the prompt in as its first
 agent turn. Synchronous — the topic appears immediately, no at(1) delay.
 
-The new topic runs in the box's default copilot mode (drafts and asks).
-Use `/goal <X>` from the user side for the autopilot variant.
+The new topic uses the box's default behavior: draft + ask before
+anything visible. Use `/goal <X>` from the user side to launch
+autopilot (act end-to-end, no approvals).
 
 **No heartbeat by default.** Re-firing the same prompt every hour is
 noise — the agent inside the new topic schedules its own check-ins via
@@ -135,7 +136,7 @@ def main() -> int:
         heartbeat_prompt = (
             f"[heartbeat] Continue working on this topic ({title}). "
             "Scan connected sources for changes, consult agency.db, "
-            "surface the next concrete action under copilot mode."
+            "surface the next concrete action and propose it as a card."
         )
         try:
             subprocess.run(

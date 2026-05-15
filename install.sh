@@ -413,6 +413,15 @@ ln -sfn /home/bux/system-prompt.md /home/bux/CLAUDE.md
 ln -sfn /home/bux/system-prompt.md /home/bux/AGENTS.md
 chown -h bux:bux /home/bux/CLAUDE.md /home/bux/AGENTS.md
 
+# Seed an empty private/goals.md. The agent reads + writes this file. An
+# empty file is fine — the agent appends entries when the user mentions
+# a goal. Without this, the agent's first read of the file errors loudly
+# until something writes to it.
+install -d -o bux -g bux -m 0755 /opt/bux/repo/private
+if [ ! -e /opt/bux/repo/private/goals.md ]; then
+	install -o bux -g bux -m 0644 /dev/null /opt/bux/repo/private/goals.md
+fi
+
 # --- tg-send: shell helper to push a message to the bound TG chat ---------
 # Used by `at` / cron jobs (and claude from a shell) so scheduled work can
 # notify the user without going through the bot's poll loop. The bot token

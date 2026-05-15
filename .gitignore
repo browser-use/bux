@@ -3,6 +3,7 @@ __pycache__/
 *.log
 .env
 .DS_Store
+.claude/
 
 # `private/` is the per-box drop zone for personal context — skill files,
 # memory snapshots, scratch notes, anything you'd never want pushed to

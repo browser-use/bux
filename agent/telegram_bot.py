@@ -78,7 +78,6 @@ MINIAPP_DB = Path(os.environ.get("BUX_MINIAPP_DB", "/var/lib/bux/miniapp.db"))
 MINIAPP_TUNNEL_URL_FILE = Path(
     os.environ.get("BUX_MINIAPP_TUNNEL_URL_FILE", "/var/lib/bux/miniapp-tunnel/url")
 )
-GOALS_FILE = Path(os.environ.get("BUX_GOALS_FILE", "/opt/bux/repo/private/goals.md"))
 
 # Marker for "I've already told the user about this SHA". Lets transient
 # bux-tg restarts (systemd flaps, polling backoff) stay silent while
@@ -4017,11 +4016,13 @@ class Bot:
                     # No env= here: the `sudo VAR=val …` prefix is the only env
                     # the child claude sees. Don't leak the bot's own environ
                     # (TG_BOT_TOKEN, TG_SETUP_TOKEN) through sudo.
+                    # No timeout: /goal autopilot runs can take days. The
+                    # only kill paths are explicit /cancel + the SIGKILL
+                    # that lane-promotion triggers on a follow-up message.
                     fb = subprocess.run(
                         fb_cmd,
                         capture_output=True,
                         text=True,
-                        timeout=1800,
                         cwd=str(WORKSPACE),
                     )
                     out = (fb.stdout or "").strip()
@@ -4046,14 +4047,6 @@ class Bot:
                     )
                     if fb.returncode != 0:
                         self.react(chat_id, reply_to, EMOJI_ERROR)
-                except subprocess.TimeoutExpired:
-                    self.react(chat_id, reply_to, EMOJI_ERROR)
-                    self.send(
-                        chat_id,
-                        "⏱ Timed out after 30 min.",
-                        reply_to=reply_to,
-                        thread_id=thread_id,
-                    )
                 except Exception as e:
                     self.react(chat_id, reply_to, EMOJI_ERROR)
                     self.send(
@@ -4447,7 +4440,6 @@ class Bot:
             "Pick the agent you want to drive this box:",
             reply_markup=_login_picker_reply_markup(),
         )
-        self._ensure_default_agency_heartbeat(chat_id)
 
     def _auto_allow_chat(
         self,
@@ -4477,52 +4469,6 @@ class Bot:
                 )
             except Exception:
                 LOG.exception("auto-allow welcome send failed for chat_id=%s", chat_id)
-        self._ensure_default_agency_heartbeat(chat_id)
-
-    def _ensure_default_agency_heartbeat(self, chat_id: int) -> None:
-        """Schedule the first Agency heartbeat once per allowed chat.
-
-        The heartbeat prompt asks the agent to reschedule itself. This keeps
-        Agency proactive by default without adding another always-on worker.
-        """
-        key = str(chat_id)
-        heartbeats = self.state.setdefault("agency_heartbeats", {})
-        if heartbeats.get(key):
-            return
-        prompt = (
-            "Agency heartbeat. Card-shape doctrine in CLAUDE.md (## Composing a card). "
-            "Read /opt/bux/repo/private/goals.md and /var/lib/bux/agency.db. "
-            "If the user has no clear goals, ask one short goal question or create high-level goal cards. "
-            "If goals are clear, observe connected context and create one concrete card in this topic. "
-            "Avoid duplicates and skipped ideas. Schedule your next heartbeat for +30 minutes via tg-schedule."
-        )
-        env = os.environ.copy()
-        env["TG_CHAT_ID"] = str(chat_id)
-        env["TG_THREAD_ID"] = "0"
-        try:
-            result = subprocess.run(
-                [
-                    "/usr/local/bin/tg-schedule",
-                    "+30 minutes",
-                    "--fresh",
-                    "--name",
-                    "Agency heartbeat",
-                    prompt,
-                ],
-                env=env,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                timeout=10,
-            )
-            if result.returncode == 0:
-                heartbeats[key] = {"scheduled_at": int(time.time()), "cadence": "30m"}
-                save_state(self.state)
-                LOG.info("agency heartbeat scheduled for chat_id=%s: %s", chat_id, result.stdout.strip())
-            else:
-                LOG.warning("agency heartbeat schedule failed for chat_id=%s: %s", chat_id, result.stdout.strip())
-        except Exception:
-            LOG.exception("agency heartbeat schedule failed for chat_id=%s", chat_id)
 
     def _handle_my_chat_member(self, update: dict) -> None:
         """React to the bot's own membership changing in some chat.

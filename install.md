@@ -127,8 +127,9 @@ sudo journalctl -u bux-tg -n 50
 You have an older Claude Code version. Update:
 ```bash
 sudo npm install -g @anthropic-ai/claude-code@latest
-sudo systemctl restart bux-tg
+sudo -u bux bux-restart
 ```
+`bux-restart` records the current Telegram lane so the bot pings the user with "✓ back online" once it returns. `systemctl restart bux-tg` works too but skips the ack.
 
 **claude says "no CDP_WS set"**
 The browser-keeper hasn't written `~/.claude/browser.env` yet. Wait 10s on first boot, or:
