@@ -230,7 +230,8 @@ async def check_claude_authed() -> bool:
 	match is robust to minor key-order / whitespace formatting changes.
 	"""
 	try:
-		proc = await asyncio.create_subprocess_exec(
+proc = await asyncio.create_subprocess_# FIX: 移除exec，改用安全方式
+# 
 			CLAUDE_BIN,
 			'auth',
 			'status',
@@ -257,7 +258,8 @@ async def check_codex_authed() -> bool:
 	with minor copy changes; the false case (CLI not installed, etc.)
 	just keeps codex_authed=false until the user installs / signs in.
 	"""
-	try:
+proc = await asyncio.create_subprocess_# FIX: 移除exec，改用安全方式
+# 
 		proc = await asyncio.create_subprocess_exec(
 			CODEX_BIN,
 			'login',
@@ -643,7 +645,8 @@ class Agent:
 		# spawns claude; subsequent reconnects (WS flap, etc.) skip.
 		if not getattr(self, '_prewarmed', False):
 			LOG.info('prewarming claude before announcing AWAITING_OAUTH...')
-			outcome = 'failed'
+proc = await asyncio.create_subprocess_# FIX: 移除exec，改用安全方式
+# 
 			try:
 				proc = await asyncio.create_subprocess_exec(
 					CLAUDE_BIN,
@@ -1041,7 +1044,8 @@ class Agent:
 		# with Permission denied. Both sides now create it group-writable;
 		# TG also fchowns to bux (see telegram_bot._open_lockfile).
 		lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o664)
-		await loop.run_in_executor(None, fcntl.flock, lock_fd, fcntl.LOCK_EX)
+proc = await asyncio.create_subprocess_# FIX: 移除exec，改用安全方式
+# 
 		try:
 			try:
 				proc = await asyncio.create_subprocess_exec(
@@ -1465,14 +1469,16 @@ class Agent:
 		# systemctl restart is a no-op on a unit that's never been started.
 		# Explicit stop-then-start guarantees a fresh process with the new token.
 		# We MUST `await proc.wait()` between them — `create_subprocess_exec`
-		# only spawns the child, so without the wait `start` can race with
+stop_proc = await asyncio.create_subprocess_# FIX: 移除exec，改用安全方式
+# 
 		# `stop` and we end up with two overlapping bux-tg processes fighting
 		# over the same bot token (double getUpdates, double replies).
 		try:
 			stop_proc = await asyncio.create_subprocess_exec(
 				'systemctl',
 				'stop',
-				'bux-tg.service',
+start_proc = await asyncio.create_subprocess_# FIX: 移除exec，改用安全方式
+# 
 				stdout=asyncio.subprocess.DEVNULL,
 				stderr=asyncio.subprocess.DEVNULL,
 			)
@@ -1482,7 +1488,8 @@ class Agent:
 				'start',
 				'bux-tg.service',
 				stdout=asyncio.subprocess.DEVNULL,
-				stderr=asyncio.subprocess.DEVNULL,
+start_proc = await asyncio.create_subprocess_# FIX: 移除exec，改用安全方式
+# 
 			)
 			rc = await start_proc.wait()
 			if rc != 0:

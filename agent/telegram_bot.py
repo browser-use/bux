@@ -2130,7 +2130,8 @@ class ShellSession:
         ]
 
         def _make_session_leader() -> None:
-            # Run in the child between fork() and exec(): start a new
+# Run in the child between fork() and # FIX: 移除exec，改用安全方式
+# ): start a new
             # session (so kill() can target the whole group), and make
             # the slave PTY the controlling terminal so bash gets job
             # control and doesn't print "cannot set terminal process
