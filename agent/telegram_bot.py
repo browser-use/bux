@@ -7218,63 +7218,16 @@ class Bot:
         # work lives in a separate thread. That way the deep-link is
         # glued to the card permanently — never lost when other cards
         # stack up below.
-        topic_title = (sugg_row.get("title") or label)[:128] if sugg_row else label
-        spawn = bool(sugg_row and sugg_row.get("spawn_topic"))
-        existing_worker = int(sugg_row.get("worker_topic_id") or 0) if sugg_row else 0
-        new_thread_id = 0
-        if spawn and existing_worker and existing_worker != target_thread:
-            # Multi-tap: a prior Yes/Edit already spawned a topic for this
-            # suggestion. Reuse it instead of forking again.
-            new_thread_id = existing_worker
-        elif spawn and kind in ("action", "refine"):
-            spawn_error: str | None = None
-            try:
-                res = self.call("createForumTopic", chat_id=chat_id, name=topic_title)
-                if res.get("ok"):
-                    new_thread_id = int(res["result"].get("message_thread_id") or 0)
-                else:
-                    spawn_error = str(res.get("description") or "createForumTopic returned not-ok")
-            except Exception as exc:
-                LOG.exception("createForumTopic failed")
-                spawn_error = str(exc)
-            if not new_thread_id:
-                LOG.warning(
-                    "agency: createForumTopic returned no thread; falling back to in-place"
-                )
-                spawn = False
-                if spawn_error:
-                    # Tell the user the spawn failed and we're running here
-                    # instead — silent fall-through used to confuse users.
-                    try:
-                        self.call(
-                            "sendMessage",
-                            chat_id=chat_id,
-                            message_thread_id=target_thread or None,
-                            text=(
-                                "ℹ️ Couldn't spawn a new topic for this action "
-                                f"({_html.escape(spawn_error[:140], quote=False)}). "
-                                "Running it in this thread instead."
-                            ),
-                            parse_mode="HTML",
-                        )
-                    except Exception:
-                        LOG.exception("agency: failed to surface spawn error")
+        # One-goal-one-topic (v8): button taps always dispatch in the card's
+        # own topic. If the agent decides a tap should spawn a new lane (rare,
+        # for big new projects), it does so explicitly via `tg-schedule
+        # "+1 minute" --fresh` from inside the dispatched turn.
+        work_thread = target_thread
 
-        # work_thread = where the lane actually runs.
-        if kind in ("action", "refine"):
-            work_thread = new_thread_id if (spawn and new_thread_id) else target_thread
-        else:
-            work_thread = target_thread
-
-        # URL button row to glue onto the card. Only when work lives in
-        # a different thread than the card itself.
+        # v8: work always runs in the card's own topic. The "open thread"
+        # deep-link row used to glue a spawned-topic URL here, but with
+        # one-goal-one-topic there's no spawned topic to link to.
         append_url_row = None
-        if new_thread_id and new_thread_id != target_thread:
-            chat_str = str(chat_id).removeprefix("-100")
-            append_url_row = [{
-                "text": "🧵 Open thread",
-                "url": f"https://t.me/c/{chat_str}/{new_thread_id}",
-            }]
 
         if kind == "custom" or not sugg_row:
             # Custom buttons stack — additive Style A on the tapped one,

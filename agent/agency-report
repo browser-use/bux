@@ -1,107 +1,32 @@
 #!/opt/bux/venv/bin/python
-"""agency-report — record + post an Agency suggestion to Telegram.
+"""agency-report — record + post one card to Telegram.
 
-Always:
-  1. records the suggestion in /var/lib/bux/agency.db
-  2. posts the body to TG with inline-keyboard buttons (default 3 in a 2+1 grid)
-  3. wires the message_id back into the row so a button tap can record
-     the user's decision against the right suggestion.
+Three things every call: insert a row in `/var/lib/bux/agency.db`, post
+the card to TG (image + expandable blocks + inline-keyboard buttons),
+and wire the resulting message_id back into the DB row so a button tap
+finds the right suggestion.
 
-Default buttons: ✅ Yes · 🔁 More · ⏭ Skip
-Default layout: row 1 = [Yes][More], row 2 = [Skip].
+Default buttons: ✅ Yes · 🔁 More · ⏭ Skip. All taps dispatch in the
+card's own topic (one-goal-one-topic; if the agent needs a fresh lane
+for a big new project, it spawns one explicitly with `tg-schedule
+"+1 minute" --fresh`). Yes runs --prompt as a new agent turn; More asks
+the agent to regenerate with a different angle; Skip records dismissal,
+no LLM call.
 
-Each default button has a *kind* the bot uses to pick semantics:
-  • Yes  → kind=action  → bot dispatches the suggestion's --prompt in this
-                          topic (the goal's permanent lane). No new forum
-                          topic is spawned — one goal, one topic.
-  • More → kind=more    → bot asks the agent to regenerate this card with
-                          a different angle (different draft, different
-                          framing, different next step). The user is
-                          curious but not sold.
-  • Skip → kind=dismiss → bot records the dismissal, no LLM call.
-                          (Cheap "saw it, move on".)
+Callback data shape: `agcy:<thread>:<idx>:<kind>` where kind ∈
+{action, more, dismiss, custom}. Custom --button entries get
+kind=custom and dispatch a synthesized `[agency-button] <label>`
+turn in the same topic.
 
-Callback data shape: `agcy:<thread>:<idx>:<kind>` where kind is one of
-{action, more, dismiss, custom}. Custom button sets passed via --button
-all get kind=custom (existing dispatch-in-same-topic behavior).
+Blocks are specified via --block (repeatable, JSON object). Each block
+becomes one expandable. Typical copilot card is two (option A + option
+B). If no --block is given and --prompt is set, a single auto-generated
+draft block is created so the user can see what'll fire on Yes-tap.
 
-Custom buttons: pass --button (repeatable). Layout wraps in pairs of two.
-
-Canonical card layout (HTML parse mode). Order is locked; the *number*
-of expandable blocks is variable (0, 1, 2, N — your call):
-
-  [optional image — skip when text alone is clearer]
-  <emoji> <b>headline</b>           ← write the specific action here:
-                                       "Reply to <user> on Slack: …" or
-                                       "Merge PR #347" — *not* "Agency 95"
-                                       or a generic source description.
-  <optional subhead>
-
-  <blockquote expandable>…</blockquote>   ← zero or more
-  <blockquote expandable>…</blockquote>
-  …
-
-  <i>source: <link></i>             ← at the very end, italic, optional.
-
-  [Yes] [More]
-  [Skip]
-
-Blocks are specified via --block (repeatable, JSON object). Each --block
-becomes one expandable. Pass any number for 0/1/2/N expandables — typical
-copilot card is two (option A / option B). If no --block is passed and a
---prompt is set, a single auto-generated draft block is created so the
-user can see what'll run on Yes-tap.
-
-Yes-tap routing — one goal, one topic:
-  • Yes/More dispatch in the topic the card lives in. That topic is the
-    goal's permanent lane. The agent may create sub-topics later only if
-    the work genuinely needs fan-out (rare).
-  • --spawn-topic / --no-spawn-topic flags are kept for back-compat but
-    default to OFF inside topics, ON outside topics. The default-button
-    labels are the same in either case (✅ Yes / 🔁 More / ⏭ Skip).
-
-If --image (URL), --image-file (local path), or --image-text (auto-rendered
-placeholder) is given, the image renders above the body. For bodies that
-fit Telegram's 1024-char caption budget the card is sent via sendPhoto;
-otherwise it falls back to sendMessage with a large link-preview-image
-above the text (visually identical, no length cap).
-
-`--image-file` uploads a local file via multipart so the model never has
-to know the bot token or build a public URL. Auto-detects content type
-from the file extension (png/jpg/jpeg/gif/webp).
-
-`--info-only` strips the inline keyboard entirely. Use for FYI cards
-(weekly stats, observations) where there's nothing to act on. The row
-is still recorded in the DB so dedup works.
-
-Field mapping:
-  --emoji              prepended to the bold headline
-  --title              the headline (required)
-  --source-label       short clickable label like "GitHub #347"
-  --source-url         URL the source label links to
-  --subhead            optional one-line under the headline
-  --image              direct image URL
-  --image-file         path to a local image file (multipart upload)
-  --image-text         alt: shorthand text → auto-generated local card image
-  --block              repeatable; each value is a JSON object
-                       {emoji, title, body[, body_html]} → one expandable.
-                       Two blocks for option A/B is the typical copilot
-                       card; single block for status confirms.
-  --prompt             exact action that runs if user taps Yes; also
-                       auto-generates a draft block when no --block given.
-  --importance         high|med|low (default med)
-  --source             stable slug for dedupe
-  --skip-if-exists     suppress posting if the source slug already has a
-                       non-pending row
-  --button             repeatable; overrides the default 3-button set.
-                       Custom buttons all get kind=custom.
-  --info-only          omit the inline keyboard entirely (FYI cards).
-  --thread-id          forum topic to post into (defaults to $TG_THREAD_ID)
-
-Inputs are HTML-escaped by default. To embed raw HTML in --block bodies,
-pass `"body_html": true` alongside `"body": "<your html>"`. The
-`--title-html`, `--subhead-html`, `--source-label-html` long forms remain
-for raw HTML in headline / subhead / source label.
+Run `agency-report --help` for the flag reference. Image rendering uses
+PIL (1080×540 gradient with emoji + caps headline + sentence-case why);
+agency-report falls back to sendMessage + large link-preview when the
+body would exceed Telegram's 1024-char caption cap.
 """
 from __future__ import annotations
 
@@ -241,10 +166,6 @@ def _render_image_text_file(args: argparse.Namespace) -> str | None:
     width, height = 1080, 540
     top = (31, 41, 55)
     bottom = (20, 184, 166)
-    if args.importance == "high":
-        top, bottom = (76, 29, 149), (236, 72, 153)
-    elif args.importance == "low":
-        top, bottom = (51, 65, 85), (100, 116, 139)
 
     img = Image.new("RGB", (width, height), top)
     pix = img.load()
@@ -319,9 +240,7 @@ def _coerce_button_label(raw: str) -> str:
 
 
 def _resolve_buttons(args: argparse.Namespace) -> list[tuple[str, str]]:
-    """Returns list of (label, kind). Custom buttons all get kind='custom'.
-    Default set is one canonical ✅ Yes / 🔁 More / ⏭ Skip — one goal, one
-    topic, no spawn-topic label variants."""
+    """Returns list of (label, kind). Custom buttons all get kind='custom'."""
     if args.button:
         return [(_coerce_button_label(label), "custom") for label in args.button]
     return list(DEFAULT_BUTTONS)
@@ -594,12 +513,6 @@ def main() -> int:
         help="Exact action that runs if user taps Yes — also fills the auto-generated draft block when no --block is given.",
     )
     p.add_argument(
-        "--importance",
-        choices=("high", "med", "low"),
-        default="med",
-        help="Priority bucket for triage. Default: med.",
-    )
-    p.add_argument(
         "--source",
         help="Stable slug for dedupe (e.g. slack-c-foo, gmail-thread-19df, gh-pr-78).",
     )
@@ -608,37 +521,12 @@ def main() -> int:
         action="append",
         default=None,
         help="Custom button LABEL (plain string). Repeatable. Each gets "
-        "kind=custom. Pass the visible text only — e.g. --button \"❌ No\". "
-        "NOT JSON. (--block takes JSON; --button does not.) "
-        "Defensive: a JSON object with a `text` field is coerced to its "
-        "text, but write plain strings to be safe.",
+        "kind=custom. Plain text only — e.g. --button \"❌ No\". NOT JSON.",
     )
     p.add_argument(
         "--info-only",
         action="store_true",
         help="Drop the inline keyboard entirely (FYI cards with no action).",
-    )
-    spawn_grp = p.add_mutually_exclusive_group()
-    spawn_grp.add_argument(
-        "--spawn-topic",
-        dest="spawn_topic",
-        action="store_const",
-        const=True,
-        default=None,
-        help="On Yes/Edit tap, spawn a fresh forum topic and dispatch "
-        "the lane there. Use for agency-loop cards (each cycle's cards "
-        "get their own topics) or any case where the work warrants a "
-        "dedicated thread. Overrides the auto-default.",
-    )
-    spawn_grp.add_argument(
-        "--no-spawn-topic",
-        dest="spawn_topic",
-        action="store_const",
-        const=False,
-        help="On Yes/Edit tap, dispatch in the same thread the card "
-        "lives in. Overrides the auto-default. Use when the agent is "
-        "already deep in one topic and follow-up cards should keep the "
-        "conversation in-place.",
     )
     p.add_argument(
         "--thread-id",
@@ -680,12 +568,6 @@ def main() -> int:
 
     db = agency_db.conn()
 
-    # spawn_topic auto-default: forum topics are goal/session lanes, so
-    # accepted cards stay in that lane unless the card explicitly asks
-    # to spawn. A non-topic chat still gets a worker topic.
-    if args.spawn_topic is None:
-        args.spawn_topic = not bool(args.thread_id)
-
     buttons = [] if args.info_only else _resolve_buttons(args)
     button_labels_for_db = [label for label, _ in buttons]
     blocks = _resolve_blocks(args)
@@ -715,7 +597,6 @@ def main() -> int:
         db,
         title=args.title,
         description=db_description,
-        importance=args.importance,
         source=args.source,
         prompt=args.prompt,
         buttons=button_labels_for_db,
@@ -726,7 +607,6 @@ def main() -> int:
         source_url=args.source_url,
         chat_id=chat_id(),
         thread_id=args.thread_id,
-        spawn_topic=args.spawn_topic,
     )
 
     body = _build_body(args)
