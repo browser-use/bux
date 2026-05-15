@@ -264,39 +264,6 @@ class GoalModeTest(unittest.TestCase):
         self.assertEqual(telegram_bot._get_goal_mode(123, 99), "copilot")
 
 
-class DecorateTopicTitleTest(unittest.TestCase):
-    """Mode emoji prefix in topic titles."""
-
-    def test_copilot_default_prefix(self) -> None:
-        self.assertEqual(
-            telegram_bot._decorate_topic_title("ship demo", "copilot"),
-            "🛟 ship demo",
-        )
-
-    def test_autopilot_prefix(self) -> None:
-        self.assertEqual(
-            telegram_bot._decorate_topic_title("ship demo", "autopilot"),
-            "🚀 ship demo",
-        )
-
-    def test_redecorate_replaces_existing_emoji(self) -> None:
-        # User switches mode -> existing prefix gets swapped, not appended.
-        self.assertEqual(
-            telegram_bot._decorate_topic_title("🛟 ship demo", "autopilot"),
-            "🚀 ship demo",
-        )
-        self.assertEqual(
-            telegram_bot._decorate_topic_title("🚀 ship demo", "copilot"),
-            "🛟 ship demo",
-        )
-
-    def test_unknown_mode_falls_back_to_default(self) -> None:
-        self.assertEqual(
-            telegram_bot._decorate_topic_title("X", "nonsense"),
-            "🛟 X",
-        )
-
-
 class AgencyGoalPromptTest(unittest.TestCase):
     """The /goal cycle prompt must mention current mode + self-scheduling."""
 

@@ -86,6 +86,24 @@ if command -v npm >/dev/null 2>&1 && ! sudo -iu bux command -v codex >/dev/null 
     || echo "bootstrap: codex install failed (non-fatal — /codex login will hint how to install later)" >&2
 fi
 
+# Enable Codex /goal autopilot feature: `[features] goals = true` in
+# ~/.codex/config.toml. Idempotent — leaves existing config alone if
+# goals=true or a [features] block is already present.
+sudo -u bux -H bash -c '
+CODEX_CONFIG="$HOME/.codex/config.toml"
+mkdir -p "$(dirname "$CODEX_CONFIG")"
+if [ ! -f "$CODEX_CONFIG" ]; then
+  printf "[features]\ngoals = true\n" > "$CODEX_CONFIG"
+elif ! grep -qE "^[[:space:]]*goals[[:space:]]*=" "$CODEX_CONFIG"; then
+  if grep -qE "^[[:space:]]*\[features\]" "$CODEX_CONFIG"; then
+    echo "bootstrap: warn — existing [features] block in $CODEX_CONFIG; add goals = true manually" >&2
+  else
+    printf "\n[features]\ngoals = true\n" >> "$CODEX_CONFIG"
+  fi
+fi
+chmod 0644 "$CODEX_CONFIG"
+' || echo "bootstrap: codex config write failed (non-fatal)" >&2
+
 # --- agent shell helpers --------------------------------------------------
 # install.sh creates these symlinks on first boot, but new helpers added to
 # agent/ after a box has already been provisioned never get linked into
@@ -95,6 +113,7 @@ ln -sfn "$REPO_DIR/agent/tg-send"        /usr/local/bin/tg-send
 ln -sfn "$REPO_DIR/agent/tg-buttons"     /usr/local/bin/tg-buttons
 ln -sfn "$REPO_DIR/agent/tg-schedule"    /usr/local/bin/tg-schedule
 ln -sfn "$REPO_DIR/agent/tg-schedule-fire" /usr/local/bin/tg-schedule-fire
+ln -sfn /usr/local/bin/tg-schedule       /usr/local/bin/schedule
 ln -sfn "$REPO_DIR/agent/agency-report"  /usr/local/bin/agency-report
 ln -sfn "$REPO_DIR/agent/bux-restart"    /usr/local/bin/bux-restart
 ln -sfn "$REPO_DIR/agent/bux-miniapp-tunnel" /usr/local/bin/bux-miniapp-tunnel

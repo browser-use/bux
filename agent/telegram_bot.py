@@ -215,20 +215,6 @@ def _append_private_goal(title: str, context: str = "", cadence: str = "") -> No
 
 GOAL_MODES = ("copilot", "autopilot")
 DEFAULT_GOAL_MODE = "copilot"
-MODE_EMOJI = {"copilot": "🛟", "autopilot": "🚀"}
-
-
-def _decorate_topic_title(title: str, mode: str) -> str:
-    """Prefix the topic title with a mode emoji so the user sees the mode
-    in the topic list at a glance. Strips any existing 🛟/🚀 prefix first
-    so re-decoration is idempotent."""
-    bare = title.strip()
-    for emoji in MODE_EMOJI.values():
-        if bare.startswith(emoji):
-            bare = bare[len(emoji):].lstrip()
-            break
-    prefix = MODE_EMOJI.get(mode, MODE_EMOJI[DEFAULT_GOAL_MODE])
-    return f"{prefix} {bare}"
 
 
 def _record_miniapp_goal(
@@ -453,9 +439,9 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("fast", "switch this topic's Codex lane to fast mode"),
     ("model", "show/set this topic's Codex model"),
     ("agency", "open the goal card feed"),
-    ("goal", "create a goal in a new topic — the agent works on it 24/7"),
-    ("autopilot", "this goal: act on reversible work, ask only at visible edges"),
-    ("copilot", "this goal: draft and ask before anything visible (default)"),
+    ("goal", "AUTOPILOT goal in a new topic — I work end-to-end without approvals"),
+    ("autopilot", "flip this topic to autopilot"),
+    ("copilot", "flip this topic back to copilot (default everywhere except /goal topics)"),
     ("miniapp", "open the goal card feed"),
     ("live", "live-view URL of the active browser"),
     ("queue", "pending tasks in this topic"),
@@ -4725,12 +4711,14 @@ class Bot:
         title: str,
         sender: dict,
         reply_to: int | None = None,
+        mode: str = DEFAULT_GOAL_MODE,
     ) -> None:
         title = " ".join((title or "").split()).strip()
         if not title:
+            cmd_hint = "/go" if mode == "autopilot" else "/goal"
             self.send(
                 chat_id,
-                "Use `/goal <what should Agency optimize for?>`",
+                f"Use `{cmd_hint} <what should I work on?>`",
                 reply_to=reply_to,
                 thread_id=thread_id,
                 markdown=True,
@@ -4740,12 +4728,9 @@ class Bot:
         goal_thread = thread_id
         spawned_topic = False
         topic_error: str | None = None
-        # Mode emoji in the topic title so the user sees their mode in the
-        # topic list. Default copilot at create time; /autopilot renames it.
-        decorated_title = _decorate_topic_title(title, DEFAULT_GOAL_MODE)
         if chat_id < 0:
             try:
-                res = self.call("createForumTopic", chat_id=chat_id, name=decorated_title[:128])
+                res = self.call("createForumTopic", chat_id=chat_id, name=title[:128])
                 if res.get("ok"):
                     goal_thread = int(res["result"].get("message_thread_id") or thread_id)
                     _record_miniapp_topic(chat_id, goal_thread, title, "telegram-goal")
@@ -4756,13 +4741,11 @@ class Bot:
                 LOG.exception("goal: createForumTopic failed")
                 topic_error = str(exc)
         _append_private_goal(title, context)
-        mode = DEFAULT_GOAL_MODE
+        if mode not in GOAL_MODES:
+            mode = DEFAULT_GOAL_MODE
         goal_id = _record_miniapp_goal(title, context, "", chat_id, goal_thread, mode=mode)
         prompt = _agency_goal_prompt(title, context, mode=mode)
         if topic_error and not spawned_topic:
-            # User asked for /goal in a group but topic creation failed (e.g. the
-            # bot isn't admin / topics aren't enabled). Tell them — running the
-            # goal in-place would silently merge it into the current thread.
             self.send(
                 chat_id,
                 f"Couldn't create a new topic for this goal: {topic_error}\n\n"
@@ -4772,12 +4755,20 @@ class Bot:
                 thread_id=thread_id,
                 markdown=False,
             )
-        ack_lines = [
-            f"🎯 Goal locked: {title}",
-            "",
-            f"Mode: 🛟 **copilot** — I draft and ask before anything visible (look for {MODE_EMOJI['copilot']} in this topic's title).",
-            f"Switch with /autopilot — I act on reversible work without asking, topic flips to {MODE_EMOJI['autopilot']}.",
-        ]
+        if mode == "autopilot":
+            ack_lines = [
+                f"🚀 Autopilot goal locked: {title}",
+                "",
+                "I'll work this end-to-end without asking — only stopping for genuinely visible/external side effects or genuine blockers.",
+                "Heads-up: autopilot uses whatever access I have to reach the goal. Don't run this in a topic that touches sensitive data.",
+            ]
+        else:
+            ack_lines = [
+                f"🎯 Goal locked: {title}",
+                "",
+                "Mode: **copilot** — I draft and ask before anything visible.",
+                "Switch this topic with /autopilot, or use `/go <goal>` next time to launch a fresh autopilot topic.",
+            ]
         self.send(
             chat_id,
             "\n".join(ack_lines),
@@ -5430,9 +5421,9 @@ class Bot:
                 "/claude — switch this topic to Claude\n"
                 "/claude login — sign in Claude through a terminal flow\n"
                 "/claude logout — sign out Claude\n"
-                "/goal <what to work on> — start a goal (new topic, agent works on it 24/7)\n"
-                "/autopilot — this goal: act on reversible work, ask only at visible edges\n"
-                "/copilot — this goal: draft and ask before anything visible (default)\n"
+                "/goal <what to work on> — AUTOPILOT goal in a new topic, I work end-to-end without approvals\n"
+                "/autopilot — flip this topic to autopilot\n"
+                "/copilot — flip this topic back to copilot (default everywhere except /goal topics)\n"
                 "/agency — open the Mini App\n"
                 "/miniapp — open the Mini App\n"
                 "/live — live-view URL of the active browser\n"
@@ -5460,7 +5451,12 @@ class Bot:
                     markdown=True,
                 )
                 return
-            self._start_agency_goal_from_command(chat_id, thread_id, arg, sender, reply_to=mid)
+            # /goal launches AUTOPILOT in a new topic — the box's "I want this
+            # done end-to-end" verb. The whole rest of the box defaults to
+            # copilot; only /goal triggers autonomous work.
+            self._start_agency_goal_from_command(
+                chat_id, thread_id, arg, sender, reply_to=mid, mode="autopilot",
+            )
             return
         if cmd in ("/autopilot", "/copilot"):
             if not owner or not _is_owner(sender, owner):
@@ -5483,33 +5479,10 @@ class Bot:
                     markdown=True,
                 )
                 return
-            # Rename the topic so the new mode emoji is visible in the
-            # topic list. Best-effort: editForumTopic needs the bot to be
-            # an admin with manage_topics; if it fails (DM, private chat,
-            # missing perms) we still post the mode-change ack below.
-            try:
-                # Look up the goal's title to re-decorate cleanly.
-                with sqlite3.connect(str(MINIAPP_DB)) as db:
-                    cur = db.execute(
-                        "SELECT title FROM goals WHERE tg_chat_id = ? AND tg_thread_id = ? "
-                        "ORDER BY id DESC LIMIT 1",
-                        (chat_id, thread_id),
-                    )
-                    row = cur.fetchone()
-                if row and thread_id:
-                    new_title = _decorate_topic_title(str(row[0]), new_mode)
-                    self.call(
-                        "editForumTopic",
-                        chat_id=chat_id,
-                        message_thread_id=thread_id,
-                        name=new_title[:128],
-                    )
-            except Exception:
-                LOG.debug("could not rename topic on mode switch", exc_info=True)
             blurb = (
-                "🚀 **autopilot** — I act on reversible work directly and ping you only at visible boundaries."
+                "**autopilot** — I act on reversible work directly and only stop at visible boundaries."
                 if new_mode == "autopilot"
-                else "🛟 **copilot** — I draft and ask before anything visible to other people."
+                else "**copilot** (default) — I draft and ask before anything visible to other people."
             )
             self.send(
                 chat_id,

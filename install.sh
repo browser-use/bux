@@ -449,6 +449,8 @@ install -m 0755 "$REPO_DIR/agent/tg-approve.py" /usr/local/bin/tg-approve
 # get in the way.
 install -m 0755 "$REPO_DIR/agent/tg-schedule"      /usr/local/bin/tg-schedule
 install -m 0755 "$REPO_DIR/agent/tg-schedule-fire" /usr/local/bin/tg-schedule-fire
+# Friendlier alias `schedule` for the agent + user; both names work.
+ln -sfn /usr/local/bin/tg-schedule /usr/local/bin/schedule
 
 # --- pre-seed ~/.claude.json so first `claude` run skips dialogs -----------
 if [ ! -f /home/bux/.claude.json ]; then
@@ -543,6 +545,28 @@ if ! sudo -iu bux command -v codex >/dev/null 2>&1; then
 	sudo -iu bux npm install -g @openai/codex \
 		|| warn 'codex install failed (non-fatal — /codex login will hint how to install later)'
 fi
+
+# Enable Codex /goal feature so `/goal <X>` autopilot works out of the box.
+# Setting is `goals = true` under `[features]` in ~/.codex/config.toml
+# (Codex CLI v0.128.0+; experimental). Idempotent: leaves existing config
+# alone if a [features] block or goals = true is already present.
+sudo -u bux -H bash -c '
+CODEX_CONFIG="$HOME/.codex/config.toml"
+mkdir -p "$(dirname "$CODEX_CONFIG")"
+if [ ! -f "$CODEX_CONFIG" ]; then
+	cat > "$CODEX_CONFIG" <<TOML
+[features]
+goals = true
+TOML
+elif ! grep -qE "^[[:space:]]*goals[[:space:]]*=" "$CODEX_CONFIG"; then
+	if grep -qE "^[[:space:]]*\[features\]" "$CODEX_CONFIG"; then
+		echo "install: warn — existing [features] block in $CODEX_CONFIG; add goals = true manually to enable /goal" >&2
+	else
+		printf "\n[features]\ngoals = true\n" >> "$CODEX_CONFIG"
+	fi
+fi
+chmod 0644 "$CODEX_CONFIG"
+'
 
 # --- login banner: print live browser URL on each ssh login ---------------
 if ! grep -q 'BU_BROWSER_LIVE_URL' /home/bux/.profile 2>/dev/null; then

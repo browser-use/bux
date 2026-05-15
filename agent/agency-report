@@ -46,13 +46,11 @@ of expandable blocks is variable (0, 1, 2, N — your call):
   [Yes] [More]
   [Skip]
 
-Blocks are specified one of two ways:
-  • Legacy 2-block: --draft (becomes "📝 Drafted action") and --reasoning
-    (becomes "📎 Context"). Backward-compatible with the original PR.
-  • Flexible: --block (repeatable, JSON object). Each --block becomes
-    one expandable. Use this when you have a different shape — e.g.
-    three variants A/B/C, or a single "context" block, or zero blocks
-    (--info-only with just headline + source link).
+Blocks are specified via --block (repeatable, JSON object). Each --block
+becomes one expandable. Pass any number for 0/1/2/N expandables — typical
+copilot card is two (option A / option B). If no --block is passed and a
+--prompt is set, a single auto-generated draft block is created so the
+user can see what'll run on Yes-tap.
 
 Yes-tap routing — one goal, one topic:
   • Yes/More dispatch in the topic the card lives in. That topic is the
@@ -87,16 +85,10 @@ Field mapping:
   --image-text         alt: shorthand text → auto-generated local card image
   --block              repeatable; each value is a JSON object
                        {emoji, title, body[, body_html]} → one expandable.
-                       When given, fully overrides --draft / --reasoning.
-                       Use for 3-variant pickers, info-only cards, or any
-                       non-2-block shape.
-  --draft              legacy: actionable content (first expandable).
-                       Falls back to --prompt when omitted.
-  --reasoning          context block (second expandable, "📎 Context").
-                       Falls back to --description when omitted.
-  --description        legacy alias for --reasoning (kept for back-compat)
-  --prompt             exact action that runs if user taps Yes — also fills
-                       draft when --draft is not given.
+                       Two blocks for option A/B is the typical copilot
+                       card; single block for status confirms.
+  --prompt             exact action that runs if user taps Yes; also
+                       auto-generates a draft block when no --block given.
   --importance         high|med|low (default med)
   --source             stable slug for dedupe
   --skip-if-exists     suppress posting if the source slug already has a
@@ -106,8 +98,10 @@ Field mapping:
   --info-only          omit the inline keyboard entirely (FYI cards).
   --thread-id          forum topic to post into (defaults to $TG_THREAD_ID)
 
-Inputs are HTML-escaped by default. To embed raw HTML in a field use the
-`--<field>-html` long form (e.g. `--draft-html '<code>...</code>'`).
+Inputs are HTML-escaped by default. To embed raw HTML in --block bodies,
+pass `"body_html": true` alongside `"body": "<your html>"`. The
+`--title-html`, `--subhead-html`, `--source-label-html` long forms remain
+for raw HTML in headline / subhead / source label.
 """
 from __future__ import annotations
 
@@ -353,18 +347,13 @@ def _build_keyboard(
 def _resolve_blocks(args: argparse.Namespace) -> list[dict]:
     """Build the ordered list of expandable blocks rendered in the card.
 
-    Two ways to specify them:
-      • --block JSON (repeatable): full control. Each value is a JSON
-        object {"emoji": "📝", "title": "Variant A", "body": "..."}.
-        When ANY --block is passed, the legacy --draft / --reasoning
-        flags are ignored — --block fully overrides them.
-      • Legacy --draft / --reasoning (each renders one block): the
-        original 2-block shape, useful for the common case.
+    Pass --block JSON (repeatable). Each value is a JSON object:
+      {"emoji": "📝", "title": "Variant A", "body": "..."}
+    or with raw HTML: {..., "body": "<b>X</b>", "body_html": true}.
 
-    Body content is HTML-passed-through when --block is used; the caller
-    is responsible for escaping (use the helper to wrap raw text). For
-    --draft / --reasoning, the existing escape rules apply (raw HTML via
-    --draft-html / --reasoning-html, otherwise auto-escaped).
+    If no --block is passed and --prompt is set, a single block with the
+    prompt as the body is auto-generated so the user can see what'll run
+    on Yes-tap.
 
     Returns a list of {emoji, title, body_html} dicts.
     """
@@ -388,26 +377,16 @@ def _resolve_blocks(args: argparse.Namespace) -> list[dict]:
             })
         return out
 
-    blocks: list[dict] = []
-    draft = _resolve_field(args.draft, args.draft_html)
-    if not draft and args.prompt:
-        draft = f"<pre>{html.escape(args.prompt, quote=False)}</pre>"
-    if draft:
-        blocks.append({
-            "emoji": args.draft_emoji or "📝",
-            "title": args.draft_title or "Drafted action",
-            "body_html": draft,
-        })
-    reasoning = _resolve_field(args.reasoning, args.reasoning_html)
-    if not reasoning and args.description:
-        reasoning = _esc(args.description)
-    if reasoning:
-        blocks.append({
-            "emoji": args.reasoning_emoji or "📎",
-            "title": args.reasoning_title or "Context",
-            "body_html": reasoning,
-        })
-    return blocks
+    # No --block: auto-generate one from --prompt so the user always sees
+    # what'll fire on Yes-tap. Cards with no prompt + no block + no
+    # info-only flag are caught by the validation in main().
+    if (args.prompt or "").strip():
+        return [{
+            "emoji": "📝",
+            "title": "Drafted action",
+            "body_html": f"<pre>{html.escape(args.prompt, quote=False)}</pre>",
+        }]
+    return []
 
 
 def _build_body(args: argparse.Namespace) -> str:
@@ -605,33 +584,14 @@ def main() -> int:
         default=None,
         help='Repeatable expandable block as JSON: '
         '\'{"emoji":"📝","title":"Variant A","body":"..."}\'. '
-        "When given, overrides --draft / --reasoning. Pass any number "
-        "of --block flags for 0/1/2/N expandables.",
+        "Pass any number of --block flags for 0/1/2/N expandables.",
     )
-    p.add_argument("--draft", help="Actionable content (first expandable).")
-    p.add_argument("--draft-title", default="Drafted action", help="Title of the draft block.")
-    p.add_argument("--draft-emoji", default="📝", help="Emoji prefix on the draft block.")
-    p.add_argument(
-        "--reasoning",
-        help="Context block (second expandable). Provenance, why-now, "
-        "related threads, anything supporting the decision but not "
-        "the action itself.",
-    )
-    p.add_argument("--reasoning-title", default="Context", help="Title of the context block.")
-    p.add_argument("--reasoning-emoji", default="📎", help="Emoji prefix on the context block.")
     p.add_argument("--title-html", help="Raw HTML for the headline (skips escaping).")
     p.add_argument("--source-label-html", help="Raw HTML for the source label.")
     p.add_argument("--subhead-html", help="Raw HTML for the subhead.")
-    p.add_argument("--draft-html", help="Raw HTML for the draft block body.")
-    p.add_argument("--reasoning-html", help="Raw HTML for the why block body.")
-    p.add_argument(
-        "--description",
-        default="",
-        help="Legacy alias: used as reasoning if --reasoning is not given.",
-    )
     p.add_argument(
         "--prompt",
-        help="Exact action that runs if user taps Yes — also fills draft when --draft is not given.",
+        help="Exact action that runs if user taps Yes — also fills the auto-generated draft block when no --block is given.",
     )
     p.add_argument(
         "--importance",
@@ -745,10 +705,16 @@ def main() -> int:
             )
             return 0
 
+    # DB description was historically the legacy --reasoning text. After v7
+    # the blocks fully replace it; we store the concatenated block bodies so
+    # search / dedup still see something searchable.
+    db_description = "\n\n".join(
+        (b.get("body_html") or "").strip() for b in blocks
+    ).strip() or (args.prompt or "")
     sugg_id = agency_db.insert(
         db,
         title=args.title,
-        description=args.description or args.reasoning or "",
+        description=db_description,
         importance=args.importance,
         source=args.source,
         prompt=args.prompt,
