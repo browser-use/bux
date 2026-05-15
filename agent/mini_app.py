@@ -857,7 +857,7 @@ def _append_dismiss_feedback(row: dict[str, Any], user: dict[str, Any]) -> None:
     lines = [
         "",
         f"- {now}: skipped `{pattern}`",
-        f"  - Signal: do not re-pitch this exact card shape unless the underlying source materially changes.",
+        "  - Signal: do not re-pitch this exact card shape unless the underlying source materially changes.",
     ]
     if source_url:
         lines.append(f"  - Source: {source_url}")
