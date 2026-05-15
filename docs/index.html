@@ -25,21 +25,33 @@
     >
     <meta name="twitter:image" content="https://raw.githubusercontent.com/browser-use/bux/main/docs/tiktok-demo-thumbnail.jpg">
     <script type="application/ld+json">
-      {
-        "@context": "https://schema.org",
-        "@type": "SoftwareApplication",
-        "name": "Browser Use Box",
-        "applicationCategory": "DeveloperApplication",
-        "operatingSystem": "Linux",
-        "description": "A 24/7 Claude Code agent with Browser Use Cloud, Telegram control, and a persistent real browser.",
-        "url": "https://browser-use.github.io/bux/",
-        "codeRepository": "https://github.com/browser-use/bux",
-        "image": "https://raw.githubusercontent.com/browser-use/bux/main/docs/tiktok-demo-thumbnail.jpg",
-        "sameAs": [
-          "https://www.tiktok.com/@browser_use/video/7639824093721758989",
-          "https://github.com/browser-use/bux"
-        ]
-      }
+      [
+        {
+          "@context": "https://schema.org",
+          "@type": "SoftwareApplication",
+          "name": "Browser Use Box",
+          "applicationCategory": "DeveloperApplication",
+          "operatingSystem": "Linux",
+          "description": "A 24/7 Claude Code agent with Browser Use Cloud, Telegram control, and a persistent real browser.",
+          "url": "https://browser-use.github.io/bux/",
+          "codeRepository": "https://github.com/browser-use/bux",
+          "image": "https://raw.githubusercontent.com/browser-use/bux/main/docs/tiktok-demo-thumbnail.jpg",
+          "sameAs": [
+            "https://www.tiktok.com/@browser_use/video/7639824093721758989",
+            "https://github.com/browser-use/bux"
+          ]
+        },
+        {
+          "@context": "https://schema.org",
+          "@type": "VideoObject",
+          "name": "Browser Use Box 14-second demo",
+          "description": "A short demo of Browser Use Box running an always-on Browser Use Cloud agent from Telegram.",
+          "thumbnailUrl": "https://raw.githubusercontent.com/browser-use/bux/main/docs/tiktok-demo-thumbnail.jpg",
+          "uploadDate": "2026-05-14",
+          "embedUrl": "https://www.tiktok.com/@browser_use/video/7639824093721758989",
+          "contentUrl": "https://www.tiktok.com/@browser_use/video/7639824093721758989"
+        }
+      ]
     </script>
     <style>
       :root {
@@ -161,6 +173,22 @@
         background: var(--panel);
       }
 
+      .tiktok-player {
+        width: 100%;
+        min-height: 650px;
+        display: flex;
+        justify-content: center;
+        align-items: start;
+      }
+
+      .tiktok-embed {
+        margin: 0 !important;
+      }
+
+      .tiktok-fallback {
+        display: block;
+      }
+
       h2 {
         margin: 0 0 14px;
         font-size: 30px;
@@ -262,9 +290,30 @@
     <main>
       <section>
         <div class="section-inner demo">
-          <a href="https://www.tiktok.com/@browser_use/video/7639824093721758989" aria-label="Watch Browser Use Box on TikTok">
-            <img src="tiktok-demo-thumbnail.jpg" alt="Browser Use Box TikTok demo thumbnail">
-          </a>
+          <div class="tiktok-player">
+            <blockquote
+              class="tiktok-embed"
+              cite="https://www.tiktok.com/@browser_use/video/7639824093721758989"
+              data-video-id="7639824093721758989"
+              data-embed-from="oembed"
+              style="max-width: 420px; min-width: 325px;"
+            >
+              <section>
+                <a target="_blank" rel="noopener" href="https://www.tiktok.com/@browser_use/video/7639824093721758989">
+                  Watch the Browser Use Box demo on TikTok
+                </a>
+              </section>
+            </blockquote>
+            <noscript>
+              <a
+                class="tiktok-fallback"
+                href="https://www.tiktok.com/@browser_use/video/7639824093721758989"
+                aria-label="Watch Browser Use Box on TikTok"
+              >
+                <img src="tiktok-demo-thumbnail.jpg" alt="Browser Use Box TikTok demo thumbnail">
+              </a>
+            </noscript>
+          </div>
           <div>
             <h2>Text your agent. Keep the browser alive.</h2>
             <p>
@@ -302,5 +351,6 @@
         Open source at <a href="https://github.com/browser-use/bux">github.com/browser-use/bux</a>.
       </div>
     </footer>
+    <script async src="https://www.tiktok.com/embed.js"></script>
   </body>
 </html>
