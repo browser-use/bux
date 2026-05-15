@@ -113,6 +113,7 @@ ln -sfn "$REPO_DIR/agent/tg-send"        /usr/local/bin/tg-send
 ln -sfn "$REPO_DIR/agent/tg-buttons"     /usr/local/bin/tg-buttons
 ln -sfn "$REPO_DIR/agent/tg-schedule"    /usr/local/bin/tg-schedule
 ln -sfn "$REPO_DIR/agent/tg-schedule-fire" /usr/local/bin/tg-schedule-fire
+ln -sfn "$REPO_DIR/agent/new-topic"      /usr/local/bin/new-topic
 ln -sfn /usr/local/bin/tg-schedule       /usr/local/bin/schedule
 ln -sfn "$REPO_DIR/agent/agency-report"  /usr/local/bin/agency-report
 ln -sfn "$REPO_DIR/agent/bux-restart"    /usr/local/bin/bux-restart

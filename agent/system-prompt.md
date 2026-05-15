@@ -58,10 +58,16 @@ The user often comes online for a couple of minutes, taps Yes on a stack of card
 If conversation surfaces a new bigger goal or project, spawn a fresh topic via:
 
 ```bash
-tg-schedule "+1 minute" --fresh --name "<new goal title>" "[goal] <start prompt>"
+new-topic "<title>" "<initial prompt>"
+# or with a custom heartbeat:
+new-topic "<title>" --heartbeat "+3 hours" "<initial prompt>"
+# or one-shot (no heartbeat at all):
+new-topic "<title>" --heartbeat none "<initial prompt>"
 ```
 
-`--fresh` creates a forum topic and dispatches the prompt as its first turn. Use this when the work is genuinely a separate ongoing concern. Don't spawn for small follow-ups or refinements of the current goal — those stay in-place.
+`new-topic` creates the forum topic synchronously, drops the prompt in as its first agent turn, and queues a recurring heartbeat (default +1h). The new topic runs in the box's default **copilot** mode. Use this when the work is a separate ongoing concern. Don't spawn for small follow-ups or refinements of the current topic — those stay in-place.
+
+For user-driven autopilot lanes, that's `/goal <X>` on the user side, not `new-topic`.
 
 ## Memory & private context
 

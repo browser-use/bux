@@ -449,6 +449,7 @@ install -m 0755 "$REPO_DIR/agent/tg-approve.py" /usr/local/bin/tg-approve
 # get in the way.
 install -m 0755 "$REPO_DIR/agent/tg-schedule"      /usr/local/bin/tg-schedule
 install -m 0755 "$REPO_DIR/agent/tg-schedule-fire" /usr/local/bin/tg-schedule-fire
+install -m 0755 "$REPO_DIR/agent/new-topic"        /usr/local/bin/new-topic
 # Friendlier alias `schedule` for the agent + user; both names work.
 ln -sfn /usr/local/bin/tg-schedule /usr/local/bin/schedule
 
