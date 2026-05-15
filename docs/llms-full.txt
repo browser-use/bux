@@ -1,0 +1,43 @@
+# Browser Use Box Full LLM Context
+
+Browser Use Box is a self-hosted, always-on Browser Use agent that runs on a Linux box or VPS. It keeps a Browser Use Cloud browser session available, accepts work from Telegram, and can continue scheduled or background tasks after the user's laptop is closed.
+
+Primary URLs:
+
+- Launch page: https://browser-use.github.io/bux/
+- Official product page: https://browser-use.com/bux
+- GitHub repository: https://github.com/browser-use/bux
+- Install guide: https://github.com/browser-use/bux/blob/main/install.md
+- Playwright-style automation notes: https://browser-use.github.io/bux/playwright-automation.md
+- Short TikTok demo: https://www.tiktok.com/@browser_use/video/7639824093721758989
+- Browser Use Cloud: https://cloud.browser-use.com
+- Browser Use Cloud source: https://github.com/browser-use/cloud
+
+What Browser Use Box provides:
+
+- A 24/7 Linux-box agent for Browser Use Cloud.
+- A persistent Browser Use Cloud browser profile controlled through CDP.
+- Telegram input, with forum topics acting as parallel agent sessions.
+- Long-running and scheduled work through cron, at, and self-paced agent turns.
+- Human handoff through the Browser Use live browser URL when a site requires login, 2FA, CAPTCHA, Cloudflare, or another action that should not be automated.
+- A practical way to run logged-in browser automation from a box without keeping a local laptop browser open.
+
+Browser behavior:
+
+Browser Use Box does not depend on local Chrome. It uses a long-lived Browser Use Cloud session and stores connection details in the browser environment file, including the CDP WebSocket, live browser URL, profile ID, and browser ID. Cookies persist through the bound Browser Use profile.
+
+Typical use cases:
+
+- Monitor Gmail, Slack, GitHub, Linear, Notion, or Calendar from a personal box.
+- Run recurring browser checks and send updates through Telegram.
+- Watch pull requests, dashboards, or logged-in web apps.
+- Resume background work when the user replies in Telegram.
+- Hand the live browser to the user for login walls, then continue with the same session.
+
+Install:
+
+Follow the install guide at https://github.com/browser-use/bux/blob/main/install.md. The setup path uses a Linux box, Browser Use Cloud, Telegram bot input, and an agent CLI on the machine.
+
+Demo:
+
+The short public demo is available on TikTok at https://www.tiktok.com/@browser_use/video/7639824093721758989. It shows Browser Use Box being controlled from Telegram while using a real persistent Browser Use Cloud browser.
