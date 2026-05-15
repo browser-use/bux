@@ -1,29 +1,28 @@
 #!/opt/bux/venv/bin/python
 """new-topic <title> [--heartbeat INTERVAL] <prompt>
 
-Spawn a fresh Telegram forum topic, drop the prompt in as its first agent
-turn, and queue a recurring heartbeat for that topic.
+Spawn a fresh Telegram forum topic and drop the prompt in as its first
+agent turn. Synchronous — the topic appears immediately, no at(1) delay.
 
-The agent uses this when conversation surfaces a *new ongoing project*
-that deserves its own permanent lane. The new topic runs in the box's
-default copilot mode — drafts and asks before anything visible. (Use
-`/goal <X>` from the user side for the autopilot variant.)
+The new topic runs in the box's default copilot mode (drafts and asks).
+Use `/goal <X>` from the user side for the autopilot variant.
 
-Synchronous: the topic appears immediately in Telegram and the first
-turn starts dispatching. No at(1) delay. Replaces the legacy misuse of
-`tg-schedule "+1 minute" --fresh`.
+**No heartbeat by default.** Re-firing the same prompt every hour is
+noise — the agent inside the new topic schedules its own check-ins via
+`tg-schedule` only when there's something concrete to come back to (a
+reply, CI completion, an event). Pass `--heartbeat <interval>` only
+when the caller has a genuine reason for a recurring fixed-cadence
+ping, like "scan this Slack channel every 30 min for new threads".
 
 Arguments:
   <title>             topic name (≤128 chars; Telegram truncates).
-  --heartbeat INT     interval for the recurring heartbeat (at(1) syntax,
-                      default "+1 hour"). Pass `--heartbeat none` to
-                      skip the heartbeat entirely (one-shot topic).
+  --heartbeat INT     opt-in recurring heartbeat at this at(1) interval
+                      (e.g. "+1 hour"). Omit for no heartbeat (default).
   <prompt>            initial prompt to dispatch as the topic's first turn.
 
 Examples:
   new-topic "100k Reddit views" "research the top subreddits for this product, draft 3 candidate posts, ask which I should ship"
-  new-topic --heartbeat "+3 hours" "weekly metrics" "pull yesterday's metrics from datadog and brief me"
-  new-topic --heartbeat none "one-off thing" "do X then close the topic"
+  new-topic "metrics monitor" --heartbeat "+30 minutes" "scan datadog for error spikes and alert me"
 """
 from __future__ import annotations
 
@@ -42,7 +41,6 @@ from telegram_bot import Bot  # noqa: E402
 
 TG_ENV = Path("/etc/bux/tg.env")
 TG_ALLOWED = Path("/etc/bux/tg-allowed.txt")
-DEFAULT_HEARTBEAT = "+1 hour"
 
 
 def _load_dotenv(path: Path) -> dict[str, str]:
@@ -86,9 +84,9 @@ def _create_forum_topic(token: str, chat_id: int, name: str) -> int:
 
 
 def _parse_args(argv: list[str]) -> tuple[str, str, str]:
-    """Returns (title, heartbeat, prompt). heartbeat is "" for --heartbeat none."""
+    """Returns (title, heartbeat, prompt). heartbeat="" when not opted in."""
     title: str | None = None
-    heartbeat = DEFAULT_HEARTBEAT
+    heartbeat = ""
     prompt_parts: list[str] = []
     it = iter(argv)
     for arg in it:
@@ -96,7 +94,7 @@ def _parse_args(argv: list[str]) -> tuple[str, str, str]:
             sys.stdout.write(__doc__)
             sys.exit(0)
         if arg == "--heartbeat":
-            heartbeat = next(it, "")
+            heartbeat = next(it, "").strip()
             if heartbeat.lower() == "none":
                 heartbeat = ""
             continue
