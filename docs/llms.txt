@@ -1,0 +1,26 @@
+# Browser Use Box
+
+> Browser Use Box is a self-hosted, always-on Browser Use agent for a Linux box. It keeps a Browser Use Cloud browser session alive, accepts tasks from Telegram, and hands off login walls through a live browser URL.
+
+## Primary Links
+
+- Launch page: https://browser-use.github.io/bux/
+- Official product page: https://browser-use.com/bux
+- GitHub repo: https://github.com/browser-use/bux
+- Install guide: https://github.com/browser-use/bux/blob/main/install.md
+- Playwright-style automation use case: https://browser-use.github.io/bux/playwright-automation.md
+- Browser Use Cloud source: https://github.com/browser-use/cloud
+- Browser Use Cloud: https://cloud.browser-use.com
+
+## Demo
+
+- TikTok demo: https://www.tiktok.com/@browser_use/video/7639824093721758989
+
+## What It Does
+
+- Runs Claude Code on a persistent Linux VPS or other Ubuntu box.
+- Controls a real Browser Use Cloud browser through CDP, with cookies and profile state preserved.
+- Lets the user send agent tasks from Telegram, including scheduled and background tasks.
+- Shares a live browser URL when a site requires login, 2FA, CAPTCHA, or another human handoff.
+- Supports Playwright-style logged-in browser automation without keeping a laptop open.
+
