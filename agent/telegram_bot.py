@@ -191,187 +191,9 @@ def _record_miniapp_topic(chat_id: int, thread_id: int, title: str, source: str 
         LOG.debug("could not record mini app topic", exc_info=True)
 
 
-def _append_private_goal(title: str, context: str = "", cadence: str = "") -> None:
-    now = time.strftime("%Y-%m-%d", time.gmtime())
-    lines = ["", f"## {title}", f"- Added: {now}"]
-    if cadence:
-        lines.append(f"- Cadence: {cadence}")
-    if context:
-        lines.append(f"- Context: {context.strip()}")
-    lines.append("- Preference signals: learn from accepted, skipped, and completed Agency cards before suggesting more.")
-    try:
-        GOALS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        if not GOALS_FILE.exists() or not GOALS_FILE.read_text().strip():
-            GOALS_FILE.write_text(
-                "# Goals\n\n"
-                "Private high-level goals and Agency preferences for this box.\n"
-                "The Agency generator reads this before creating cards and updates it when the user clarifies goals.\n"
-            )
-        with GOALS_FILE.open("a") as fh:
-            fh.write("\n".join(lines) + "\n")
-    except Exception:
-        LOG.debug("could not append private goal", exc_info=True)
-
-
-GOAL_MODES = ("copilot", "autopilot")
-DEFAULT_GOAL_MODE = "copilot"
-
-
-def _record_miniapp_goal(
-    title: str,
-    context: str,
-    cadence: str,
-    chat_id: int,
-    thread_id: int,
-    mode: str = DEFAULT_GOAL_MODE,
-) -> int | None:
-    try:
-        MINIAPP_DB.parent.mkdir(parents=True, exist_ok=True)
-        now = int(time.time())
-        with sqlite3.connect(str(MINIAPP_DB)) as db:
-            db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS goals (
-                  id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  title TEXT NOT NULL,
-                  context TEXT NOT NULL DEFAULT '',
-                  cadence TEXT NOT NULL DEFAULT '',
-                  mode TEXT NOT NULL DEFAULT 'copilot',
-                  status TEXT NOT NULL DEFAULT 'active',
-                  tg_chat_id INTEGER,
-                  tg_thread_id INTEGER,
-                  created_at INTEGER NOT NULL,
-                  updated_at INTEGER NOT NULL
-                )
-                """
-            )
-            # Backfill the `mode` column on DBs created before this schema.
-            try:
-                db.execute("ALTER TABLE goals ADD COLUMN mode TEXT NOT NULL DEFAULT 'copilot'")
-            except sqlite3.OperationalError as e:
-                if "duplicate column" not in str(e).lower():
-                    raise
-            cur = db.execute(
-                """
-                INSERT INTO goals (title, context, cadence, mode, tg_chat_id, tg_thread_id, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    title,
-                    context,
-                    cadence,
-                    mode if mode in GOAL_MODES else DEFAULT_GOAL_MODE,
-                    chat_id or None,
-                    thread_id or None,
-                    now,
-                    now,
-                ),
-            )
-            return int(cur.lastrowid)
-    except Exception:
-        LOG.debug("could not record mini app goal", exc_info=True)
-        return None
-
-
-def _get_goal_mode(chat_id: int, thread_id: int) -> str:
-    """Return the active goal's mode for this (chat, thread). Default: copilot."""
-    if not chat_id or not thread_id:
-        return DEFAULT_GOAL_MODE
-    try:
-        with sqlite3.connect(str(MINIAPP_DB)) as db:
-            cur = db.execute(
-                """
-                SELECT mode FROM goals
-                 WHERE tg_chat_id = ? AND tg_thread_id = ?
-                 ORDER BY id DESC LIMIT 1
-                """,
-                (chat_id, thread_id),
-            )
-            row = cur.fetchone()
-            if row and row[0] in GOAL_MODES:
-                return row[0]
-    except Exception:
-        LOG.debug("could not read goal mode", exc_info=True)
-    return DEFAULT_GOAL_MODE
-
-
-def _set_goal_mode(chat_id: int, thread_id: int, mode: str) -> bool:
-    """Update the latest goal in this (chat, thread). Returns False if no goal row exists."""
-    if mode not in GOAL_MODES or not chat_id or not thread_id:
-        return False
-    try:
-        with sqlite3.connect(str(MINIAPP_DB)) as db:
-            cur = db.execute(
-                """
-                UPDATE goals SET mode = ?, updated_at = ?
-                 WHERE id = (
-                   SELECT id FROM goals
-                    WHERE tg_chat_id = ? AND tg_thread_id = ?
-                    ORDER BY id DESC LIMIT 1
-                 )
-                """,
-                (mode, int(time.time()), chat_id, thread_id),
-            )
-            return cur.rowcount > 0
-    except Exception:
-        LOG.debug("could not set goal mode", exc_info=True)
-        return False
-
-
-def _agency_goal_prompt(
-    title: str,
-    context: str,
-    cadence: str = "",
-    mode: str = DEFAULT_GOAL_MODE,
-) -> str:
-    try:
-        goals_text = GOALS_FILE.read_text().strip()[:12000]
-    except Exception:
-        goals_text = ""
-    goals_block = (
-        f"\n\nPrivate goals file ({GOALS_FILE}):\n{goals_text}"
-        if goals_text
-        else f"\n\nPrivate goals file ({GOALS_FILE}) is empty or missing. Add the goal there once it's locked."
-    )
-    cadence_line = f"\nCadence the user mentioned: {cadence}" if cadence else ""
-
-    if mode == "autopilot":
-        mode_block = (
-            "Mode: **autopilot**. Act directly on private/reversible work (drafts, scrapes, queries, local files, "
-            "scheduled checks). Post short progress updates in this topic with tg-send. Only stop and ask via "
-            "agency-report when the next step would be visible to other people, irreversible, or spend money: "
-            "sending an email, posting publicly, merging, deploying, paying."
-        )
-    else:
-        mode_block = (
-            "Mode: **copilot**. Do all the private/reversible work yourself (read, draft, query, render), then post "
-            "ONE agency-report card with the action pre-completed and ask Yes/More/Skip. Never ask 'should I draft' — "
-            "draft it, attach it, ask to send."
-        )
-
-    return (
-        f"Goal locked in this Telegram topic: **{title}**\n\n"
-        f"User context:\n{context or title}"
-        f"{cadence_line}"
-        f"{goals_block}\n\n"
-        f"{mode_block}\n\n"
-        "How to work this goal:\n"
-        "1. Card-shape doctrine is in CLAUDE.md (## Composing a card) — already in context.\n"
-        "2. Read /var/lib/bux/agency.db for what's already been suggested/accepted/skipped on this goal. "
-        "Don't repeat skipped ideas.\n"
-        "3. Scan the connected surfaces you actually have access to (Gmail, Slack, GitHub, etc. via composio MCP, "
-        "or the live browser via browser-harness) for the most concrete next action that moves this goal.\n"
-        "4. Take the next action under your current mode. ONE high-signal thing per cycle, not a batch of ten. "
-        "Every action names a specific person/company/thread/repo/PR/post/file — no generic 'monitor channel' cards.\n"
-        "5. End every cycle by self-scheduling the next check with `tg-schedule`. Pick a cadence that fits the goal: "
-        "30 min for fast-moving (live launches, incidents), 1h default, 4h for slow-burn goals, daily for long arcs. "
-        "Example: `tg-schedule '+1 hour' 'next agency cycle on this goal'`.\n"
-        "6. If the goal is still too vague to act on, ask ONE short clarifying question (use tg-buttons with 2-3 "
-        "options) instead of filler cards.\n"
-        "7. Set agency-report `--source-label` / `--source-url` to the real platform object. Never use the bux "
-        "GitHub repo as a generic source for non-GitHub cards.\n\n"
-        "This topic is the goal's permanent lane. The user can reply at any time and you resume with full context."
-    )
+# Goal persistence is the AGENT'S responsibility, not the bot's. When the
+# agent notices a new user goal in conversation, it writes to
+# /opt/bux/repo/private/goals.md itself. The bot stays a dumb pipe.
 
 # Failure reaction on the user's message. Telegram's free-tier reaction
 # allowlist excludes ⏳/✅/⚠️/❌ — this is a verified-allowed pick.
@@ -439,9 +261,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("fast", "switch this topic's Codex lane to fast mode"),
     ("model", "show/set this topic's Codex model"),
     ("agency", "open the goal card feed"),
-    ("goal", "AUTOPILOT goal in a new topic — I work end-to-end without approvals"),
-    ("autopilot", "flip this topic to autopilot"),
-    ("copilot", "flip this topic back to copilot (default everywhere except /goal topics)"),
+    ("goal", "autopilot goal — passes through to the CLI; I work end-to-end without approvals"),
     ("miniapp", "open the goal card feed"),
     ("live", "live-view URL of the active browser"),
     ("queue", "pending tasks in this topic"),
@@ -4704,107 +4524,6 @@ class Bot:
         except Exception:
             LOG.exception("agency heartbeat schedule failed for chat_id=%s", chat_id)
 
-    def _start_agency_goal_from_command(
-        self,
-        chat_id: int,
-        thread_id: int,
-        title: str,
-        sender: dict,
-        reply_to: int | None = None,
-        mode: str = DEFAULT_GOAL_MODE,
-    ) -> None:
-        title = " ".join((title or "").split()).strip()
-        if not title:
-            cmd_hint = "/go" if mode == "autopilot" else "/goal"
-            self.send(
-                chat_id,
-                f"Use `{cmd_hint} <what should I work on?>`",
-                reply_to=reply_to,
-                thread_id=thread_id,
-                markdown=True,
-            )
-            return
-        context = title
-        goal_thread = thread_id
-        spawned_topic = False
-        topic_error: str | None = None
-        if chat_id < 0:
-            try:
-                res = self.call("createForumTopic", chat_id=chat_id, name=title[:128])
-                if res.get("ok"):
-                    goal_thread = int(res["result"].get("message_thread_id") or thread_id)
-                    _record_miniapp_topic(chat_id, goal_thread, title, "telegram-goal")
-                    spawned_topic = True
-                else:
-                    topic_error = str(res.get("description") or "createForumTopic returned not-ok")
-            except Exception as exc:
-                LOG.exception("goal: createForumTopic failed")
-                topic_error = str(exc)
-        _append_private_goal(title, context)
-        if mode not in GOAL_MODES:
-            mode = DEFAULT_GOAL_MODE
-        goal_id = _record_miniapp_goal(title, context, "", chat_id, goal_thread, mode=mode)
-        prompt = _agency_goal_prompt(title, context, mode=mode)
-        if topic_error and not spawned_topic:
-            self.send(
-                chat_id,
-                f"Couldn't create a new topic for this goal: {topic_error}\n\n"
-                "Running it in this thread instead. To get a dedicated lane, "
-                "enable Topics on the group and make me admin (manage_topics).",
-                reply_to=reply_to,
-                thread_id=thread_id,
-                markdown=False,
-            )
-        if mode == "autopilot":
-            ack_lines = [
-                f"🚀 Autopilot goal locked: {title}",
-                "",
-                "I'll work this end-to-end without asking — only stopping for genuinely visible/external side effects or genuine blockers.",
-                "Heads-up: autopilot uses whatever access I have to reach the goal. Don't run this in a topic that touches sensitive data.",
-            ]
-        else:
-            ack_lines = [
-                f"🎯 Goal locked: {title}",
-                "",
-                "Mode: **copilot** — I draft and ask before anything visible.",
-                "Switch this topic with /autopilot, or use `/go <goal>` next time to launch a fresh autopilot topic.",
-            ]
-        self.send(
-            chat_id,
-            "\n".join(ack_lines),
-            reply_to=reply_to,
-            thread_id=goal_thread or thread_id,
-            markdown=True,
-        )
-        try:
-            self.run_task(
-                (chat_id, goal_thread),
-                prompt,
-                reply_to=None,
-                sender={
-                    "user_id": str(sender.get("user_id") or ""),
-                    "username": sender.get("username") or "",
-                    "name": sender.get("name") or "",
-                },
-            )
-            LOG.info(
-                "goal: started goal_id=%s chat=%s thread=%s spawned=%s",
-                goal_id, chat_id, goal_thread, spawned_topic,
-            )
-        except Exception:
-            LOG.exception("goal: run_task failed")
-            self.send(
-                chat_id,
-                "Goal was saved, but I couldn't start the first cycle. Try `/goal` again or check the logs.",
-                reply_to=reply_to,
-                thread_id=goal_thread or thread_id,
-            )
-
-        # Note: no auto-heartbeat queued anymore. Re-firing the same prompt
-        # on a fixed cadence is noise. The agent inside the goal topic
-        # schedules its own check-ins via tg-schedule only when there's
-        # something concrete to come back to (a reply, CI, an event).
-
     def _handle_my_chat_member(self, update: dict) -> None:
         """React to the bot's own membership changing in some chat.
 
@@ -5397,9 +5116,7 @@ class Bot:
                 "/claude — switch this topic to Claude\n"
                 "/claude login — sign in Claude through a terminal flow\n"
                 "/claude logout — sign out Claude\n"
-                "/goal <what to work on> — AUTOPILOT goal in a new topic, I work end-to-end without approvals\n"
-                "/autopilot — flip this topic to autopilot\n"
-                "/copilot — flip this topic back to copilot (default everywhere except /goal topics)\n"
+                "/goal <what to work on> — pass through to the CLI's native /goal (codex) or treated as an autopilot prompt (claude); I work end-to-end without approvals\n"
                 "/agency — open the Mini App\n"
                 "/miniapp — open the Mini App\n"
                 "/live — live-view URL of the active browser\n"
@@ -5417,57 +5134,12 @@ class Bot:
                 thread_id=thread_id,
             )
             return
-        if cmd == "/goal":
-            if not owner or not _is_owner(sender, owner):
-                self.send(
-                    chat_id,
-                    "`/goal` is owner-only.",
-                    reply_to=mid,
-                    thread_id=thread_id,
-                    markdown=True,
-                )
-                return
-            # /goal launches AUTOPILOT in a new topic — the box's "I want this
-            # done end-to-end" verb. The whole rest of the box defaults to
-            # copilot; only /goal triggers autonomous work.
-            self._start_agency_goal_from_command(
-                chat_id, thread_id, arg, sender, reply_to=mid, mode="autopilot",
-            )
-            return
-        if cmd in ("/autopilot", "/copilot"):
-            if not owner or not _is_owner(sender, owner):
-                self.send(
-                    chat_id,
-                    f"`{cmd}` is owner-only.",
-                    reply_to=mid,
-                    thread_id=thread_id,
-                    markdown=True,
-                )
-                return
-            new_mode = "autopilot" if cmd == "/autopilot" else "copilot"
-            updated = _set_goal_mode(chat_id, thread_id, new_mode)
-            if not updated:
-                self.send(
-                    chat_id,
-                    "No goal in this topic yet. Use `/goal <what to work on>` first.",
-                    reply_to=mid,
-                    thread_id=thread_id,
-                    markdown=True,
-                )
-                return
-            blurb = (
-                "**autopilot** — I act on reversible work directly and only stop at visible boundaries."
-                if new_mode == "autopilot"
-                else "**copilot** (default) — I draft and ask before anything visible to other people."
-            )
-            self.send(
-                chat_id,
-                f"Mode for this goal: {blurb}",
-                reply_to=mid,
-                thread_id=thread_id,
-                markdown=True,
-            )
-            return
+        # `/goal` is intentionally NOT intercepted by the bot. It flows
+        # through as a normal turn input — codex with `[features] goals
+        # = true` runs its native plan→act→test loop; claude treats it
+        # as a goal-shaped prompt and the system prompt's "act on goal"
+        # doctrine drives behavior. The agent itself saves goals to
+        # /opt/bux/repo/private/goals.md when it notices a new one.
         if cmd in ("/agency", "/miniapp"):
             if not owner or not _is_owner(sender, owner):
                 self.send(
