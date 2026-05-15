@@ -260,7 +260,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("fast", "switch this topic's Codex lane to fast mode"),
     ("model", "show/set this topic's Codex model"),
     ("agency", "open the goal card feed"),
-    ("goal", "autopilot goal — passes through to the CLI; I work end-to-end without approvals"),
+    ("goal", "continuous goal — I keep working across turns, posting cards. Add 'don't ask me' or 'just do it' for autopilot."),
     ("miniapp", "open the goal card feed"),
     ("live", "live-view URL of the active browser"),
     ("queue", "pending tasks in this topic"),
@@ -5062,7 +5062,7 @@ class Bot:
                 "/claude — switch this topic to Claude\n"
                 "/claude login — sign in Claude through a terminal flow\n"
                 "/claude logout — sign out Claude\n"
-                "/goal <what to work on> — pass through to the CLI's native /goal (codex) or treated as an autopilot prompt (claude); I work end-to-end without approvals\n"
+                "/goal <what to work on> — continuous goal-mode, copilot by default (I suggest, you accept). Append 'don't ask me' / 'just do it' / 'no approvals' for autopilot.\n"
                 "/agency — open the Mini App\n"
                 "/miniapp — open the Mini App\n"
                 "/live — live-view URL of the active browser\n"
