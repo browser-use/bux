@@ -3656,6 +3656,12 @@ class Bot:
         if box_env.get("BUX_PROFILE_ID"):
             env["BUX_PROFILE_ID"] = box_env["BUX_PROFILE_ID"]
             env["BU_PROFILE_ID"] = box_env["BUX_PROFILE_ID"]
+        if box_env.get("BUX_BOX_TOKEN"):
+            # Codex's composio MCP entry uses `bearer_token_env_var = "BUX_BOX_TOKEN"`
+            # — codex reads this env var at MCP-connect time and sends
+            # `Authorization: Bearer <value>`. Without it in the codex
+            # subprocess env, the MCP call hits the cloud with no auth.
+            env["BUX_BOX_TOKEN"] = box_env["BUX_BOX_TOKEN"]
         for k in ("BU_CDP_WS", "BU_BROWSER_ID"):
             if browser_env.get(k):
                 env[k] = browser_env[k]

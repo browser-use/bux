@@ -215,7 +215,35 @@ else
   if ! sudo -u bux -H bash -c 'cd /home/bux && claude mcp list 2>/dev/null' | grep -q '^composio'; then
     echo "bootstrap: WARN composio MCP registration didn't take" >&2
   else
-    echo "bootstrap: registered cloud Composio MCP server"
+    echo "bootstrap: registered cloud Composio MCP server (claude)"
+  fi
+fi
+
+# Same composio MCP for codex. Codex CLI ≥ 0.30 supports HTTP-transport MCP
+# servers natively (no mcp-remote bridge needed). `codex mcp add` writes to
+# ~/.codex/config.toml. We use --bearer-token-env-var so the token isn't
+# baked into the config file — codex reads BUX_BOX_TOKEN at MCP-connect time.
+# telegram_bot.py:_build_env forwards BUX_BOX_TOKEN to the codex subprocess.
+if [ -z "${BUX_BOX_TOKEN:-}" ]; then
+  echo "bootstrap: BUX_BOX_TOKEN not set; skipping codex Composio MCP registration" >&2
+elif ! sudo -iu bux command -v codex >/dev/null 2>&1; then
+  echo "bootstrap: codex CLI not on PATH; skipping codex Composio MCP registration" >&2
+else
+  # `sudo -iu bux` (login shell) so per-user PATH from ~/.profile picks up
+  # ~/.npm-global/bin where codex actually lives — `-u bux -H` skips that.
+  sudo -iu bux codex mcp remove composio >/dev/null 2>&1 || true
+  # HTTP-transport MCP servers in codex use `--url <URL>`, not `-- <args>`.
+  # The `--` form is for stdio commands. Keep stderr unredirected so any
+  # real failure surfaces in install.log instead of getting swallowed.
+  if ! ( set +x; sudo -iu bux codex mcp add composio \
+        --bearer-token-env-var BUX_BOX_TOKEN \
+        --url https://api.browser-use.com/cloud/composio/mcp >/dev/null ); then
+    echo "bootstrap: WARN failed to register cloud Composio MCP server for codex" >&2
+  fi
+  if ! sudo -iu bux codex mcp list 2>/dev/null | grep -q '^composio'; then
+    echo "bootstrap: WARN codex composio MCP registration didn't take" >&2
+  else
+    echo "bootstrap: registered cloud Composio MCP server (codex)"
   fi
 fi
 
