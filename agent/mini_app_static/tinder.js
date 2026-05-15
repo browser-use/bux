@@ -92,7 +92,8 @@ function render() {
   renderGoals();
   const cards = visibleCards();
   const card = currentCard();
-  els.meta.textContent = `${goalTitle()} · ${openCount()} open · ${state.started} done`;
+  const position = card ? `${Math.min(state.index + 1, cards.length)}/${cards.length}` : "0/0";
+  els.meta.textContent = `${goalTitle()} · ${position} · ${openCount()} open · ${state.started} done`;
   localStorage.setItem(indexKey, String(state.index));
   if (!card) {
     els.deck.innerHTML = `
@@ -179,8 +180,9 @@ function cardHtml(card) {
   const buttons = cardActionButtons(card);
   const hasAction = buttons.length > 0;
   const text = renderRichText(plainText(card));
+  const hasMedia = Boolean(card.visual?.src && ["image", "video"].includes(card.visual?.kind));
   return `
-    <article class="card" data-card-id="${card.id}">
+    <article class="card ${hasMedia ? "has-media" : "text-only"}" data-card-id="${card.id}">
       <header class="card-head">
         ${appIconHtml(meta)}
         <div class="headline">
@@ -201,8 +203,12 @@ function cardHtml(card) {
 }
 
 function actionsHtml(buttons, hasAction) {
+  const choiceHtml = buttons.map((button) => `<button class="choice" data-start data-button="${escapeAttr(button.raw)}">${escapeHtml(button.text)}</button>`).join("");
   return `
     <footer class="actions ${hasAction ? "" : "info-only"}">
+      <div class="choices">
+        ${choiceHtml}
+      </div>
       <div class="utility-actions">
         <button class="round no" data-delete type="button" aria-label="Skip">${xSvg()}</button>
         <button class="round comment" data-comment type="button" aria-label="Comment">${commentSvg()}</button>
@@ -210,9 +216,6 @@ function actionsHtml(buttons, hasAction) {
       <form class="inline-comment" data-comment-form>
         <input data-comment-input type="text" autocomplete="off" placeholder="Add context..." />
       </form>
-      <div class="choices">
-        ${buttons.map((button) => `<button class="choice" data-start data-button="${escapeAttr(button.raw)}">${escapeHtml(button.text)}</button>`).join("")}
-      </div>
     </footer>
   `;
 }
@@ -244,15 +247,17 @@ function bindCard(card) {
       openContext();
     }
   }, { passive: true });
-  item.addEventListener("wheel", (event) => {
-    if (Math.abs(event.deltaY) > 40) openContext();
-  }, { passive: true });
 }
 
 function plainText(card) {
-  const title = String(card.title || "").trim();
+  const title = cleanCardTitle(card.title);
   const why = String(card.why || "").trim();
   return why && why !== title ? `${title}\n${why}` : title || why || "Ready when you are.";
+}
+
+function cleanCardTitle(value) {
+  const text = String(value || "").replace(/^goal:\s*/i, "").trim();
+  return text ? text[0].toUpperCase() + text.slice(1) : "";
 }
 
 function renderRichText(value) {
@@ -279,6 +284,7 @@ function mediaHtml(card) {
 }
 
 function detailHtml(card) {
+  if (String(card.source || "").startsWith("miniapp-goal:")) return "";
   const action = String(card.action || "").trim();
   if (!action || action === card.title || action === card.why) return "";
   return `<details><summary>Details</summary><div>${renderRichText(action)}</div></details>`;

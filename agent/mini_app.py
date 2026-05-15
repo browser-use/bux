@@ -314,7 +314,10 @@ def _card_video_path(row: dict[str, Any]) -> str:
 
 
 def _card_visual(row: dict[str, Any]) -> dict[str, str]:
+    source = str(row.get("source") or "")
     image_url = (row.get("image_url") or "").strip()
+    if source.startswith("miniapp-goal:") or "placehold.co/" in image_url:
+        return {"kind": "none"}
     if image_url.lower().split("?", 1)[0].endswith((".mp4", ".mov", ".webm")):
         return {"kind": "video", "src": image_url}
     video_path = _card_video_path(row)
@@ -601,7 +604,7 @@ STARTER_ACCEPTANCE_SUFFIX = (
 
 
 def _starter_image_url(text: str) -> str:
-    return "https://placehold.co/1080x540/111827/ffffff/png?text=" + urllib.parse.quote(text)
+    return ""
 
 
 def _ensure_starter_cards() -> None:
@@ -621,7 +624,6 @@ def _ensure_starter_cards() -> None:
                 source_label="Starter goal",
                 prompt=str(idea["prompt"]) + STARTER_ACCEPTANCE_SUFFIX,
                 buttons=list(idea.get("buttons") or ["Start this"]),
-                image_url=_starter_image_url(str(idea["image_text"])),
                 chat_id=chat_id,
                 thread_id=0,
                 spawn_topic=False,

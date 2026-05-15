@@ -114,7 +114,7 @@ class MiniAppTest(unittest.TestCase):
             sorted(card["id"] for card in second if str(card["source"]).startswith("miniapp-goal:")),
         )
         self.assertTrue(starter_cards[0]["buttons"])
-        self.assertEqual(starter_cards[0]["visual"]["kind"], "image")
+        self.assertEqual(starter_cards[0]["visual"]["kind"], "none")
         self.assertTrue(all(card["source_label"] == "Starter goal" for card in starter_cards))
 
     def test_cards_include_local_image_data_url(self) -> None:
