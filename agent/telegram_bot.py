@@ -845,12 +845,16 @@ def _prefix_sender(
     can tell whether the current sender is the box owner or a guest who
     joined the group later. No hard authorization gate — just context.
 
-    Slash-command prompts (e.g. `/compact`) are passed through verbatim:
-    claude's slash-command parser only fires when the prompt STARTS with
-    `/`, and a `[from …]` prefix would leave the slash a few lines into
-    the body, defeating the parse.
+    Real CLI slash-commands (e.g. `/compact`) need the slash to be the
+    first character so claude's parser fires, so they bypass the prefix.
+    Other `/`-prefixed inputs (e.g. `/goal X`, `/<anything not in the
+    short allowlist>`) get the sender tag — they're just user content
+    from the CLI's point of view, and losing the owner-vs-guest signal
+    would weaken the doctrine.
     """
-    if prompt.startswith("/"):
+    CLI_SLASH_COMMANDS = {"/compact", "/clear", "/clear-context"}
+    head = prompt.split(None, 1)[0] if prompt else ""
+    if head in CLI_SLASH_COMMANDS:
         return prompt
     label = _sender_label(sender)
     if not label:

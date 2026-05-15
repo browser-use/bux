@@ -36,9 +36,11 @@ fi
 text="${text%$'\n'}"
 [ -n "$text" ] || { echo "tg-buttons: empty body" >&2; exit 2; }
 
-# Default labels if none provided.
+# Default labels if none provided. Per the system prompt rule "always
+# include Skip", the default set ends with ⏭ Skip so the user always has
+# a low-cost dismissal even if the caller forgot to pass labels.
 if [ "${#labels[@]}" -eq 0 ]; then
-  labels=("✅ Yes, do it" "❌ No" "✏️ Just do it differently")
+  labels=("✅ Yes, do it" "✏️ Differently" "⏭ Skip")
 fi
 
 if [ "${#labels[@]}" -gt 10 ]; then
