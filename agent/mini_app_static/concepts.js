@@ -479,6 +479,7 @@ function renderPreviewStrip(cards, card) {
 
 const LAYOUTS = {
   reel: renderReel,
+  overview: renderOverviewReel,
   timeline: renderTimeline,
   stories: renderStories,
   deck: renderDeck,
@@ -534,7 +535,7 @@ function renderReel(concept, cards) {
   return `
     <div class="reel-stream">
       ${cards.slice(0, 5).map((card) => `
-        <article class="phone-reel ${hasRealVisual(card) ? "" : "no-visual-card"} concept-card" data-card-id="${card.id}">
+        <article class="phone-reel ${hasRealVisual(card) ? "has-media-card" : "no-visual-card"} concept-card" data-card-id="${card.id}">
           ${renderVisual(card, "reel-visual")}
           <div class="reel-copy">
             ${renderMeta(card)}
@@ -544,6 +545,34 @@ function renderReel(concept, cards) {
           ${renderActions(card)}
         </article>
       `).join("")}
+    </div>
+  `;
+}
+
+function renderOverviewReel(concept, cards, card) {
+  const selected = focusedCard(cards);
+  return `
+    <div class="overview-reel">
+      <section class="overview-list" aria-label="Open cards">
+        ${cards.slice(0, 10).map((item, index) => `
+          <button class="${String(item.id) === String(selected.id) ? "active" : ""}" data-action="focus" data-card-id="${item.id}" type="button">
+            <span>${index + 1}</span>
+            <strong>${escapeHtml(clip(item.title, 64))}</strong>
+            <small>${escapeHtml(sourceName(item))}</small>
+          </button>
+        `).join("")}
+      </section>
+      <div class="reel-stream overview-detail">
+        <article class="phone-reel ${hasRealVisual(selected) ? "has-media-card" : "no-visual-card"} concept-card" data-card-id="${selected.id}">
+          ${renderVisual(selected, "reel-visual")}
+          <div class="reel-copy">
+            ${renderMeta(selected)}
+            <h2>${escapeHtml(clip(selected.title, 82))}</h2>
+            <p>${escapeHtml(clip(selected.why, 150))}</p>
+          </div>
+          ${renderActions(selected)}
+        </article>
+      </div>
     </div>
   `;
 }
@@ -1227,10 +1256,10 @@ function renderVisual(card, extra = "") {
   const meta = categoryMeta(card);
   const visual = card.visual || {};
   if (visual.kind === "video" && visual.src) {
-    return `<figure class="visual-box ${extra}"><video src="${escapeAttr(visual.src)}" autoplay loop muted playsinline></video></figure>`;
+    return `<figure class="visual-box has-media ${extra}"><video src="${escapeAttr(visual.src)}" autoplay loop muted playsinline></video></figure>`;
   }
   if (visual.kind === "image" && visual.src) {
-    return `<figure class="visual-box ${extra}"><img src="${escapeAttr(visual.src)}" alt="" loading="lazy" /></figure>`;
+    return `<figure class="visual-box has-media ${extra}"><img src="${escapeAttr(visual.src)}" alt="" loading="lazy" /></figure>`;
   }
   return `
     <figure class="visual-box visual-art no-media ${extra}" style="--card-accent:${meta.color}">

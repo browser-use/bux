@@ -211,7 +211,7 @@ h2 {
 
 .concept-screen {
   min-height: 100dvh;
-  padding: 68px 14px 18px;
+  padding: 60px 14px 16px;
 }
 
 .concept-title {
@@ -220,7 +220,7 @@ h2 {
   gap: 6px 10px;
   align-items: baseline;
   max-width: 740px;
-  margin: 0 auto 10px;
+  margin: 0 auto 8px;
 }
 
 .concept-title h1 {
@@ -393,6 +393,17 @@ h2 {
   display: block;
   object-fit: cover;
   object-position: center;
+}
+
+.visual-box.has-media {
+  background:
+    radial-gradient(circle at 50% 0%, rgba(255, 255, 255, 0.14), transparent 32%),
+    #0d0d0f;
+}
+
+.visual-box.has-media img,
+.visual-box.has-media video {
+  object-fit: contain;
 }
 
 .visual-art {
@@ -599,22 +610,22 @@ h2 {
 }
 
 .reel-stream {
-  height: calc(100dvh - 236px);
-  min-height: 520px;
+  height: calc(100dvh - 118px);
+  min-height: 620px;
   overflow-y: auto;
   scroll-snap-type: y mandatory;
   display: grid;
-  gap: 18px;
-  max-width: 440px;
+  gap: 16px;
+  max-width: 430px;
   margin: 0 auto;
 }
 
 .phone-reel {
-  min-height: min(690px, calc(100dvh - 184px));
+  min-height: min(720px, calc(100dvh - 132px));
   display: grid;
-  grid-template-rows: minmax(220px, 38vh) auto auto;
+  grid-template-rows: auto auto auto;
   gap: 12px;
-  padding: 12px;
+  padding: 13px;
   border-radius: 36px;
   background: #fff;
   scroll-snap-align: start;
@@ -626,11 +637,71 @@ h2 {
 }
 
 .reel-visual {
-  min-height: 250px;
+  height: clamp(230px, 42dvh, 430px);
+  min-height: 0;
 }
 
 .phone-reel.no-visual-card .reel-visual {
   display: none;
+}
+
+.overview-reel {
+  max-width: 460px;
+  margin: 0 auto;
+  display: grid;
+  gap: 12px;
+}
+
+.overview-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.overview-list button {
+  min-height: 86px;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 7px 9px;
+  align-items: start;
+  padding: 10px;
+  border: 1px solid rgba(23, 23, 23, 0.10);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.82);
+  text-align: left;
+}
+
+.overview-list button.active {
+  background: #111;
+  color: #fff;
+}
+
+.overview-list span {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #111;
+  font-weight: 950;
+}
+
+.overview-list strong {
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.1;
+}
+
+.overview-list small {
+  grid-column: 2;
+  color: currentColor;
+  opacity: 0.62;
+}
+
+.overview-detail {
+  height: auto;
+  min-height: 0;
 }
 
 .reel-copy {
@@ -639,7 +710,18 @@ h2 {
 }
 
 .reel-copy h2 {
-  font-size: 28px;
+  font-size: clamp(27px, 7.2vw, 36px);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+
+.reel-copy p {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 
 .reel-copy p,
@@ -1585,6 +1667,177 @@ h2 {
   background: var(--accent);
 }
 
+.concept-2 {
+  background:
+    radial-gradient(circle at 20% 0%, rgba(255, 216, 77, 0.16), transparent 28%),
+    linear-gradient(180deg, #101014, #050507);
+  color: #f8fafc;
+}
+
+.concept-2 .concept-title p,
+.concept-2 .reel-copy p,
+.concept-2 .meta-line {
+  color: rgba(248, 250, 252, 0.68);
+}
+
+.concept-2 .phone-reel,
+.concept-10 .phone-reel,
+.concept-16 .phone-reel {
+  background: #0f0f12;
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.10);
+}
+
+.concept-2 .utility-buttons button,
+.concept-10 .utility-buttons button,
+.concept-16 .utility-buttons button {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+.concept-3 .phone-reel {
+  background: #fff9e8;
+  border-radius: 18px;
+  box-shadow: 0 18px 42px rgba(88, 57, 20, 0.16);
+}
+
+.concept-3 .primary-action,
+.concept-17 .primary-action {
+  background: linear-gradient(135deg, #d97706, #92400e);
+}
+
+.concept-4 {
+  --accent: #06b6d4;
+}
+
+.concept-4 .phone-reel {
+  border: 2px solid rgba(6, 182, 212, 0.28);
+  box-shadow: 0 24px 60px rgba(6, 182, 212, 0.18);
+}
+
+.concept-6 .concept-title p,
+.concept-19 .concept-title p {
+  display: none;
+}
+
+.concept-6 .reel-stream,
+.concept-19 .reel-stream {
+  max-width: 390px;
+}
+
+.concept-6 .phone-reel,
+.concept-19 .phone-reel {
+  min-height: auto;
+  border-radius: 28px;
+}
+
+.concept-7 .phone-reel {
+  border-radius: 30px;
+}
+
+.concept-7 .reel-copy h2,
+.concept-20 .reel-copy h2 {
+  font-size: clamp(31px, 8vw, 42px);
+}
+
+.concept-8 .phone-reel {
+  background: #f8fafc;
+  border-left: 6px solid var(--accent);
+}
+
+.concept-9 .phone-reel {
+  background: rgba(255, 255, 255, 0.76);
+  backdrop-filter: blur(18px);
+}
+
+.concept-10 {
+  background: #08090b;
+  color: #f8fafc;
+}
+
+.concept-10 .phone-reel {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  border-radius: 16px;
+}
+
+.concept-10 .reel-copy h2,
+.concept-16 .reel-copy h2 {
+  font-family: var(--font-ui);
+}
+
+.concept-11 .reel-visual {
+  height: clamp(300px, 54dvh, 560px);
+}
+
+.concept-11 .phone-reel.has-media-card {
+  min-height: min(780px, calc(100dvh - 104px));
+}
+
+.concept-12 .phone-reel {
+  box-shadow: none;
+  border-color: rgba(23, 23, 23, 0.08);
+}
+
+.concept-12 .visual-art.no-media {
+  display: none;
+}
+
+.concept-13 .phone-reel {
+  transform: rotate(-0.7deg);
+  background: #fffef7;
+}
+
+.concept-14 .phone-reel {
+  padding: 22px;
+  border-radius: 42px;
+}
+
+.concept-15 {
+  background:
+    radial-gradient(circle at 10% 12%, rgba(56, 189, 248, 0.24), transparent 28%),
+    radial-gradient(circle at 92% 18%, rgba(249, 115, 22, 0.20), transparent 26%),
+    #fff7ed;
+}
+
+.concept-15 .primary-action {
+  background: linear-gradient(135deg, #0ea5e9, #0369a1);
+}
+
+.concept-16 {
+  background: #f4f4f5;
+}
+
+.concept-16 .phone-reel {
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.concept-17 {
+  background: linear-gradient(180deg, #fff7ed, #fffbeb);
+}
+
+.concept-18 .phone-reel {
+  grid-template-columns: minmax(0, 0.86fr) minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-items: center;
+}
+
+.concept-18 .reel-visual {
+  grid-row: 1 / span 2;
+  height: clamp(250px, 46dvh, 480px);
+}
+
+.concept-18 .action-bar {
+  grid-column: 2;
+}
+
+.concept-20 .phone-reel {
+  background: linear-gradient(180deg, #ffffff, #fffaf0);
+  border: 1px solid rgba(181, 118, 22, 0.20);
+  box-shadow: 0 28px 70px rgba(120, 73, 15, 0.18);
+}
+
 .toast {
   position: fixed;
   z-index: 100;
@@ -1657,7 +1910,7 @@ h2 {
   }
 
   .concept-screen {
-    padding-top: 66px;
+    padding: 58px 10px 12px;
   }
 
   .card-preview {
@@ -1700,8 +1953,17 @@ h2 {
   }
 
   .phone-reel {
-    min-height: calc(100dvh - 218px);
-    grid-template-rows: minmax(190px, 34vh) auto auto;
+    min-height: min(720px, calc(100dvh - 118px));
+    grid-template-rows: auto auto auto;
+  }
+
+  .reel-stream {
+    height: calc(100dvh - 108px);
+    min-height: 620px;
+  }
+
+  .reel-visual {
+    height: clamp(230px, 42dvh, 430px);
   }
 
   .phone-reel.no-visual-card {
@@ -1769,6 +2031,21 @@ h2 {
 
   .deck-shell {
     min-height: 560px;
+  }
+
+  .concept-11 .reel-visual {
+    height: clamp(300px, 52dvh, 540px);
+  }
+
+  .concept-18 .phone-reel {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto auto;
+  }
+
+  .concept-18 .reel-visual,
+  .concept-18 .action-bar {
+    grid-column: auto;
+    grid-row: auto;
   }
 
   .swipe-card {
