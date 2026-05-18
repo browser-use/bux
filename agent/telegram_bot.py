@@ -2017,7 +2017,7 @@ class GoalTmuxRelay:
             phase = str(payload.get("phase") or "")
             # Commentary/final are model-authored user-facing text. Tool
             # output, raw reasoning, and TUI frames never pass through here.
-            if phase and phase not in {"commentary", "final"}:
+            if phase and phase not in {"commentary", "final", "final_answer"}:
                 continue
             self._send_message(message)
 
@@ -5588,9 +5588,10 @@ class Bot:
                 _start_goal_tmux(self, key, slug, chat_id, thread_id, self.state, goal_line)
                 self.send(
                     chat_id,
-                    "🎯 goal session started. Follow-ups in this topic go into the live Codex goal.",
+                    "🎯 goal session started. Follow-ups in this topic go into the live Codex goal. Use `/cancel` to stop it.",
                     reply_to=mid,
                     thread_id=thread_id,
+                    markdown=True,
                 )
             except Exception as e:
                 LOG.exception("interactive codex goal start failed for %s", slug)
