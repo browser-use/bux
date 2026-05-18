@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Bux Managed Pilot Proof Report Demo</title>
+    <meta name="description" content="A sample weekly proof-of-work report for the Bux Managed Pilot Telegram AI operator.">
+    <link rel="canonical" href="https://browser-use.github.io/bux/managed-pilot-proof-report.html">
+    <meta property="og:title" content="Bux Managed Pilot Proof Report Demo">
+    <meta property="og:description" content="See how a managed Telegram AI operator proves weekly value through handoffs, checks, escalations, and time saved.">
+    <meta property="og:url" content="https://browser-use.github.io/bux/managed-pilot-proof-report.html">
+    <meta property="og:image" content="https://raw.githubusercontent.com/browser-use/bux/main/docs/hero.jpg">
+    <meta property="og:type" content="website">
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #151a22;
+        --muted: #5d6876;
+        --line: #d9e2ea;
+        --paper: #f7fafc;
+        --panel: #ffffff;
+        --accent: #126782;
+        --good: #126b4f;
+        --warn: #955d12;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        color: var(--ink);
+        background: var(--paper);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.5;
+      }
+
+      a { color: inherit; }
+
+      .hero {
+        min-height: 54vh;
+        display: flex;
+        align-items: end;
+        color: white;
+        background:
+          linear-gradient(90deg, rgba(5, 18, 26, .92), rgba(5, 18, 26, .64) 58%, rgba(5, 18, 26, .24)),
+          url("hero.jpg") center / cover no-repeat;
+      }
+
+      .inner {
+        width: min(1120px, calc(100% - 40px));
+        margin: 0 auto;
+      }
+
+      .hero .inner { padding: 70px 0 48px; }
+
+      .eyebrow {
+        margin: 0 0 12px;
+        color: #ace7db;
+        font-size: 15px;
+        font-weight: 800;
+      }
+
+      h1 {
+        max-width: 860px;
+        margin: 0;
+        font-size: 52px;
+        line-height: 1.04;
+        letter-spacing: 0;
+      }
+
+      .hero-copy {
+        max-width: 720px;
+        margin: 20px 0 0;
+        color: #edf5f8;
+        font-size: 20px;
+      }
+
+      section { padding: 46px 0; }
+
+      .band {
+        background: white;
+        border-top: 1px solid var(--line);
+        border-bottom: 1px solid var(--line);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .split {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(300px, .9fr);
+        gap: 28px;
+        align-items: start;
+      }
+
+      .tile,
+      .panel,
+      .example {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 18px;
+      }
+
+      .metric {
+        margin: 0;
+        color: var(--accent);
+        font-size: 34px;
+        font-weight: 900;
+        line-height: 1;
+      }
+
+      .label {
+        margin: 8px 0 0;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      h2 {
+        margin: 0 0 14px;
+        font-size: 31px;
+        line-height: 1.16;
+        letter-spacing: 0;
+      }
+
+      h3 {
+        margin: 0 0 10px;
+        font-size: 18px;
+      }
+
+      p {
+        margin: 0 0 16px;
+        color: var(--muted);
+      }
+
+      ul {
+        margin: 12px 0 0;
+        padding-left: 20px;
+        color: var(--muted);
+      }
+
+      li + li { margin-top: 8px; }
+
+      .examples {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 16px;
+      }
+
+      .tag {
+        display: inline-flex;
+        margin-bottom: 12px;
+        border-radius: 999px;
+        padding: 5px 10px;
+        background: #e9f4f1;
+        color: var(--good);
+        font-size: 13px;
+        font-weight: 800;
+      }
+
+      .tag.warn {
+        background: #fff4de;
+        color: var(--warn);
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 26px;
+      }
+
+      .button {
+        min-height: 44px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid rgba(255, 255, 255, .34);
+        border-radius: 8px;
+        padding: 11px 16px;
+        text-decoration: none;
+        font-weight: 800;
+        background: rgba(255, 255, 255, .1);
+      }
+
+      .button.primary {
+        border-color: white;
+        background: white;
+        color: #0c1318;
+      }
+
+      footer {
+        border-top: 1px solid var(--line);
+        padding: 24px 0 36px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      footer a { color: var(--accent); }
+
+      @media (max-width: 820px) {
+        h1 { font-size: 38px; }
+        .hero-copy { font-size: 18px; }
+        .grid,
+        .split,
+        .examples { grid-template-columns: 1fr; }
+        section { padding: 36px 0; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <div class="inner">
+          <p class="eyebrow">Sample weekly proof report</p>
+          <h1>What the $1,000/month Telegram operator proves each week</h1>
+          <p class="hero-copy">
+            The Bux Managed Pilot is not sold as a chatbot. It is sold as an always-on operator that leaves a weekly trail of handoffs, checks, escalations, and time saved.
+          </p>
+          <div class="actions">
+            <a class="button primary" href="https://github.com/browser-use/bux/issues/new?template=managed-pilot.yml">Apply for the pilot</a>
+            <a class="button" href="https://browser-use.github.io/bux/managed-pilot-terms.html">Pilot terms</a>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="inner grid">
+          <div class="tile">
+            <p class="metric">43</p>
+            <p class="label">Telegram threads reviewed</p>
+          </div>
+          <div class="tile">
+            <p class="metric">18</p>
+            <p class="label">Clean handoffs prepared</p>
+          </div>
+          <div class="tile">
+            <p class="metric">12</p>
+            <p class="label">Browser or system checks completed</p>
+          </div>
+          <div class="tile">
+            <p class="metric">9.4h</p>
+            <p class="label">Estimated human time saved</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="band">
+        <div class="inner split">
+          <div>
+            <h2>Weekly report structure</h2>
+            <p>
+              Every pilot should produce a short weekly report that the buyer can forward internally. The goal is to make renewal obvious: show what was handled, what escalated, what was blocked, and what tuning happened.
+            </p>
+            <ul>
+              <li>Threads reviewed and categorized.</li>
+              <li>Qualified leads or support requests handed to the right owner.</li>
+              <li>External checks completed through browser, GitHub, docs, CRM, calendar, or status pages.</li>
+              <li>Follow-ups scheduled so open loops are not forgotten.</li>
+              <li>Clear misses, blockers, and improvements for the next week.</li>
+            </ul>
+          </div>
+          <aside class="panel">
+            <h2>Renewal test</h2>
+            <p>
+              If the report cannot show saved time, recovered opportunities, fewer missed handoffs, or cleaner owner decisions, the workflow needs to be tightened before expanding.
+            </p>
+            <p>
+              The first month should prove one narrow workflow. Expansion comes only after the operator has a reliable operating log.
+            </p>
+          </aside>
+        </div>
+      </section>
+
+      <section>
+        <div class="inner">
+          <h2>Example handoffs</h2>
+          <div class="examples">
+            <div class="example">
+              <span class="tag">Lead qualification</span>
+              <h3>Partner lead triaged</h3>
+              <p>
+                A new Telegram inbound asked about an integration partnership. The operator collected project size, current stack, timeline, owner, and blocker, then handed a two-paragraph summary to sales.
+              </p>
+            </div>
+            <div class="example">
+              <span class="tag">Ops check</span>
+              <h3>Status verified before escalation</h3>
+              <p>
+                A customer asked whether a deployment failure was still active. The operator checked the status page and GitHub issue, then escalated only the current failing step.
+              </p>
+            </div>
+            <div class="example">
+              <span class="tag warn">Blocked</span>
+              <h3>Payment question escalated</h3>
+              <p>
+                A refund request was detected and escalated without drafting a commitment. Human-only areas stay human-only: pricing, legal, compliance, spend, refunds, and production access.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="inner">
+        Bux Managed Pilot · <a href="https://browser-use.github.io/bux/pilot.html">pilot page</a> · <a href="https://browser-use.github.io/bux/n8n-telegram-ai-operator.html">n8n operator page</a>
+      </div>
+    </footer>
+  </body>
+</html>
