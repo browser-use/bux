@@ -1,11 +1,11 @@
-"""Telegram bot — forum-aware, multi-agent, per-lane sessions.
+"""Telegram bot — forum-aware, Hermes-first, per-lane sessions.
 
-Each (chat_id, message_thread_id) pair is its own lane: per-lane claude/codex
-session id, per-lane FIFO. All lanes share `/home/bux` as the working dir —
+Each (chat_id, message_thread_id) pair is its own lane: per-lane Hermes
+conversation, per-lane FIFO. All lanes share `/home/bux` as the working dir —
 per-lane isolation is purely at the *agent session* layer (different session
 UUIDs → different transcripts), not the filesystem. Within a lane messages
 serialize so the same session UUID is never written by two procs at once.
-Across lanes, no concurrency cap: spin up as many parallel claude/codex
+Across lanes, no concurrency cap: spin up as many parallel Hermes
 turns as the box can carry.
 
 Auth: deeplink-based one-shot setup token. First chat to redeem `/start <token>`
@@ -18,7 +18,7 @@ Env (from /etc/bux/tg.env):
 
 State (on disk):
   /etc/bux/tg-allowed.txt        — newline-separated allowed chat_ids (mode 640 root:bux)
-  /etc/bux/tg-state.json         — {offset, agents: {lane_slug: 'claude'|'codex'},
+  /etc/bux/tg-state.json         — {offset, agents: {lane_slug: 'hermes'|'claude'|'codex'},
                                     owners: {chat_id: {user_id,name,username,bound_at}}}
   /etc/bux/tg-queue.json         — {lane_slug: [job, …]} pending FIFO
   /home/bux/.bux/sessions/<slug> — per-lane claude/codex session UUID
@@ -30,8 +30,8 @@ Flow:
      other-chat messages drop silently.
   3. Once allowed, each message is keyed to a lane (chat_id, thread_id) and
      enqueued. A worker drains that lane, dispatching each job to the lane's
-     bound agent (claude default; `/codex` flips it).
-  4. Stream-json events from claude come back as one editable TG message
+     bound agent (Hermes default; `/claude` and `/codex` remain legacy switches).
+  4. Agent output comes back as one editable TG message
      bubble in the lane's topic, with a per-turn random "thinking" emoji in
      the placeholder and a 💔 reaction only on failure.
 """
@@ -247,10 +247,11 @@ def random_thinking_reaction() -> str:
     return random.choice(THINKING_REACTIONS)
 
 # Recognised agents per lane. Values double as PATH binary names.
+AGENT_HERMES = "hermes"
 AGENT_CLAUDE = "claude"
 AGENT_CODEX = "codex"
-AGENTS = (AGENT_CLAUDE, AGENT_CODEX)
-DEFAULT_AGENT = AGENT_CLAUDE
+AGENTS = (AGENT_HERMES, AGENT_CLAUDE, AGENT_CODEX)
+DEFAULT_AGENT = AGENT_HERMES
 CODEX_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
 
 
@@ -264,8 +265,9 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("enter", "send Enter to the active terminal session"),
     ("eof", "send Ctrl-D to the active terminal session"),
     ("compact", "summarize this topic's session to free up context"),
-    ("claude", "switch/login/logout Claude"),
-    ("codex", "switch/login/logout Codex"),
+    ("hermes", "switch/setup Hermes"),
+    ("claude", "switch/login/logout Claude (legacy)"),
+    ("codex", "switch/login/logout Codex (legacy)"),
     ("fast", "switch this topic's Codex lane to fast mode"),
     ("model", "show/set this topic's Codex model"),
     ("agency", "open the goal card feed"),
@@ -275,7 +277,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("queue", "pending tasks in this topic"),
     ("cancel", "kill the running task + drop pending"),
     ("schedules", "list reminders / cron jobs"),
-    ("login", "auth status / connect a service (github/claude/codex)"),
+    ("login", "auth status / connect a service (github/hermes/claude/codex)"),
     ("logout", "disconnect a service (e.g. /logout gh)"),
     ("whoami", "your TG identity + this lane's agent"),
     ("version", "show the bux agent version"),
@@ -1152,6 +1154,16 @@ def _save_codex_thread_id(key: LaneKey, thread_id: str) -> None:
     _write_session_uuid(f, thread_id)
 
 
+def _hermes_session_name_for(key: LaneKey) -> str:
+    """Stable Hermes conversation name for this Telegram lane.
+
+    Hermes supports `hermes chat --continue <name>` for named session
+    continuity. Use a deterministic lane-derived name so a topic keeps its
+    context across process restarts without us parsing Hermes internals.
+    """
+    return "bux-" + _lane_slug(key).replace("_", "-")
+
+
 def _claude_session_flag(sid: str) -> list[str]:
     """Pick `--session-id` (create) vs `--resume` (continue) for `sid`.
 
@@ -1257,8 +1269,7 @@ _AGENT_AUTH_TTL_S = 30.0
 
 
 def _is_agent_authed(agent: str) -> bool:
-    """Cheap check: is this CLI signed in? Shells out to the CLI's
-    `auth status` and caches the result for `_AGENT_AUTH_TTL_S` seconds.
+    """Cheap check: is this CLI usable? Shells out and caches the result.
 
     Used to pick a sensible default agent for lanes the user hasn't
     explicitly bound. Subprocess cost (~1s the first call, free after)
@@ -1282,8 +1293,14 @@ def _is_agent_authed(agent: str) -> bool:
     cached = _AGENT_AUTH_CACHE.get(agent)
     if cached and now - cached[0] < _AGENT_AUTH_TTL_S:
         return cached[1]
-    sub = ["auth", "status"] if agent == AGENT_CLAUDE else ["login", "status"]
-    cmd = ["sudo", "-iu", "bux", agent, *sub]
+    if agent == AGENT_HERMES:
+        _ok, _status = _hermes_status()
+        _AGENT_AUTH_CACHE[agent] = (now, _ok)
+        return _ok
+    elif agent == AGENT_CLAUDE:
+        cmd = ["sudo", "-iu", "bux", agent, "auth", "status"]
+    else:
+        cmd = ["sudo", "-iu", "bux", agent, "login", "status"]
     try:
         proc = subprocess.run(
             cmd,
@@ -1292,7 +1309,9 @@ def _is_agent_authed(agent: str) -> bool:
             text=True,
         )
         text = ((proc.stdout or "") + (proc.stderr or "")).lower()
-        if agent == AGENT_CLAUDE:
+        if agent == AGENT_HERMES:
+            authed = proc.returncode == 0
+        elif agent == AGENT_CLAUDE:
             authed = '"loggedin": true' in text or '"loggedin":true' in text
         else:
             # codex: rc==0 isn't reliable across versions; require the
@@ -1305,16 +1324,17 @@ def _is_agent_authed(agent: str) -> bool:
 
 
 def _agent_for(key: LaneKey, state: dict) -> str:
-    """Resolve which agent handles this lane. /claude or /codex sets it.
+    """Resolve which agent handles this lane. /hermes, /claude, or /codex sets it.
 
-    For unbound lanes (no explicit /claude or /codex), prefer the CLI
-    that's actually signed in. If both are signed in, keep claude as
-    the historical default. If neither is, also fall back to claude —
-    the user will see the auth-error path and can switch with /codex.
+    For unbound lanes, prefer Hermes when it is installed. Legacy Claude
+    and Codex are still available as explicit switches and fallbacks for
+    upgraded boxes.
     """
     bound = (state.get("agents") or {}).get(_lane_slug(key))
     if bound in AGENTS:
         return bound
+    if _is_agent_authed(AGENT_HERMES):
+        return AGENT_HERMES
     if _is_agent_authed(AGENT_CLAUDE):
         return AGENT_CLAUDE
     if _is_agent_authed(AGENT_CODEX):
@@ -2679,14 +2699,15 @@ def _minimal_codex_login_markup(url: str, code: str) -> dict:
 
 
 def _login_picker_reply_markup() -> dict:
-    """Two-button picker shown when neither agent is signed in yet.
+    """Picker shown when no agent runtime is usable yet.
 
     Tapping either button starts the corresponding minimal login flow.
     Callback data shape: `login_pick:<provider>` where provider is
-    `claude` or `codex`. Routed through `_handle_callback_query`.
+    `hermes`, `claude`, or `codex`. Routed through `_handle_callback_query`.
     """
     return {
         "inline_keyboard": [
+            [{"text": "☤ Set up Hermes", "callback_data": "login_pick:hermes"}],
             [{"text": "🟪 Sign in with Claude", "callback_data": "login_pick:claude"}],
             [{"text": "🟩 Sign in with Codex",  "callback_data": "login_pick:codex"}],
         ]
@@ -2740,9 +2761,38 @@ def _normalize_login_provider_name(name: str) -> str:
         "github": "gh",
         "git": "gh",
         "openai": "codex",
+        "nous": "hermes",
+        "hermes-agent": "hermes",
         "claude-code": "claude",
     }
     return aliases.get(name, name)
+
+
+def _hermes_status() -> tuple[bool, str]:
+    try:
+        r = subprocess.run(
+            ["sudo", "-iu", "bux", "bash", "-lc", "command -v hermes >/dev/null && hermes status"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except FileNotFoundError:
+        return False, "hermes CLI not installed"
+    except subprocess.TimeoutExpired:
+        return False, "hermes status timed out"
+    out = _ANSI_RE.sub("", (r.stdout + r.stderr)).strip()
+    if "command not found" in out.lower():
+        return False, "hermes CLI not installed"
+    if r.returncode != 0:
+        return False, out.splitlines()[-1] if out else "not configured"
+
+    low = out.lower()
+    if "model:" in low and "model:        (not set)" in low:
+        return False, "installed, model not configured (run /hermes setup)"
+    if "not logged in" in low and "api keys" in low and "✓" not in out:
+        return False, "installed, provider not configured (run /hermes setup)"
+    return True, "configured"
 
 
 def _claude_login_status() -> tuple[bool, str]:
@@ -2829,6 +2879,11 @@ def _login_status_cached(provider: str) -> bool:
     elif provider == "codex":
         try:
             ok, _ = CODEX_AUTH_PROVIDER.check()
+        except Exception:
+            ok = False
+    elif provider == "hermes":
+        try:
+            ok, _ = _hermes_status()
         except Exception:
             ok = False
     else:
@@ -3739,7 +3794,7 @@ class Bot:
         # If at least one is signed in, dispatch normally — the auth-
         # error fallback below still catches mid-session 401s for an
         # expired credential.
-        if not _login_status_cached("claude") and not _login_status_cached("codex"):
+        if not _login_status_cached("hermes") and not _login_status_cached("claude") and not _login_status_cached("codex"):
             owner = _owner_for(chat_id, self.state) or {}
             sender_id = (sender or {}).get("user_id")
             if not owner or not sender_id or _is_owner({"user_id": sender_id}, owner):
@@ -3772,7 +3827,9 @@ class Bot:
         except Exception:
             LOG.exception("agency refine context injection failed")
         try:
-            if agent == AGENT_CODEX:
+            if agent == AGENT_HERMES:
+                self._run_hermes(key, prompt, reply_to, sender=sender, thinking_emoji=thinking_emoji)
+            elif agent == AGENT_CODEX:
                 self._run_codex(key, prompt, reply_to, sender=sender, thinking_emoji=thinking_emoji)
             else:
                 self._run_claude(key, prompt, reply_to, sender=sender, thinking_emoji=thinking_emoji)
@@ -3788,6 +3845,144 @@ class Bot:
                 )
             except Exception:
                 LOG.exception("also failed to send error reply")
+
+    def _run_hermes(
+        self,
+        key: LaneKey,
+        prompt: str,
+        reply_to: int | None,
+        sender: dict | None = None,
+        thinking_emoji: str | None = None,
+    ) -> None:
+        """Stream a Hermes turn into the lane's TG topic.
+
+        Hermes is the primary bux runtime. It does not need Claude/Codex
+        JSON event formats here; we run one non-interactive `hermes chat`
+        turn and stream stdout lines into the same rolling Telegram bubble.
+        Per-topic continuity is handled by Hermes named sessions via
+        `--continue <lane-name>`.
+        """
+        chat_id, thread_id = key
+        env = self._build_env(key, AGENT_HERMES, sender=sender)
+        prompt = _prefix_sender(prompt, sender, _owner_for(chat_id, self.state))
+        hermes_session = _hermes_session_name_for(key)
+        hermes_bin = self._which_hermes()
+        if not hermes_bin:
+            self.react(chat_id, reply_to, EMOJI_ERROR)
+            self.send(
+                chat_id,
+                "Hermes is not installed on this box. Run `/hermes setup` after re-running the installer, or use `/claude` or `/codex` as a legacy fallback.",
+                reply_to=reply_to,
+                thread_id=thread_id,
+                markdown=True,
+            )
+            return
+
+        cmd = ["sudo", "-u", "bux", "-H"] + [f"{k}={v}" for k, v in env.items() if v]
+        cmd += [
+            hermes_bin,
+            "chat",
+            "--continue",
+            hermes_session,
+            "--quiet",
+            "--query",
+            prompt,
+        ]
+
+        import tempfile
+
+        stderr_buf = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=stderr_buf,
+                text=True,
+                cwd=str(WORKSPACE),
+                start_new_session=True,
+            )
+        except Exception as e:
+            try:
+                stderr_buf.close()
+            except Exception:
+                pass
+            self.react(chat_id, reply_to, EMOJI_ERROR)
+            self.send(
+                chat_id,
+                f"failed to spawn Hermes: {e}",
+                reply_to=reply_to,
+                thread_id=thread_id,
+            )
+            return
+
+        slug = _lane_slug(key)
+        with _inflight_lock:
+            _inflight_procs[slug] = proc
+
+        stream_msg = StreamingMessage(self, chat_id, reply_to, thread_id, thinking_emoji=thinking_emoji)
+        stream_msg.start()
+        any_text = False
+        assert proc.stdout is not None
+        try:
+            for line in proc.stdout:
+                text = _ANSI_RE.sub("", line).strip()
+                if not text:
+                    continue
+                stream_msg.append(text)
+                any_text = True
+            stream_msg.finalize()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    _kill_inflight_proc(slug, proc, "drain-timeout")
+                    proc.wait(timeout=1)
+                except Exception:
+                    pass
+            if proc.returncode in (-9, -15):
+                if _inflight_cancel_reasons.get(slug) not in {"user-cancel", "drain-timeout", "followup-steer"}:
+                    self.react(chat_id, reply_to, EMOJI_ERROR)
+                    self.send(
+                        chat_id,
+                        "Cancelled.",
+                        reply_to=reply_to,
+                        thread_id=thread_id,
+                    )
+                return
+            if not any_text or proc.returncode not in (0, None):
+                err = ""
+                try:
+                    stderr_buf.seek(0)
+                    err = _ANSI_RE.sub("", stderr_buf.read()).strip()
+                except Exception:
+                    pass
+                if err:
+                    if not any_text:
+                        self.react(chat_id, reply_to, EMOJI_ERROR)
+                    self.send(
+                        chat_id,
+                        err[:REPLY_MAX],
+                        reply_to=reply_to,
+                        thread_id=thread_id,
+                    )
+                elif not any_text:
+                    self.react(chat_id, reply_to, EMOJI_ERROR)
+                    self.send(
+                        chat_id,
+                        "(Hermes returned no output)",
+                        reply_to=reply_to,
+                        thread_id=thread_id,
+                    )
+        finally:
+            with _inflight_lock:
+                if _inflight_procs.get(slug) is proc:
+                    _inflight_procs.pop(slug, None)
+                    _inflight_cancel_reasons.pop(slug, None)
+            try:
+                stderr_buf.close()
+            except Exception:
+                pass
 
     def _run_claude(
         self,
@@ -4365,6 +4560,17 @@ class Bot:
                 stderr_buf.close()
             except Exception:
                 pass
+
+    @staticmethod
+    def _which_hermes() -> str | None:
+        for p in (
+            "/home/bux/.local/bin/hermes",
+            "/usr/local/bin/hermes",
+            "/usr/bin/hermes",
+        ):
+            if os.path.isfile(p) and os.access(p, os.X_OK):
+                return p
+        return None
 
     @staticmethod
     def _which_codex() -> str | None:
@@ -5072,12 +5278,14 @@ class Bot:
                 "/enter — send Enter to the active terminal session\n"
                 "/eof — send Ctrl-D to the active terminal session\n"
                 "/exit — ask bash to close the active terminal session\n"
-                "/codex — switch this topic to Codex\n"
+                "/hermes — switch this topic to Hermes\n"
+                "/hermes setup — run Hermes setup in a terminal\n"
+                "/codex — switch this topic to Codex (legacy)\n"
                 "/codex login — sign in Codex with device auth\n"
                 "/codex logout — sign out Codex\n"
                 "/fast — switch this topic to Codex with low reasoning effort\n"
                 "/model — show/set this topic's Codex model, e.g. `/model gpt-5.4 low`\n"
-                "/claude — switch this topic to Claude\n"
+                "/claude — switch this topic to Claude (legacy)\n"
                 "/claude login — sign in Claude through a terminal flow\n"
                 "/claude logout — sign out Claude\n"
                 "/goal <what to work on> — continuous goal-mode, copilot by default (I suggest, you accept). Append 'autopilot' / 'full autonomy' / 'no approvals' for full autonomy.\n"
@@ -5090,7 +5298,7 @@ class Bot:
                 "/cancel <id> — cancel one task (running or queued)\n"
                 "/compact — summarize this topic's agent session to free up context\n"
                 "/schedules — list reminders / cron jobs\n"
-                "/login — auth status / connect a service (e.g. /login github, /login claude, /login codex)\n"
+                "/login — auth status / connect a service (e.g. /login hermes, /login github, /login claude, /login codex)\n"
                 "/logout — disconnect a service (e.g. /logout github, /logout claude, /logout codex)\n"
                 "/version — show the bux agent version\n"
                 "/update — pull latest code + restart (or /update <branch>)",
@@ -5198,6 +5406,15 @@ class Bot:
                 thread_id=thread_id,
                 markdown=True,
             )
+            return
+        if cmd == "/hermes":
+            action = arg.strip().lower()
+            if action in ("setup", "login", "auth"):
+                _set_agent_for(key, AGENT_HERMES, self.state)
+                _login_status_cache_invalidate("hermes")
+                self._cmd_hermes_setup(chat_id, mid, thread_id, slug, sender, owner)
+                return
+            self._cmd_agent(key, chat_id, mid, thread_id, AGENT_HERMES)
             return
         if cmd == "/live":
             self.send(chat_id, self._live_url(), reply_to=mid, thread_id=thread_id)
@@ -5605,8 +5822,8 @@ class Bot:
         _set_agent_for(key, arg, self.state)
         self.send(
             chat_id,
-            f"Switched to `{arg}` for this topic. Each agent has its own "
-            "session UUID and workspace.",
+            f"Switched to `{arg}` for this topic. Each provider keeps its own "
+            "conversation state for this lane.",
             reply_to=reply_to,
             thread_id=thread_id,
             markdown=True,
@@ -6030,6 +6247,9 @@ class Bot:
         if not name:
             # List status of every registered provider.
             lines = ["*Auth status:*"]
+            connected, status = _hermes_status()
+            icon = "✓" if connected else "·"
+            lines.append(f"{icon} `hermes` — {status}")
             for pname, prov in AUTH_PROVIDERS.items():
                 connected, status = prov.check()
                 icon = "✓" if connected else "·"
@@ -6038,7 +6258,7 @@ class Bot:
             icon = "✓" if connected else "·"
             lines.append(f"{icon} `claude` — {status}")
             lines.append("")
-            lines.append("Use `/login <service>` to connect, e.g. `/login github`, `/login claude`, or `/login codex`.")
+            lines.append("Use `/login <service>` to connect, e.g. `/login hermes`, `/login github`, `/login claude`, or `/login codex`.")
             self.send(
                 chat_id,
                 "\n".join(lines),
@@ -6046,6 +6266,18 @@ class Bot:
                 thread_id=thread_id,
                 markdown=True,
             )
+            return
+        if name == "hermes":
+            if slug is None or sender is None:
+                self.send(
+                    chat_id,
+                    "`/login hermes` is only available from Telegram.",
+                    reply_to=reply_to,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
+            self._cmd_hermes_setup(chat_id, reply_to, thread_id, slug, sender, owner)
             return
         if name == "claude":
             if slug is None or sender is None:
@@ -6061,7 +6293,7 @@ class Bot:
             return
         prov = AUTH_PROVIDERS.get(name)
         if prov is None:
-            known = ", ".join([*AUTH_PROVIDERS.keys(), "claude"]) or "(none)"
+            known = ", ".join(["hermes", *AUTH_PROVIDERS.keys(), "claude"]) or "(none)"
             self.send(
                 chat_id,
                 f"Unknown provider `{name}`. Known: {known}.",
@@ -6197,11 +6429,60 @@ class Bot:
         """
         self.send(
             chat_id,
-            "Not signed in yet. Pick an agent to connect:",
+            "No agent runtime is ready yet. Set up Hermes, or use a legacy fallback:",
             reply_to=reply_to,
             thread_id=thread_id,
             reply_markup=_login_picker_reply_markup(),
         )
+
+    def _cmd_hermes_setup(
+        self,
+        chat_id: int,
+        reply_to: int | None,
+        thread_id: int,
+        slug: str,
+        sender: dict,
+        owner: dict | None,
+    ) -> None:
+        if not _is_owner(sender, owner):
+            self.send(
+                chat_id,
+                "`/hermes setup` is owner-only.",
+                reply_to=reply_to,
+                thread_id=thread_id,
+                markdown=True,
+            )
+            return
+        _set_agent_for((chat_id, thread_id), AGENT_HERMES, self.state)
+        _login_status_cache_invalidate("hermes")
+        existing = _get_shell_session(slug)
+        if existing is not None:
+            self.send(
+                chat_id,
+                "A terminal session is already running here. Use `/exit` or `/cancel` first.",
+                reply_to=reply_to,
+                thread_id=thread_id,
+                markdown=True,
+            )
+            return
+        try:
+            sess = ShellSession(
+                self,
+                chat_id=chat_id,
+                thread_id=thread_id,
+                slug=slug,
+                initial_cmd="hermes setup",
+                reply_to=reply_to,
+            )
+            sess.start()
+        except Exception as e:
+            LOG.exception("hermes setup shell start failed for %s", slug)
+            self.send(
+                chat_id,
+                f"failed to start Hermes setup: {e}",
+                reply_to=reply_to,
+                thread_id=thread_id,
+            )
 
     def _cmd_claude_login(
         self,
@@ -6394,9 +6675,18 @@ class Bot:
         if name == "claude":
             self._cmd_claude_logout(chat_id, reply_to, thread_id, sender or {}, owner)
             return
+        if name == "hermes":
+            self.send(
+                chat_id,
+                "Hermes setup is managed by `~/.hermes`. To rotate provider credentials, run `/hermes setup`.",
+                reply_to=reply_to,
+                thread_id=thread_id,
+                markdown=True,
+            )
+            return
         prov = AUTH_PROVIDERS.get(name)
         if prov is None:
-            known = ", ".join([*AUTH_PROVIDERS.keys(), "claude"]) or "(none)"
+            known = ", ".join(["hermes", *AUTH_PROVIDERS.keys(), "claude"]) or "(none)"
             self.send(
                 chat_id,
                 f"Unknown provider `{name}`. Known: {known}.",
@@ -6648,7 +6938,7 @@ class Bot:
         if not chat_id:
             return
         # Dismiss the spinner + a short toast confirming the pick.
-        label = {"claude": "Claude", "codex": "Codex"}.get(provider, provider)
+        label = {"hermes": "Hermes", "claude": "Claude", "codex": "Codex"}.get(provider, provider)
         self.call(
             "answerCallbackQuery",
             callback_query_id=cb["id"],
@@ -6674,7 +6964,12 @@ class Bot:
             "name": (sender.get("first_name") or "")
             + ((" " + sender["last_name"]) if sender.get("last_name") else ""),
         }
-        if provider == "claude":
+        if provider == "hermes":
+            _login_status_cache_invalidate("hermes")
+            self._cmd_hermes_setup(
+                chat_id, mid, thread_id, slug, sender_dict, owner,
+            )
+        elif provider == "claude":
             _login_status_cache_invalidate("claude")
             self._cmd_claude_login(
                 chat_id, mid, thread_id, slug, sender_dict, owner,

@@ -72,7 +72,43 @@ if [ -d "$HARNESS_DIR/.git" ]; then
   fi
 fi
 
-# --- Codex CLI (alternative agent, /codex per forum topic) ----------------
+# --- Hermes CLI (primary agent) -------------------------------------------
+# install.sh installs Hermes on first boot, but boxes provisioned before
+# this branch may not have it. Re-check on update so the install self-heals.
+if command -v uv >/dev/null 2>&1 && ! sudo -iu bux bash -lc 'command -v hermes' >/dev/null 2>&1; then
+  echo "bootstrap: installing Hermes Agent for bux"
+  sudo -iu bux uv tool install hermes-agent \
+    || echo "bootstrap: hermes install failed" >&2
+fi
+
+if [ -f /etc/bux/env ]; then
+  # shellcheck disable=SC1091
+  . /etc/bux/env || true
+fi
+if [ -n "${BUX_BOX_TOKEN:-}" ]; then
+  sudo -u bux -H bash -c '
+set -e
+mkdir -p "$HOME/.hermes"
+cfg="$HOME/.hermes/config.yaml"
+touch "$cfg"
+if ! grep -q "^[[:space:]]*composio:" "$cfg"; then
+  cat >> "$cfg" <<YAML
+
+mcp_servers:
+  composio:
+    url: "https://api.browser-use.com/cloud/composio/mcp"
+    headers:
+      Authorization: "Bearer \${BUX_BOX_TOKEN}"
+    enabled: true
+YAML
+fi
+chmod 0600 "$cfg"
+' || echo "bootstrap: hermes MCP config write failed (non-fatal)" >&2
+else
+  echo "bootstrap: BUX_BOX_TOKEN not set; skipping Hermes Composio MCP registration" >&2
+fi
+
+# --- Claude Code + Codex CLI (additional legacy providers) ----------------
 # install.sh installs codex on first boot, but boxes provisioned before
 # that block existed (or where the npm install hit a transient failure
 # and got skipped as non-fatal) end up without it — the user discovers
@@ -80,7 +116,12 @@ fi
 # update so the install self-heals. Idempotent: skipped when codex is
 # already on bux's PATH. Runs as bux so the binary lands under
 # /home/bux/.npm-global/bin (already on bux's PATH via .profile).
-if command -v npm >/dev/null 2>&1 && ! sudo -iu bux command -v codex >/dev/null 2>&1; then
+if command -v npm >/dev/null 2>&1 && ! sudo -iu bux bash -lc 'command -v claude' >/dev/null 2>&1; then
+  echo "bootstrap: installing Claude Code for bux (legacy provider)"
+  sudo -iu bux npm install -g @anthropic-ai/claude-code \
+    || echo "bootstrap: claude install failed (non-fatal — Hermes remains primary)" >&2
+fi
+if command -v npm >/dev/null 2>&1 && ! sudo -iu bux bash -lc 'command -v codex' >/dev/null 2>&1; then
   echo "bootstrap: installing Codex CLI for bux"
   sudo -iu bux npm install -g @openai/codex \
     || echo "bootstrap: codex install failed (non-fatal — /codex login will hint how to install later)" >&2
@@ -119,21 +160,29 @@ ln -sfn "$REPO_DIR/agent/agency-report"  /usr/local/bin/agency-report
 ln -sfn "$REPO_DIR/agent/bux-restart"    /usr/local/bin/bux-restart
 ln -sfn "$REPO_DIR/agent/bux-miniapp-tunnel" /usr/local/bin/bux-miniapp-tunnel
 
-# --- system prompt + CLAUDE.md/AGENTS.md symlinks --------------------------
+# --- system prompt + Hermes/legacy symlinks --------------------------------
 # The one source of truth is /home/bux/system-prompt.md (copied from the
-# repo by install.sh). Claude Code reads ~/CLAUDE.md, Codex reads ~/AGENTS.md
-# — both symlink to system-prompt.md so editing one file updates both CLIs.
+# repo by install.sh). Hermes reads ~/HERMES.md / ~/AGENTS.md; Claude Code
+# can still read ~/CLAUDE.md when selected as a legacy provider.
 # Re-assert on every update so boxes provisioned with the older "CLAUDE.md
 # as the file" layout self-heal to the symlink layout.
 if [ -e "$AGENT_DIR/system-prompt.md" ]; then
   install -o bux -g bux -m 0644 "$AGENT_DIR/system-prompt.md" /home/bux/system-prompt.md
+  install -d -o bux -g bux -m 0755 /home/bux/.hermes
+  if [ -e "$AGENT_DIR/SOUL.md" ]; then
+    install -o bux -g bux -m 0644 "$AGENT_DIR/SOUL.md" /home/bux/.hermes/SOUL.md
+  fi
   # If a real CLAUDE.md file exists (pre-rename layout), replace it with the symlink.
   if [ -e /home/bux/CLAUDE.md ] && [ ! -L /home/bux/CLAUDE.md ]; then
     rm -f /home/bux/CLAUDE.md
   fi
+  if [ -e /home/bux/HERMES.md ] && [ ! -L /home/bux/HERMES.md ]; then
+    rm -f /home/bux/HERMES.md
+  fi
+  ln -sfn /home/bux/system-prompt.md /home/bux/HERMES.md
   ln -sfn /home/bux/system-prompt.md /home/bux/CLAUDE.md
   ln -sfn /home/bux/system-prompt.md /home/bux/AGENTS.md
-  chown -h bux:bux /home/bux/CLAUDE.md /home/bux/AGENTS.md
+  chown -h bux:bux /home/bux/HERMES.md /home/bux/CLAUDE.md /home/bux/AGENTS.md
 fi
 
 # --- clean up legacy agency-skill stub -------------------------------------
@@ -226,7 +275,7 @@ fi
 # telegram_bot.py:_build_env forwards BUX_BOX_TOKEN to the codex subprocess.
 if [ -z "${BUX_BOX_TOKEN:-}" ]; then
   echo "bootstrap: BUX_BOX_TOKEN not set; skipping codex Composio MCP registration" >&2
-elif ! sudo -iu bux command -v codex >/dev/null 2>&1; then
+elif ! sudo -iu bux bash -lc 'command -v codex' >/dev/null 2>&1; then
   echo "bootstrap: codex CLI not on PATH; skipping codex Composio MCP registration" >&2
 else
   # `sudo -iu bux` (login shell) so per-user PATH from ~/.profile picks up

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bux install — set up Claude Code + Browser Use Cloud browser + optional
+# bux install — set up Hermes + Browser Use Cloud browser + optional
 # Telegram bot on a fresh Ubuntu / Debian box.
 #
 # Usage:
@@ -28,7 +28,7 @@
 #   WITH_ZTK             — install ztk (default 1; set to 0 to skip). ztk is a
 #                          Zig CLI that compresses long Bash tool outputs
 #                          (git diff, ls, test runners) before they hit
-#                          Claude's context. https://github.com/codejunkie99/ztk
+#                          the agent's context. https://github.com/codejunkie99/ztk
 #
 # Re-running the script is idempotent. It will reuse existing tokens and
 # configuration; delete /etc/bux/ to start clean.
@@ -178,20 +178,13 @@ if ! node --version 2>/dev/null | grep -q '^v24'; then
 	apt-get install -y -qq nodejs
 fi
 
-# --- Claude Code -----------------------------------------------------------
-if ! command -v claude >/dev/null 2>&1; then
-	say 'installing Claude Code'
-	npm install -g @anthropic-ai/claude-code
-fi
-
-# Codex CLI is installed below as the bux user, *after* the npm-prefix
-# block that pins ~/.npm-global. Installing it here as root would land
-# the binary outside that prefix and the bux PATH wouldn't pick it up.
+# Claude Code and Codex are installed below as additional legacy providers,
+# after the npm-prefix block that pins ~/.npm-global for the bux user.
 
 # --- bux user + dirs -------------------------------------------------------
 id -u bux >/dev/null 2>&1 || useradd -m -s /bin/bash bux
-mkdir -p /opt/bux /var/log/bux /etc/bux /home/bux/.claude/skills
-chown -R bux:bux /opt/bux /home/bux/.claude /var/log/bux
+mkdir -p /opt/bux /var/log/bux /etc/bux /home/bux/.claude/skills /home/bux/.hermes
+chown -R bux:bux /opt/bux /home/bux/.claude /home/bux/.hermes /var/log/bux
 chown root:bux /etc/bux
 chmod 2775 /etc/bux
 
@@ -405,13 +398,16 @@ fi
 # so browser_keeper.py / telegram_bot.py don't need to be copied — the
 # systemd units below execute them straight from the symlinked path. Only
 # the system prompt gets installed (different destination — bux's home dir).
-# Claude Code reads ~/CLAUDE.md and Codex reads ~/AGENTS.md; both symlink to
-# the one source-of-truth file so editing once updates both CLIs.
+# Hermes reads ~/HERMES.md / ~/AGENTS.md as project context and
+# ~/.hermes/SOUL.md as its identity. Claude Code and Codex can still read
+# the legacy symlinks when selected explicitly.
 say 'installing bux agent files'
 install -o bux -g bux -m 0644 "$REPO_DIR/agent/system-prompt.md" /home/bux/system-prompt.md
-ln -sfn /home/bux/system-prompt.md /home/bux/CLAUDE.md
+install -o bux -g bux -m 0644 "$REPO_DIR/agent/SOUL.md" /home/bux/.hermes/SOUL.md
+ln -sfn /home/bux/system-prompt.md /home/bux/HERMES.md
 ln -sfn /home/bux/system-prompt.md /home/bux/AGENTS.md
-chown -h bux:bux /home/bux/CLAUDE.md /home/bux/AGENTS.md
+ln -sfn /home/bux/system-prompt.md /home/bux/CLAUDE.md
+chown -h bux:bux /home/bux/HERMES.md /home/bux/AGENTS.md /home/bux/CLAUDE.md
 
 # Seed an empty private/goals.md. The agent reads + writes this file. An
 # empty file is fine — the agent appends entries when the user mentions
@@ -462,7 +458,7 @@ install -m 0755 "$REPO_DIR/agent/new-topic"        /usr/local/bin/new-topic
 # Friendlier alias `schedule` for the agent + user; both names work.
 ln -sfn /usr/local/bin/tg-schedule /usr/local/bin/schedule
 
-# --- pre-seed ~/.claude.json so first `claude` run skips dialogs -----------
+# --- pre-seed ~/.claude.json so legacy Claude runs skip dialogs ------------
 if [ ! -f /home/bux/.claude.json ]; then
 	sudo -u bux -H bash -c 'cat > /home/bux/.claude.json' <<'JSON'
 {
@@ -542,16 +538,53 @@ fi
 sudo -u bux -H npm config set prefix /home/bux/.npm-global 2>/dev/null || true
 install -d -o bux -g bux -m 0755 /home/bux/.npm-global /home/bux/.local /home/bux/.local/bin
 
-# --- Codex CLI (alternative agent, /codex per forum topic) -----------------
+# --- Hermes CLI (primary agent) -------------------------------------------
+if ! sudo -iu bux bash -lc 'command -v hermes' >/dev/null 2>&1; then
+	say 'installing Hermes Agent for bux'
+	sudo -iu bux uv tool install hermes-agent \
+		|| die 'Hermes install failed'
+fi
+
+# Register Browser Use's cloud Composio MCP endpoint for Hermes when the
+# box token is available. Keep the secret in the process environment, not
+# in the repo: Hermes expands ${BUX_BOX_TOKEN} at runtime.
+if [ -n "${BUX_BOX_TOKEN:-}" ] || grep -q '^BUX_BOX_TOKEN=' /etc/bux/env 2>/dev/null; then
+	sudo -u bux -H bash -c '
+set -e
+mkdir -p "$HOME/.hermes"
+cfg="$HOME/.hermes/config.yaml"
+touch "$cfg"
+if ! grep -q "^[[:space:]]*composio:" "$cfg"; then
+	cat >> "$cfg" <<YAML
+
+mcp_servers:
+  composio:
+    url: "https://api.browser-use.com/cloud/composio/mcp"
+    headers:
+      Authorization: "Bearer \${BUX_BOX_TOKEN}"
+    enabled: true
+YAML
+fi
+chmod 0600 "$cfg"
+'
+fi
+
+# --- Claude Code + Codex CLI (additional legacy providers) -----------------
+if ! sudo -iu bux bash -lc 'command -v claude' >/dev/null 2>&1; then
+	say 'installing Claude Code for bux (legacy provider)'
+	sudo -iu bux npm install -g @anthropic-ai/claude-code \
+		|| warn 'Claude Code install failed (non-fatal — Hermes remains the primary agent)'
+fi
+
 # Pre-install for the bux user so `/codex login` (or auto-dispatch
 # via `/codex`) works without a manual install. Auth is left to the
 # user — either drop `OPENAI_API_KEY=...` into /home/bux/.secrets/openai.env,
 # or run `/codex login` once and complete the device-code flow from TG.
 # Install runs as bux so the binary lands in /home/bux/.npm-global/bin,
 # which is on bux's PATH (set by the .profile block above). Non-fatal:
-# an npm hiccup shouldn't break a Claude-only install.
-if ! sudo -iu bux command -v codex >/dev/null 2>&1; then
-	say 'installing Codex CLI for bux'
+# an npm hiccup shouldn't break a Hermes install.
+if ! sudo -iu bux bash -lc 'command -v codex' >/dev/null 2>&1; then
+	say 'installing Codex CLI for bux (legacy provider)'
 	sudo -iu bux npm install -g @openai/codex \
 		|| warn 'codex install failed (non-fatal — /codex login will hint how to install later)'
 fi
@@ -677,10 +710,10 @@ echo
 ok 'bux is installed.'
 echo
 printf '%sNext:%s\n' "$c_bold" "$c_reset"
-printf '  • Become the %sbux%s user and launch Claude Code:\n' "$c_bold" "$c_reset"
+printf '  • Become the %sbux%s user and launch Hermes:\n' "$c_bold" "$c_reset"
 printf '      %ssudo -iu bux%s\n' "$c_dim" "$c_reset"
-printf '      %scd ~ && claude%s\n' "$c_dim" "$c_reset"
-printf '  • First run: type %s/login%s in Claude Code and complete the OAuth flow.\n' "$c_bold" "$c_reset"
+printf '      %scd ~ && hermes setup%s\n' "$c_dim" "$c_reset"
+printf '  • Legacy providers are still available with %s/claude login%s or %s/codex login%s in Telegram.\n' "$c_bold" "$c_reset" "$c_bold" "$c_reset"
 printf '  • The browser is already running — check: %scat /home/bux/.claude/browser.env%s\n' "$c_dim" "$c_reset"
 echo
 if [ -z "$TG_BOT_TOKEN" ]; then

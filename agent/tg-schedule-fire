@@ -3,7 +3,7 @@
 
 Reads the job dir prepared by tg-schedule, optionally creates a fresh
 forum topic via the Telegram bot API, then dispatches the prompt into
-the lane through the bot's run_task path. The lane's claude/codex
+the lane through the bot's run_task path. The lane's Hermes/Claude/Codex
 session UUID is resumed as on any normal user message, so the prior
 conversation is fully in context (and the prompt cache stays warm if
 the previous turn was within the cache TTL).

@@ -1,5 +1,5 @@
 [Unit]
-Description=bux box-agent (cloud control + claude task dispatch)
+Description=bux box-agent (cloud control + Hermes task dispatch)
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/etc/bux/env

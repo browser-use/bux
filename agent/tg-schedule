@@ -15,7 +15,7 @@
 #
 # Default mode reuses the current chat + thread (TG_CHAT_ID / TG_THREAD_ID
 # from the bot env). When the at-job fires, the bot dispatches the prompt
-# into that lane, claude/codex resumes the lane's session UUID, and the
+# into that lane, Hermes resumes the lane's named session, and the
 # whole prior conversation is in context — prompt-cache hits the same as
 # a normal user message.
 #
@@ -25,7 +25,7 @@
 #
 # Note: scheduled fires don't pass through the bot's lane queue, so they
 # don't show up in /queue. They do serialize against in-progress turns at
-# the agent level (claude --resume cooperates via per-uuid transcript
+# the agent level (Hermes --continue cooperates via named conversation
 # state), but a tight collision with an active user message in the same
 # lane can still race; if you see corrupted resume behavior, slow the
 # cadence or stop using --fresh-cycling on the same lane.
@@ -93,7 +93,7 @@ done
 
 # Default-target lane = the lane this command was invoked from. The bot
 # exports TG_CHAT_ID / TG_THREAD_ID for every agent turn, so calling
-# tg-schedule from a claude / codex / /terminal turn picks up the right
+# tg-schedule from a Hermes / Claude / Codex / /terminal turn picks up the right
 # lane automatically. Fall back to the first allowed chat at the chat
 # root.
 src_chat_id="${TG_CHAT_ID:-}"

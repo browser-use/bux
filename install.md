@@ -60,10 +60,10 @@ curl -fsSL https://raw.githubusercontent.com/browser-use/bux/main/install.sh \
 ```
 
 The script:
-1. Installs Node.js 24 + Claude Code + ttyd + browser-harness
+1. Installs Node.js 24 + Hermes Agent + ttyd + browser-harness
 2. Creates a `bux` system user with its own venv
 3. Drops the browser-keeper + telegram-bot + systemd units
-4. Installs [ztk](https://github.com/codejunkie99/ztk) (pinned) — compresses long Bash tool outputs before they hit Claude's context. Opt out with `WITH_ZTK=0`.
+4. Installs [ztk](https://github.com/codejunkie99/ztk) (pinned) — compresses long Bash tool outputs before they hit the agent's context. Opt out with `WITH_ZTK=0`.
 5. Starts everything
 
 Takes ~2-3 minutes on a fresh box. Idempotent — safe to rerun after edits.
@@ -72,10 +72,10 @@ Takes ~2-3 minutes on a fresh box. Idempotent — safe to rerun after edits.
 
 ```bash
 sudo -iu bux        # become the bux user
-cd ~ && claude
+cd ~ && hermes setup
 ```
 
-On first launch claude will ask you to log in. Type `/login` and complete the OAuth flow in your laptop browser. Once authed, exit claude (`/exit`). From now on `claude` starts straight into a session.
+On first launch Hermes will ask you to choose/configure a model provider. Once configured, exit Hermes if you want (`Ctrl+D`). From now on Telegram uses Hermes as the default runtime. Claude Code and Codex are still available as additional providers with `/claude login` and `/codex login`.
 
 ### 5. Bind the Telegram bot
 
@@ -99,7 +99,7 @@ bot: 3 unread from today:
 
 ### 6. You're done
 
-Every message is its own claude turn but **shares memory** with the previous ones. Follow-ups work:
+Every message is its own Hermes turn but **shares memory** with the previous ones. Follow-ups work:
 
 ```
 you: check my email
@@ -123,15 +123,15 @@ sudo journalctl -u bux-tg -n 50
 - `dropping msg from chat_id=... (already bound)` → someone else's chat_id is bound. Wipe `/etc/bux/tg.env`, rerun install, bind again.
 - `invalid bot token` → regenerate via @BotFather.
 
-**claude errors on `--session-id` or `--resume`**
-You have an older Claude Code version. Update:
+**Hermes is missing or setup failed**
+Re-run the installer or bootstrap:
 ```bash
-sudo npm install -g @anthropic-ai/claude-code@latest
+sudo -u bux -H uv tool install --force hermes-agent
 sudo -u bux bux-restart
 ```
 `bux-restart` records the current Telegram lane so the bot pings the user with "✓ back online" once it returns. `systemctl restart bux-tg` works too but skips the ack.
 
-**claude says "no CDP_WS set"**
+**Hermes says "no CDP_WS set"**
 The browser-keeper hasn't written `~/.claude/browser.env` yet. Wait 10s on first boot, or:
 ```bash
 sudo systemctl restart bux-browser-keeper
@@ -141,12 +141,13 @@ cat /home/bux/.claude/browser.env   # should have BU_CDP_WS=wss://...
 **Need a clean slate**
 ```bash
 sudo systemctl stop bux-tg bux-browser-keeper bux-ttyd
-sudo rm -rf /etc/bux /opt/bux /home/bux/.claude /home/bux/.bux
+sudo rm -rf /etc/bux /opt/bux /home/bux/.hermes /home/bux/.claude /home/bux/.bux
 sudo userdel -r bux
 # rerun install.sh
 ```
 
 ## What's next
 
-- [agent/CLAUDE.md](agent/CLAUDE.md) — the operating manual claude auto-loads every session
+- [agent/SOUL.md](agent/SOUL.md) — Hermes persona and voice
+- [agent/system-prompt.md](agent/system-prompt.md) — bux project instructions loaded via `HERMES.md` / `AGENTS.md`
 - [browser-harness](https://github.com/browser-use/browser-harness) — the CDP skill powering the browser

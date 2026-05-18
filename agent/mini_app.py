@@ -1393,7 +1393,7 @@ def _dispatch_topic_context(
         env = _tg_env()
         bot = telegram_bot.Bot(env["TG_BOT_TOKEN"], env.get("TG_SETUP_TOKEN", ""))
         provider = (_settings().get("provider") or "").strip().lower()
-        if provider in {"codex", "claude"} and hasattr(telegram_bot, "_set_agent_for"):
+        if provider in {"hermes", "codex", "claude"} and hasattr(telegram_bot, "_set_agent_for"):
             telegram_bot._set_agent_for((chat_id, thread_id), provider, bot.state)
         text = f"{heading}:\n" + comment
         sent = bot.call(
@@ -1536,7 +1536,7 @@ def _start_agent_work(
             parse_mode="HTML",
         )
         provider = (_settings().get("provider") or "").strip().lower()
-        if provider in {"codex", "claude"} and hasattr(telegram_bot, "_set_agent_for"):
+        if provider in {"hermes", "codex", "claude"} and hasattr(telegram_bot, "_set_agent_for"):
             telegram_bot._set_agent_for((chat_id, work_thread), provider, bot.state)
         with agency_db.conn() as db:
             if row.get("tg_chat_id") and row.get("tg_message_id"):
@@ -1773,8 +1773,8 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/settings":
                 provider = (body.get("provider") or "").strip().lower()
-                if provider and provider not in {"codex", "claude"}:
-                    _json_response(self, 400, {"error": "provider must be codex or claude"})
+                if provider and provider not in {"hermes", "codex", "claude"}:
+                    _json_response(self, 400, {"error": "provider must be hermes, codex, or claude"})
                     return
                 if provider:
                     _write_setting("provider", provider, user)

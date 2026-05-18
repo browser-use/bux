@@ -753,6 +753,7 @@ function goalTitle() {
 
 function providerLabel() {
   const provider = String(state.me?.settings?.provider || "").trim().toLowerCase();
+  if (provider === "hermes") return "Telegram sync live · Hermes";
   if (provider === "codex") return "Telegram sync live · Codex";
   if (provider === "claude") return "Telegram sync live · Claude";
   return "Telegram sync live";

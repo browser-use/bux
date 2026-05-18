@@ -3,12 +3,9 @@
 Responsibilities:
   - Maintain outbound WebSocket to the cloud control plane.
   - Heartbeat every 30s.
-  - Poll `claude auth status` (1s first minute, then 15s); push `claude_authed`
-    to cloud on flip. Claude login itself is done by the USER inside the ttyd
-    web terminal (they type /login), not driven from here — the UI changes too
-    often to automate reliably.
+  - Poll Hermes availability and legacy Claude/Codex auth status.
   - Handle commands pushed from cloud:
-      - run_task {prompt}         → `claude -p "<prompt>"`, stream stdout
+      - run_task {prompt}         → `hermes chat --continue bux-cloud -q "<prompt>"`, stream stdout
       - shell_attach / shell_input / shell_resize / shell_close — web terminal
       - tg_install {bot_token}    → write /etc/bux/tg.env, start bux-tg service
       - ping                      → reply pong
@@ -130,13 +127,14 @@ def _read_tg_bot_username() -> str | None:
 	return None
 
 
-# --- Claude auth ------------------------------------------------------------
+# --- Agent CLIs -------------------------------------------------------------
 #
 # The user does the OAuth flow themselves inside the ttyd web terminal
 # (`/login` inside claude). The agent just watches — an auth-poll loop
 # shells out to `claude auth status` every 1s (first minute) or 15s (after)
 # and pushes `claude_authed` over WS the moment it flips to loggedIn.
 
+HERMES_BIN = '/home/bux/.local/bin/hermes'
 CLAUDE_BIN = '/usr/bin/claude'
 
 
@@ -248,6 +246,30 @@ async def check_claude_authed() -> bool:
 	return '"loggedin": true' in text or '"loggedin":true' in text
 
 
+async def check_hermes_ready() -> bool:
+	"""Return True when the Hermes CLI is installed and configured."""
+	try:
+		proc = await asyncio.create_subprocess_exec(
+			'/bin/bash',
+			'-lc',
+			'command -v hermes >/dev/null && hermes status',
+			stdout=asyncio.subprocess.PIPE,
+			stderr=asyncio.subprocess.STDOUT,
+			env={**os.environ, 'HOME': '/home/bux'},
+		)
+	except Exception:
+		return False
+	res = await _run_with_timeout(proc, 15)
+	if res is None or proc.returncode != 0:
+		return False
+	text = res.decode(errors='replace').lower()
+	if 'model:' in text and 'model:        (not set)' in text:
+		return False
+	if 'not logged in' in text and 'api keys' in text and '✓' not in res.decode(errors='replace'):
+		return False
+	return True
+
+
 async def check_codex_authed() -> bool:
 	"""Shell out to `codex login status`; return True iff logged in.
 
@@ -304,7 +326,7 @@ class ShellSession:
 		self,
 		rows: int = 40,
 		cols: int = 120,
-		launch: str = 'claude',
+		launch: str = 'hermes',
 		dsp_enabled: bool = True,
 		window_id: str = 'bux-w1',
 	) -> None:
@@ -319,7 +341,7 @@ class ShellSession:
 		`window_id` is the tmux session name. The cloud picks it (default
 		`bux-w1`); we sanitize defensively. First attach to a window
 		creates it via `tmux new-session -A -d` and seeds the launch
-		command (claude / bash). Subsequent attaches just open another
+		command (Hermes / Claude / bash). Subsequent attaches just open another
 		client onto the same tmux session.
 
 		`launch` and `dsp_enabled` are only honored when we're CREATING
@@ -435,7 +457,9 @@ class ShellSession:
 
 		# Build the launch command — routed through tmux's first-window
 		# command so the shell survives WS reconnects.
-		if launch == 'claude':
+		if launch == 'hermes':
+			cmd_str = 'hermes; exec bash -l'
+		elif launch == 'claude':
 			claude_cmd = (
 				'claude --dangerously-skip-permissions' if dsp_enabled else 'claude'
 			)
@@ -573,6 +597,7 @@ class Agent:
 		# untyped annotation is fine.
 		self.ws = None  # type: ignore[assignment]
 		self._stop = asyncio.Event()
+		self._hermes_ready = False
 		self._authed = False  # last-known claude auth state
 		self._auth_wakeup = asyncio.Event()  # poke to force immediate recheck
 		self._shells: dict[str, ShellSession] = {}
@@ -630,7 +655,7 @@ class Agent:
 				backoff = min(backoff * 2, 60)
 
 	async def _connect_once(self) -> None:
-		# Warm claude's filesystem cache + plugin hydration BEFORE we tell
+		# Warm Hermes filesystem cache BEFORE we tell
 		# cloud we're alive. Cloud flips status PROVISIONING → AWAITING_OAUTH
 		# the moment we send `hello`, and that's the signal for the frontend
 		# to open the terminal iframe — at which point the user expects
@@ -642,11 +667,11 @@ class Agent:
 		# Idempotent across reconnects: only the first connect actually
 		# spawns claude; subsequent reconnects (WS flap, etc.) skip.
 		if not getattr(self, '_prewarmed', False):
-			LOG.info('prewarming claude before announcing AWAITING_OAUTH...')
+			LOG.info('prewarming hermes before announcing ready state...')
 			outcome = 'failed'
 			try:
 				proc = await asyncio.create_subprocess_exec(
-					CLAUDE_BIN,
+					HERMES_BIN,
 					'--version',
 					stdout=asyncio.subprocess.DEVNULL,
 					stderr=asyncio.subprocess.DEVNULL,
@@ -665,13 +690,13 @@ class Agent:
 				else:
 					outcome = f'non-zero exit ({proc.returncode})'
 			except Exception:
-				LOG.exception('claude prewarm errored')
+				LOG.exception('hermes prewarm errored')
 			self._prewarmed = True
 			# Always log the outcome so operators can tell from agent logs
 			# whether the box has hot claude pages cached. The hello → status
 			# flip below proceeds either way; a slow first claude is bad UX
 			# but not a hard failure.
-			LOG.info('claude prewarm: %s', outcome)
+			LOG.info('hermes prewarm: %s', outcome)
 
 		headers = [('Authorization', f'Bearer {self.box_token}')]
 		async with websockets.connect(self.ws_url, additional_headers=headers) as ws:
@@ -694,6 +719,7 @@ class Agent:
 
 			hb_task = asyncio.create_task(self._heartbeat_loop())
 			auth_task = asyncio.create_task(self._auth_poll_loop())
+			hermes_task = asyncio.create_task(self._hermes_poll_loop())
 			codex_auth_task = asyncio.create_task(self._codex_auth_poll_loop())
 			browser_task = asyncio.create_task(self._browser_id_poll_loop())
 			try:
@@ -702,6 +728,7 @@ class Agent:
 			finally:
 				browser_task.cancel()
 				hb_task.cancel()
+				hermes_task.cancel()
 				auth_task.cancel()
 				codex_auth_task.cancel()
 				self.ws = None
@@ -750,6 +777,26 @@ class Agent:
 			return
 		except Exception:
 			LOG.exception('auth_poll_loop crashed')
+
+	async def _hermes_poll_loop(self) -> None:
+		"""Poll Hermes availability and notify cloud when state flips."""
+		start = asyncio.get_event_loop().time()
+		try:
+			while True:
+				ready = await check_hermes_ready()
+				if ready != self._hermes_ready:
+					self._hermes_ready = ready
+					if ready:
+						await self._send({'type': 'hermes_ready'})
+						LOG.info('hermes is ready — notified cloud')
+					else:
+						await self._send({'type': 'hermes_not_ready'})
+				elapsed = asyncio.get_event_loop().time() - start
+				await asyncio.sleep(1 if elapsed < 60 else 15)
+		except asyncio.CancelledError:
+			return
+		except Exception:
+			LOG.exception('hermes_poll_loop crashed')
 
 	async def _codex_auth_poll_loop(self) -> None:
 		"""Poll `codex login status`; notify cloud on flips. Mirror of
@@ -856,7 +903,7 @@ class Agent:
 				return
 			rows = int(msg.get('rows') or 40)
 			cols = int(msg.get('cols') or 120)
-			launch = msg.get('launch') or 'claude'
+			launch = msg.get('launch') or 'hermes'
 			# Default window so existing single-terminal callers keep
 			# working without code changes.
 			window_id = msg.get('window_id') or 'bux-w1'
@@ -998,7 +1045,7 @@ class Agent:
 		return ['--session-id', sid]
 
 	async def _run_task(self, task_id: str | None, prompt: str) -> None:
-		"""Run `claude -p "<prompt>"` as bux user, stream stdout over WS.
+		"""Run a Hermes one-shot task as bux user, stream stdout over WS.
 
 		Sends events:
 		  - {type: task_chunk, task_id, data: "..."}  — stdout chunks
@@ -1008,7 +1055,7 @@ class Agent:
 			await self._send({'type': 'task_done', 'task_id': task_id, 'rc': 2, 'error': 'invalid'})
 			return
 		LOG.info('run_task %s: %s', task_id, prompt[:120])
-		# Agent runs as the `bux` user already (per systemd). Spawn claude
+		# Agent runs as the `bux` user already (per systemd). Spawn Hermes
 		# directly — no sudo needed. Forward BU envs for browser-harness.
 		box_env = load_env()
 		child_env = {
@@ -1022,14 +1069,12 @@ class Agent:
 		if box_env.get('BUX_PROFILE_ID'):
 			child_env['BU_PROFILE_ID'] = box_env['BUX_PROFILE_ID']
 			child_env['BUX_PROFILE_ID'] = box_env['BUX_PROFILE_ID']
+		if box_env.get('BUX_BOX_TOKEN'):
+			child_env['BUX_BOX_TOKEN'] = box_env['BUX_BOX_TOKEN']
 
-		session_args = self._session_args()
-
-		# Serialize across processes (box-agent + bux-tg). claude takes an
-		# exclusive lock on the session file while running; a second claude
-		# against the same uuid would fail with "session in use." We flock a
-		# dedicated file so both services queue behind each other cleanly.
-		lock_path = '/home/bux/.bux/claude.lock'
+		# Serialize the cloud lane so repeated run_task calls keep one
+		# coherent Hermes conversation.
+		lock_path = '/home/bux/.bux/hermes.lock'
 		os.makedirs(os.path.dirname(lock_path), exist_ok=True)
 		loop = asyncio.get_running_loop()
 		# O_NOFOLLOW: refuse to open through a symlink; we run as the bux user
@@ -1045,13 +1090,12 @@ class Agent:
 		try:
 			try:
 				proc = await asyncio.create_subprocess_exec(
-					'/usr/bin/claude',
-					'-p',
-					*session_args,
-					'--output-format',
-					'text',
-					'--permission-mode',
-					'bypassPermissions',
+					HERMES_BIN,
+					'chat',
+					'--continue',
+					'bux-cloud',
+					'--quiet',
+					'--query',
 					prompt,
 					stdout=asyncio.subprocess.PIPE,
 					stderr=asyncio.subprocess.STDOUT,
