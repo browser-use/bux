@@ -58,6 +58,14 @@ Use cases:
 - Partner onboarding.
 - Browser-backed research and handoff summaries.
 
+## Agency Implementation Page
+
+Agency page: https://browser-use.github.io/bux/telegram-ai-operator-agencies.html
+
+This page is for AI automation agencies that need a managed implementation path for client projects involving Telegram-heavy sales, support, onboarding, or operations. It positions Bux as the always-on delivery layer for one scoped client workflow while the agency keeps the client relationship.
+
+Best-fit agency projects have existing Telegram message volume, a repeated first-line workflow, clear handoff owners, and tools the operator can check. Poor fits include cold-message spam, generic chatbot demos, and workflows that require irreversible agent decisions without human review.
+
 ## Partner Pilot For Agencies
 
 Partner page: https://browser-use.github.io/bux/managed-pilot-partners.html
