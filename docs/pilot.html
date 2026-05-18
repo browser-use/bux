@@ -56,229 +56,37 @@
         --warm: #f4b23f;
       }
 
-      * {
-        box-sizing: border-box;
-      }
-
-      body {
-        margin: 0;
-        color: var(--ink);
-        background: var(--paper);
-        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        line-height: 1.5;
-      }
-
-      a {
-        color: inherit;
-      }
-
-      .hero {
-        min-height: 74vh;
-        display: flex;
-        align-items: end;
-        color: white;
-        background:
-          linear-gradient(90deg, rgba(7, 14, 19, .88), rgba(7, 14, 19, .56) 55%, rgba(7, 14, 19, .18)),
-          url("hero.jpg") center / cover no-repeat;
-      }
-
-      .inner {
-        width: min(1120px, calc(100% - 40px));
-        margin: 0 auto;
-      }
-
-      .hero .inner {
-        padding: 72px 0 54px;
-      }
-
-      .eyebrow {
-        margin: 0 0 14px;
-        color: #a9f4dd;
-        font-size: 15px;
-        font-weight: 800;
-      }
-
-      h1 {
-        max-width: 820px;
-        margin: 0;
-        font-size: 58px;
-        line-height: 1.04;
-        letter-spacing: 0;
-      }
-
-      .hero-copy {
-        max-width: 690px;
-        margin: 22px 0 0;
-        color: #edf3f7;
-        font-size: 20px;
-      }
-
-      .actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-        margin-top: 30px;
-      }
-
-      .button {
-        min-height: 44px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        border: 1px solid rgba(255, 255, 255, .34);
-        border-radius: 8px;
-        padding: 11px 16px;
-        text-decoration: none;
-        font-weight: 800;
-        background: rgba(255, 255, 255, .1);
-      }
-
-      .button.primary {
-        border-color: white;
-        background: white;
-        color: #0c1318;
-      }
-
-      section {
-        padding: 50px 0;
-      }
-
-      .band {
-        background: white;
-        border-top: 1px solid var(--line);
-        border-bottom: 1px solid var(--line);
-      }
-
-      .grid {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 16px;
-      }
-
-      .split {
-        display: grid;
-        grid-template-columns: minmax(0, 1.05fr) minmax(280px, .95fr);
-        gap: 34px;
-        align-items: start;
-      }
-
-      .tile {
-        min-height: 156px;
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        background: var(--panel);
-        padding: 18px;
-      }
-
-      .tile strong,
-      .step strong {
-        display: block;
-        margin-bottom: 8px;
-        font-size: 17px;
-      }
-
-      h2 {
-        margin: 0 0 14px;
-        font-size: 31px;
-        line-height: 1.16;
-        letter-spacing: 0;
-      }
-
-      p {
-        margin: 0 0 18px;
-        color: var(--muted);
-      }
-
-      ul {
-        margin: 14px 0 0;
-        padding-left: 20px;
-        color: var(--muted);
-      }
-
-      li + li {
-        margin-top: 8px;
-      }
-
-      .price {
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        background: var(--panel);
-        padding: 22px;
-      }
-
-      .price-number {
-        margin: 10px 0 4px;
-        font-size: 44px;
-        line-height: 1;
-        font-weight: 900;
-      }
-
-      .price-number span {
-        color: var(--muted);
-        font-size: 17px;
-        font-weight: 700;
-      }
-
-      .step {
-        display: grid;
-        grid-template-columns: 52px 1fr;
-        gap: 14px;
-        align-items: start;
-      }
-
-      .step + .step {
-        margin-top: 18px;
-      }
-
-      .num {
-        width: 44px;
-        height: 44px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: 50%;
-        background: var(--accent);
-        color: white;
-        font-weight: 900;
-      }
-
-      .proof {
-        border-left: 5px solid var(--warm);
-        padding-left: 18px;
-      }
-
-      footer {
-        border-top: 1px solid var(--line);
-        padding: 24px 0 36px;
-        color: var(--muted);
-        font-size: 14px;
-      }
-
-      @media (max-width: 800px) {
-        .hero {
-          min-height: 68vh;
-          background:
-            linear-gradient(180deg, rgba(7, 14, 19, .38), rgba(7, 14, 19, .9)),
-            url("hero.jpg") center / cover no-repeat;
-        }
-
-        .inner {
-          width: min(100% - 28px, 1120px);
-        }
-
-        h1 {
-          font-size: 39px;
-        }
-
-        .hero-copy {
-          font-size: 18px;
-        }
-
-        .grid,
-        .split {
-          grid-template-columns: 1fr;
-        }
-      }
+      * { box-sizing: border-box; }
+      body { margin: 0; color: var(--ink); background: var(--paper); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.5; }
+      a { color: inherit; }
+      .hero { min-height: 74vh; display: flex; align-items: end; color: white; background: linear-gradient(90deg, rgba(7,14,19,.88), rgba(7,14,19,.56) 55%, rgba(7,14,19,.18)), url("hero.jpg") center / cover no-repeat; }
+      .inner { width: min(1120px, calc(100% - 40px)); margin: 0 auto; }
+      .hero .inner { padding: 72px 0 54px; }
+      .eyebrow { margin: 0 0 14px; color: #a9f4dd; font-size: 15px; font-weight: 800; }
+      h1 { max-width: 820px; margin: 0; font-size: 58px; line-height: 1.04; letter-spacing: 0; }
+      .hero-copy { max-width: 690px; margin: 22px 0 0; color: #edf3f7; font-size: 20px; }
+      .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 30px; }
+      .button { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid rgba(255,255,255,.34); border-radius: 8px; padding: 11px 16px; text-decoration: none; font-weight: 800; background: rgba(255,255,255,.1); }
+      .button.primary { border-color: white; background: white; color: #0c1318; }
+      section { padding: 50px 0; }
+      .band { background: white; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+      .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+      .split { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(280px, .95fr); gap: 34px; align-items: start; }
+      .tile { min-height: 156px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 18px; }
+      .tile strong, .step strong { display: block; margin-bottom: 8px; font-size: 17px; }
+      h2 { margin: 0 0 14px; font-size: 31px; line-height: 1.16; letter-spacing: 0; }
+      p { margin: 0 0 18px; color: var(--muted); }
+      ul { margin: 14px 0 0; padding-left: 20px; color: var(--muted); }
+      li + li { margin-top: 8px; }
+      .price { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 22px; }
+      .price-number { margin: 10px 0 4px; font-size: 44px; line-height: 1; font-weight: 900; }
+      .price-number span { color: var(--muted); font-size: 17px; font-weight: 700; }
+      .step { display: grid; grid-template-columns: 52px 1fr; gap: 14px; align-items: start; }
+      .step + .step { margin-top: 18px; }
+      .num { width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; background: var(--accent); color: white; font-weight: 900; }
+      .proof { border-left: 5px solid var(--warm); padding-left: 18px; }
+      footer { border-top: 1px solid var(--line); padding: 24px 0 36px; color: var(--muted); font-size: 14px; }
+      @media (max-width: 800px) { .hero { min-height: 68vh; background: linear-gradient(180deg, rgba(7,14,19,.38), rgba(7,14,19,.9)), url("hero.jpg") center / cover no-repeat; } .inner { width: min(100% - 28px, 1120px); } h1 { font-size: 39px; } .hero-copy { font-size: 18px; } .grid, .split { grid-template-columns: 1fr; } }
     </style>
   </head>
   <body>
@@ -286,13 +94,12 @@
       <div class="inner">
         <p class="eyebrow">Managed pilot for Telegram-heavy teams</p>
         <h1>Launch a private AI operator for one real workflow in 7 days.</h1>
-        <p class="hero-copy">
-          Bux is a 24/7 Telegram-controlled agent with browser access, persistent memory, scheduled checks, and human handoff. We install it, scope one painful workflow, and keep it running.
-        </p>
+        <p class="hero-copy">Bux is a 24/7 Telegram-controlled agent with browser access, persistent memory, scheduled checks, and human handoff. We install it, scope one painful workflow, and keep it running.</p>
         <div class="actions">
           <a class="button primary" href="https://t.me/Magnus_Mueller">Book the pilot on Telegram</a>
           <a class="button" href="managed-pilot-playbook.html">Read the playbook</a>
           <a class="button" href="managed-pilot-demo.html">See a demo</a>
+          <a class="button" href="managed-pilot-partners.html">Partner offer</a>
           <a class="button" href="managed-pilot-terms.html">Pilot terms</a>
           <a class="button" href="https://github.com/browser-use/bux/issues/new?template=managed-pilot.yml">Apply on GitHub</a>
           <a class="button" href="https://github.com/browser-use/bux">See the open-source box</a>
@@ -301,97 +108,11 @@
     </header>
 
     <main>
-      <section class="band">
-        <div class="inner grid">
-          <div class="tile">
-            <strong>Inbound triage</strong>
-            <p>Answer repeat questions, collect missing details, qualify intent, and hand a clean summary to a human.</p>
-          </div>
-          <div class="tile">
-            <strong>Browser research</strong>
-            <p>Use a persistent logged-in browser for checks that APIs cannot handle, with login handoff when needed.</p>
-          </div>
-          <div class="tile">
-            <strong>Scheduled follow-up</strong>
-            <p>Come back later to check replies, CI, launches, lead status, or queue health without human babysitting.</p>
-          </div>
-        </div>
-      </section>
-
-      <section>
-        <div class="inner split">
-          <div>
-            <h2>Built for teams where Telegram is already operational.</h2>
-            <p>
-              The first pilot is intentionally narrow: one channel, one workflow, one measurable handoff. Good fits include crypto infrastructure, fintech operations, founder-led agencies, support teams, and partner onboarding desks that already use Telegram for business.
-            </p>
-            <div class="proof">
-              <p>
-                The goal is not to replace judgment. The goal is to remove repetitive first-line handling and deliver better context to the person who decides.
-              </p>
-            </div>
-          </div>
-          <aside class="price" aria-label="Pilot pricing">
-            <strong>Managed pilot</strong>
-            <div class="price-number">$1,000 <span>/ month</span></div>
-            <p>One scoped operator workflow, launched in 7 days.</p>
-            <ul>
-              <li>Private bot and runtime setup</li>
-              <li>Workflow prompt and guardrails</li>
-              <li>Lead or ticket summary format</li>
-              <li>Human handoff path</li>
-              <li>Weekly tuning during the pilot</li>
-            </ul>
-          </aside>
-        </div>
-      </section>
-
-      <section class="band">
-        <div class="inner split">
-          <div>
-            <h2>How the pilot runs</h2>
-            <div class="step">
-              <span class="num">1</span>
-              <div>
-                <strong>Scope the workflow</strong>
-                <p>Pick the one thread type that wastes time or loses leads: onboarding, support triage, partner requests, booking, or status checks.</p>
-              </div>
-            </div>
-            <div class="step">
-              <span class="num">2</span>
-              <div>
-                <strong>Connect only what is needed</strong>
-                <p>Telegram first, then optional Gmail, Calendar, GitHub, Slack, web browser, Sheets, or CRM handoff depending on the job.</p>
-              </div>
-            </div>
-            <div class="step">
-              <span class="num">3</span>
-              <div>
-                <strong>Ship with receipts</strong>
-                <p>Every important action is visible in Telegram. Humans stay in charge of judgment, spend, posting, and commitments.</p>
-              </div>
-            </div>
-          </div>
-          <div>
-            <h2>What success means</h2>
-            <p>By the end of the first month, the operator should reduce repeated manual replies, improve response time, and create structured handoffs that are good enough for the team to keep paying for.</p>
-            <div class="actions">
-              <a class="button primary" style="background: var(--accent); border-color: var(--accent); color: white;" href="https://t.me/Magnus_Mueller">Start on Telegram</a>
-              <a class="button" style="border-color: var(--accent); color: var(--accent-dark); background: white;" href="https://github.com/browser-use/bux/issues/new?template=managed-pilot.yml">Apply on GitHub</a>
-              <a class="button" style="border-color: var(--accent); color: var(--accent-dark); background: white;" href="managed-pilot-demo.html">Demo transcript</a>
-              <a class="button" style="border-color: var(--accent); color: var(--accent-dark); background: white;" href="managed-pilot-terms.html">Pilot terms</a>
-              <a class="button" style="border-color: var(--accent); color: var(--accent-dark); background: white;" href="managed-pilot-playbook.html">Pilot playbook</a>
-              <a class="button" style="border-color: var(--accent); color: var(--accent-dark); background: white;" href="index.html">Back to Bux</a>
-            </div>
-          </div>
-        </div>
-      </section>
+      <section class="band"><div class="inner grid"><div class="tile"><strong>Inbound triage</strong><p>Answer repeat questions, collect missing details, qualify intent, and hand a clean summary to a human.</p></div><div class="tile"><strong>Browser research</strong><p>Use a persistent logged-in browser for checks that APIs cannot handle, with login handoff when needed.</p></div><div class="tile"><strong>Scheduled follow-up</strong><p>Come back later to check replies, CI, launches, lead status, or queue health without human babysitting.</p></div></div></section>
+      <section><div class="inner split"><div><h2>Built for teams where Telegram is already operational.</h2><p>The first pilot is intentionally narrow: one channel, one workflow, one measurable handoff. Good fits include crypto infrastructure, fintech operations, founder-led agencies, support teams, and partner onboarding desks that already use Telegram for business.</p><div class="proof"><p>The goal is not to replace judgment. The goal is to remove repetitive first-line handling and deliver better context to the person who decides.</p></div></div><aside class="price" aria-label="Pilot pricing"><strong>Managed pilot</strong><div class="price-number">$1,000 <span>/ month</span></div><p>One scoped operator workflow, launched in 7 days.</p><ul><li>Private bot and runtime setup</li><li>Workflow prompt and guardrails</li><li>Lead or ticket summary format</li><li>Human handoff path</li><li>Weekly tuning during the pilot</li></ul></aside></div></section>
+      <section class="band"><div class="inner split"><div><h2>How the pilot runs</h2><div class="step"><span class="num">1</span><div><strong>Scope the workflow</strong><p>Pick the one thread type that wastes time or loses leads: onboarding, support triage, partner requests, booking, or status checks.</p></div></div><div class="step"><span class="num">2</span><div><strong>Connect only what is needed</strong><p>Telegram first, then optional Gmail, Calendar, GitHub, Slack, web browser, Sheets, or CRM handoff depending on the job.</p></div></div><div class="step"><span class="num">3</span><div><strong>Ship with receipts</strong><p>Every important action is visible in Telegram. Humans stay in charge of judgment, spend, posting, and commitments.</p></div></div></div><div><h2>What success means</h2><p>By the end of the first month, the operator should reduce repeated manual replies, improve response time, and create structured handoffs that are good enough for the team to keep paying for.</p><div class="actions"><a class="button primary" style="background: var(--accent); border-color: var(--accent); color: white;" href="https://t.me/Magnus_Mueller">Start on Telegram</a><a class="button" style="border-color: var(--accent); color: var(--accent-dark); background: white;" href="https://github.com/browser-use/bux/issues/new?template=managed-pilot.yml">Apply on GitHub</a><a class="button" style="border-color: var(--accent); color: var(--accent-dark); background: white;" href="managed-pilot-demo.html">Demo transcript</a><a class="button" style="border-color: var(--accent); color: var(--accent-dark); background: white;" href="managed-pilot-partners.html">Partner offer</a><a class="button" style="border-color: var(--accent); color: var(--accent-dark); background: white;" href="managed-pilot-terms.html">Pilot terms</a><a class="button" style="border-color: var(--accent); color: var(--accent-dark); background: white;" href="managed-pilot-playbook.html">Pilot playbook</a><a class="button" style="border-color: var(--accent); color: var(--accent-dark); background: white;" href="index.html">Back to Bux</a></div></div></div></section>
     </main>
 
-    <footer>
-      <div class="inner">
-        Bux is open source at <a href="https://github.com/browser-use/bux">github.com/browser-use/bux</a>.
-      </div>
-    </footer>
+    <footer><div class="inner">Bux is open source at <a href="https://github.com/browser-use/bux">github.com/browser-use/bux</a>.</div></footer>
   </body>
 </html>
