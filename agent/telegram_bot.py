@@ -287,7 +287,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
 # MarkdownV2 + chunking helpers — moved to bot/markdown.py.
 # Re-exported here so internal callers keep working unchanged.
 # ---------------------------------------------------------------------------
-from bot.markdown import (  # noqa: E402
+from bot.markdown import (  # noqa: E402, F401
     _MDV2_ESCAPE,
     _MDV2_SPECIALS,
     _STEP_SEPARATOR,
@@ -481,7 +481,7 @@ def _render_final_view(
     return steps_md + "\n\n" + final_md
 
 
-from bot.markdown import _chunk_for_telegram, _find_split_point  # noqa: E402
+from bot.markdown import _chunk_for_telegram, _find_split_point  # noqa: E402, F401
 
 
 def _parse_command(text: str) -> tuple[str | None, str]:

@@ -15,30 +15,20 @@ if (params.get("dev") === "1") localStorage.buxMiniAppDev = "1";
 const initData = tg?.initData || (localStorage.buxMiniAppDev === "1" ? "dev" : "");
 const app = document.querySelector("#app");
 const toastEl = document.querySelector("#toast");
-const STORE_KEY = "buxMiniAppConceptLab:v7";
-const CONCEPT_COUNT = 20;
+const STORE_KEY = "buxMiniAppGoalGameLab:v1";
+const CONCEPT_COUNT = 10;
 
 const CONCEPTS = [
-  ["clean-scroll", "Clean Scroll", "reel", "The base vertical feed: full media visible, text separate, buttons below."],
-  ["midnight-scroll", "Midnight Scroll", "reel", "Dark, high-contrast reel for image-heavy cards."],
-  ["paper-scroll", "Paper Scroll", "reel", "Warm editorial cards with quieter controls."],
-  ["neon-scroll", "Neon Scroll", "reel", "Sharper color and stronger action hierarchy."],
-  ["overview-scroll", "Overview First", "overview", "Title overview first, then tap into the same full scroll card."],
-  ["compact-scroll", "Compact Scroll", "reel", "Less chrome, more cards per minute."],
-  ["big-chat-scroll", "Big Chat Scroll", "reel", "The v7 direction: big heading, small explanation, readable actions."],
-  ["mail-scroll", "Mail Scroll", "reel", "The v9 direction translated into one-card vertical scrolling."],
-  ["glass-scroll", "Glass Scroll", "reel", "Soft translucent cards over a calm background."],
-  ["command-scroll", "Command Scroll", "reel", "Operator-style cards with strong status labels."],
-  ["poster-scroll", "Poster Scroll", "reel", "For real generated posters: preserve the full image, never crop text."],
-  ["minimal-scroll", "Minimal Scroll", "reel", "Almost no visual noise, optimized for trust and legibility."],
-  ["stack-scroll", "Stack Scroll", "reel", "Physical card feeling without breaking the scroll model."],
-  ["focus-scroll", "Focus Scroll", "reel", "One clear recommendation at a time with generous whitespace."],
-  ["arcade-scroll", "Arcade Scroll", "reel", "Playful colors while keeping the same safe approval contract."],
-  ["mono-scroll", "Mono Scroll", "reel", "Technical black-and-white version for dense work cards."],
-  ["sunrise-scroll", "Sunrise Scroll", "reel", "Bright daily-brief treatment for morning cards."],
-  ["split-scroll", "Split Scroll", "reel", "Image and explanation stay separated, tuned for media cards."],
-  ["dense-scroll", "Dense Scroll", "reel", "Tighter feed for rapid triage without losing button readability."],
-  ["premium-scroll", "Premium Scroll", "reel", "Polished concierge treatment with the same vertical interaction."],
+  ["goal-quest", "Goal Quest", "quest", "Turn every useful approval into XP toward a named personal goal."],
+  ["boss-deck", "Boss Deck", "deck", "A Tinder-like daily boss fight: swipe through the highest-impact cards first."],
+  ["streak-coach", "Streak Coach", "coach", "Protect a daily streak by shipping one meaningful AI-prepared action."],
+  ["skill-tree", "Skill Tree", "roadmap", "Unlock goal branches as the agent learns which suggestions you accept."],
+  ["momentum-rings", "Momentum Rings", "habit", "Close rings for distribution, inbox, health, and shipping with real agent work."],
+  ["mission-control", "Mission Control", "command", "A game dashboard for level, open quests, streak, sources, and rewards."],
+  ["loot-picker", "Loot Picker", "arcade", "A playful picker where each AI card is a possible reward for your goals."],
+  ["one-tap-win", "One Tap Win", "onebutton", "Remove friction: one giant approval button when the agent already did the work."],
+  ["season-pass", "Season Pass", "sports", "Weekly scoreboard for progress, approvals, skipped cards, and unlocked goals."],
+  ["mission-card", "Mission Card", "mission", "One cinematic card per mission with a clear win condition and approval boundary."],
 ].map(([slug, name, layout, line], index) => ({
   id: index + 1,
   slug,
@@ -50,154 +40,154 @@ const CONCEPTS = [
 
 const DEMO_CARDS = [
   {
-    id: "demo-gmail",
-    title: "Draft replies for the three people waiting on you",
-    why: "A fast inbox sweep can turn vague guilt into approval-ready reply cards.",
-    source: "miniapp-demo:gmail",
-    source_label: "Gmail",
+    id: "goal-startup",
+    title: "Win the startup day: approve the 3 highest-leverage moves",
+    why: "Agency already drafted the actions. Each approval adds XP toward more users and revenue.",
+    source: "miniapp-game:startup",
+    source_label: "Startup goal",
     importance: "high",
-    buttons: ["Draft all replies", "Show only VIPs", "Monitor every 30 min"],
+    buttons: ["Start daily quest", "Show top 3", "Autopilot private work"],
     blocks: [
-      { title: "What the agent checks", body: "Unanswered threads, VIP senders, and anything with a clear ask." },
-      { title: "Draft variants", body: "Short reply, warmer reply, and direct next-step reply." },
-      { title: "Safety", body: "Nothing sends without approval." },
-    ],
-    category: "inbox",
-  },
-  {
-    id: "demo-slack",
-    title: "Find who is blocked on you in Slack",
-    why: "Scan mentions, DMs, and hot channels, then produce a tiny unblock list.",
-    source: "miniapp-demo:slack",
-    source_label: "Slack",
-    importance: "high",
-    buttons: ["Find blockers", "Draft answers", "Daily digest"],
-    blocks: [
-      { title: "Signals", body: "Direct asks, repeated pings, deadlines, and names attached to blockers." },
-      { title: "Output", body: "A short list of people, channel, exact ask, and proposed reply." },
-      { title: "Cadence", body: "Optional daily digest instead of constant pings." },
-    ],
-    category: "people",
-  },
-  {
-    id: "demo-github",
-    title: "Watch the risky PR until CI is green",
-    why: "Turn review requests and failing checks into a single ship-or-fix card.",
-    source: "miniapp-demo:github",
-    source_label: "GitHub",
-    importance: "med",
-    buttons: ["Watch CI", "Review diff", "Tell me when green"],
-    blocks: [
-      { title: "Watch CI", body: "Track checks and only interrupt for failures or merge readiness." },
-      { title: "Review diff", body: "Summarize risky files, missing tests, and likely regressions." },
-      { title: "When green", body: "Send one card when the branch is safe to merge." },
-    ],
-    category: "code",
-  },
-  {
-    id: "demo-growth",
-    title: "Find five warm distribution openings",
-    why: "Discover real people, posts, launches, and replies worth acting on.",
-    source: "miniapp-demo:growth",
-    source_label: "Growth",
-    importance: "high",
-    buttons: ["Find openings", "Draft outreach", "Make launch list"],
-    blocks: [
-      { title: "Good opening", body: "A named person or channel with active intent, not generic outreach." },
-      { title: "Draft style", body: "Short, specific, and tied to the visible context." },
-      { title: "Next batch", body: "Create ten more only after learning from taps and skips." },
+      { title: "Win condition", body: "Approve three concrete actions that move distribution, activation, or trust." },
+      { title: "Agent work", body: "Research, drafts, diffs, and assets happen before the card. You approve only the visible boundary." },
+      { title: "Reward", body: "+180 XP, streak protection, and a sharper next batch." },
     ],
     category: "growth",
   },
   {
-    id: "demo-customers",
-    title: "Spot customers who might churn this week",
-    why: "Look for slow replies, unresolved bugs, usage drops, and frustrated messages.",
-    source: "miniapp-demo:customers",
-    source_label: "Customers",
+    id: "goal-inbox",
+    title: "Clear the people waiting on you without opening inboxes",
+    why: "The agent finds named asks, drafts replies, and turns your inbox into approve-or-skip cards.",
+    source: "miniapp-game:inbox",
+    source_label: "Inbox quest",
     importance: "high",
-    buttons: ["Start radar", "Find churn risk", "Draft save plan"],
+    buttons: ["Draft replies", "Only VIPs", "Run every 30 min"],
     blocks: [
-      { title: "Risk signs", body: "Complaint language, silence, unresolved bugs, and leadership escalation." },
-      { title: "Recovery", body: "Name the customer, symptom, and safest next contact." },
-      { title: "Boundary", body: "Drafts are approval-only before sending." },
+      { title: "What counts", body: "A person, thread, exact ask, and a draft that can be sent after approval." },
+      { title: "No slop", body: "Spam and FYIs are hidden. Generic monitor cards do not score." },
+      { title: "Reward", body: "+140 XP per useful reply approval." },
+    ],
+    category: "inbox",
+  },
+  {
+    id: "goal-slack",
+    title: "Unblock one teammate before the thread goes stale",
+    why: "Fast internal replies keep projects moving and preserve your founder leverage.",
+    source: "miniapp-game:slack",
+    source_label: "People quest",
+    importance: "high",
+    buttons: ["Find blocker", "Draft answer", "Daily people radar"],
+    blocks: [
+      { title: "Signal", body: "DMs, mentions, repeated pings, and threads where your answer changes the outcome." },
+      { title: "Approval boundary", body: "Agency drafts the answer and waits before anything visible is sent." },
+      { title: "Combo", body: "Two people unblocked in a day extends the relationship streak." },
+    ],
+    category: "people",
+  },
+  {
+    id: "goal-github",
+    title: "Ship the safest PR instead of staring at the queue",
+    why: "The agent checks CI, risky files, and missing tests, then gives you one merge/fix decision.",
+    source: "miniapp-game:github",
+    source_label: "Code quest",
+    importance: "med",
+    buttons: ["Pick safest PR", "Review diff", "Watch until green"],
+    blocks: [
+      { title: "Scoring", body: "High confidence, low blast radius, and user-visible value score highest." },
+      { title: "Agent work", body: "Inspect the diff and logs before asking for the merge tap." },
+      { title: "Reward", body: "+120 ship XP, plus a reliability badge when tests pass." },
+    ],
+    category: "code",
+  },
+  {
+    id: "goal-distribution",
+    title: "Find one warm distribution opening and draft the move",
+    why: "Growth becomes a game when every card is a named person, post, community, or launch window.",
+    source: "miniapp-game:growth",
+    source_label: "Growth quest",
+    importance: "high",
+    buttons: ["Find opening", "Draft outreach", "Make launch list"],
+    blocks: [
+      { title: "Good card", body: "Names the platform, exact object, and the action that helps your goal." },
+      { title: "Bad card", body: "Generic 'monitor growth channels' suggestions score zero." },
+      { title: "Reward", body: "+160 XP when the card is specific enough to approve in 2 seconds." },
+    ],
+    category: "growth",
+  },
+  {
+    id: "goal-customer",
+    title: "Save one customer risk before it becomes churn",
+    why: "Agency watches complaints, unresolved bugs, silence, and usage drops, then drafts the safest next step.",
+    source: "miniapp-game:customers",
+    source_label: "Customer quest",
+    importance: "high",
+    buttons: ["Find risk", "Draft save plan", "Start radar"],
+    blocks: [
+      { title: "Risk signs", body: "Complaint language, unresolved incidents, billing pain, or leadership escalation." },
+      { title: "Output", body: "Customer, symptom, suggested contact, and the draft or fix already prepared." },
+      { title: "Reward", body: "+200 XP because retention beats vanity activity." },
     ],
     category: "customer",
   },
   {
-    id: "demo-calendar",
-    title: "Prep your next meeting like a chief of staff",
-    why: "A meeting card should include people, context, decisions, and suggested questions.",
-    source: "miniapp-demo:calendar",
-    source_label: "Calendar",
+    id: "goal-health",
+    title: "Protect your energy while the agent handles the noise",
+    why: "Not every win is external. The agent can batch low-value interruptions and surface only true blockers.",
+    source: "miniapp-game:focus",
+    source_label: "Focus quest",
     importance: "med",
-    buttons: ["Prep next meeting", "Find last context", "Daily agenda"],
-    blocks: [
-      { title: "Prep packet", body: "Attendees, prior threads, docs, open decisions, and likely objections." },
-      { title: "Question list", body: "Three questions that change the outcome of the meeting." },
-      { title: "Follow-up", body: "Draft the recap after the meeting if approved." },
-    ],
-    category: "calendar",
-  },
-  {
-    id: "demo-brief",
-    title: "Create a 9am startup command brief",
-    why: "One daily digest for metrics, blockers, launches, risky PRs, and customer fires.",
-    source: "miniapp-demo:brief",
-    source_label: "Daily Brief",
-    importance: "med",
-    buttons: ["Set 9am brief", "Show sample", "Pick sources"],
-    blocks: [
-      { title: "Sections", body: "Money, users, bugs, shipping, people, and risks." },
-      { title: "Format", body: "Cards, not a wall of text." },
-      { title: "Schedule", body: "PT morning brief, with quiet self-pacing between runs." },
-    ],
-    category: "ops",
-  },
-  {
-    id: "demo-quality",
-    title: "Turn bugs and flaky checks into a fix queue",
-    why: "The best monitoring card names the failure, likely cause, and next safe action.",
-    source: "miniapp-demo:quality",
-    source_label: "Quality",
-    importance: "med",
-    buttons: ["Find next fix", "Watch failures", "Make bug queue"],
-    blocks: [
-      { title: "Inputs", body: "Failing tests, bug reports, incidents, and noisy alerts." },
-      { title: "Ranking", body: "User pain, shipping risk, and confidence." },
-      { title: "Next action", body: "Open a branch, draft a bug report, or monitor quietly." },
-    ],
-    category: "quality",
-  },
-  {
-    id: "demo-focus",
-    title: "Protect two hours of deep work",
-    why: "Batch low-value replies and only interrupt for named blockers or escalations.",
-    source: "miniapp-demo:focus",
-    source_label: "Focus",
-    importance: "low",
     buttons: ["Start focus block", "Batch replies", "Only urgent"],
     blocks: [
-      { title: "Quiet mode", body: "Watch incoming surfaces without interrupting every time." },
-      { title: "Urgent means", body: "Named blocker, production issue, customer escalation, or time-sensitive decision." },
-      { title: "Afterward", body: "Summarize what was ignored, drafted, or needs approval." },
+      { title: "Quiet mode", body: "Watch connected surfaces without interrupting unless a named blocker appears." },
+      { title: "End state", body: "A recap of what was ignored, drafted, or needs approval." },
+      { title: "Reward", body: "+90 focus XP and streak credit for staying healthy while shipping." },
     ],
     category: "focus",
   },
   {
-    id: "demo-launch",
-    title: "Run a launch from idea to reaction follow-up",
-    why: "Handle copy, checklists, posting, monitoring, and the next reply.",
-    source: "miniapp-demo:launch",
-    source_label: "Launch",
+    id: "goal-meeting",
+    title: "Walk into the next meeting with a prep packet ready",
+    why: "The agent can fetch the people, history, docs, decisions, and likely objections before you join.",
+    source: "miniapp-game:calendar",
+    source_label: "Calendar quest",
+    importance: "med",
+    buttons: ["Prep next meeting", "Find last context", "Daily agenda"],
+    blocks: [
+      { title: "Packet", body: "Attendees, prior threads, open decisions, and three questions that change the outcome." },
+      { title: "Afterward", body: "Draft the recap as the follow-up card." },
+      { title: "Reward", body: "+110 XP when you approve a packet before the meeting starts." },
+    ],
+    category: "calendar",
+  },
+  {
+    id: "goal-launch",
+    title: "Run the launch loop from post to replies to follow-up",
+    why: "Launch work becomes a season: copy, assets, posting approval, monitoring, and the next response card.",
+    source: "miniapp-game:launch",
+    source_label: "Launch season",
     importance: "high",
     buttons: ["Plan launch", "Draft copy", "Watch reactions"],
     blocks: [
-      { title: "Launch plan", body: "Channels, assets, blockers, owner approvals, and timing." },
-      { title: "Copy", body: "X, LinkedIn, email, community, and customer follow-up variants." },
-      { title: "Reaction loop", body: "Replies, mentions, signups, and support issues become new cards." },
+      { title: "Season pass", body: "Every accepted card unlocks the next launch step automatically." },
+      { title: "Boundary", body: "Publishing and replies wait for approval; research and drafts happen autonomously." },
+      { title: "Reward", body: "+220 XP for visible launch momentum." },
     ],
     category: "launch",
+  },
+  {
+    id: "goal-daily-brief",
+    title: "Start the 9am command brief and keep the feed alive",
+    why: "If there are no pending cards, Agency should create useful goal-grounded cards or ask one goal question.",
+    source: "miniapp-game:brief",
+    source_label: "Daily brief",
+    importance: "med",
+    buttons: ["Set 9am brief", "Show sample", "Pick sources"],
+    blocks: [
+      { title: "Sections", body: "Money, users, bugs, shipping, people, and risks." },
+      { title: "Rule", body: "Empty feed is not a steady state. Generate useful cards or goal-lock questions." },
+      { title: "Reward", body: "+100 XP for keeping the system alive without spam." },
+    ],
+    category: "ops",
   },
 ];
 
@@ -397,9 +387,9 @@ function render() {
 function renderHub() {
   return `
     <section class="hub-hero">
-      <p class="eyebrow">bux concept lab</p>
-      <h1>20 Scroll Reel variations.</h1>
-      <p>One core interaction: vertical cards with real media preserved, readable text, and approval buttons below.</p>
+      <p class="eyebrow">agency goal game lab</p>
+      <h1>10 ways to make goals addictive.</h1>
+      <p>Ten focused Mini App prototypes for turning AI-suggested cards into progress, streaks, levels, and one-tap wins.</p>
       <div class="hub-stats">
         <span>${state.cards.length} cards loaded</span>
         <span>${Object.keys(groupByCategory()).length} source groups</span>
@@ -423,7 +413,7 @@ function renderLabNav(concept) {
   const next = concept.id === CONCEPT_COUNT ? 1 : concept.id + 1;
   return `
     <nav class="lab-nav" aria-label="Mini App concepts">
-      <a class="lab-home" href="${hubPath()}">All 20</a>
+      <a class="lab-home" href="${hubPath()}">All 10</a>
       <a href="${conceptPath(prev)}">Prev ${prev}</a>
       <span>${concept.id} / ${CONCEPT_COUNT}</span>
       <a href="${conceptPath(next)}">Next ${next}</a>
@@ -444,7 +434,27 @@ function renderConcept(concept) {
         <h1>${escapeHtml(concept.name)}</h1>
         <p>${escapeHtml(concept.line)}</p>
       </header>
+      ${renderGameStats(concept)}
+      ${renderPreviewStrip(ordered, card)}
       ${renderer(concept, ordered, card)}
+    </section>
+  `;
+}
+
+function renderGameStats(concept) {
+  const accepted = Object.values(state.local.decisions).filter((item) => item.status === "started").length;
+  const skipped = Object.values(state.local.decisions).filter((item) => item.status === "skipped").length;
+  const xp = Number(state.local.points || 0);
+  const level = Math.max(1, Math.floor(xp / 500) + 1);
+  const next = level * 500;
+  const pct = Math.min(100, Math.round((xp % 500) / 5));
+  return `
+    <section class="game-stats" style="--accent:${concept.accent}">
+      <div><span>Level</span><strong>${level}</strong></div>
+      <div><span>XP</span><strong>${xp}/${next}</strong></div>
+      <div><span>Accepted</span><strong>${accepted}</strong></div>
+      <div><span>Skipped</span><strong>${skipped}</strong></div>
+      <i style="--pct:${pct}%"></i>
     </section>
   `;
 }

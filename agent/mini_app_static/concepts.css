@@ -236,6 +236,61 @@ h2 {
   font-size: 12px;
 }
 
+.game-stats {
+  position: relative;
+  max-width: 760px;
+  margin: 0 auto 12px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid rgba(23, 23, 23, 0.10);
+  border-radius: 26px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.10);
+  overflow: hidden;
+  backdrop-filter: blur(18px);
+}
+
+.game-stats div {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  padding: 10px 11px;
+  border-radius: 18px;
+  background: rgba(24, 24, 27, 0.06);
+}
+
+.game-stats span {
+  color: #68635d;
+  font-size: 10px;
+  font-weight: 950;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.game-stats strong {
+  min-width: 0;
+  color: #111827;
+  font-size: 18px;
+  font-weight: 950;
+  line-height: 1;
+  overflow-wrap: anywhere;
+}
+
+.game-stats > i {
+  position: absolute;
+  left: 0;
+  right: auto;
+  bottom: 0;
+  width: var(--pct);
+  height: 5px;
+  background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent), #111 28%));
+  box-shadow: 0 0 24px color-mix(in srgb, var(--accent), transparent 22%);
+}
+
 .card-preview {
   max-width: 760px;
   margin: 0 auto 12px;
@@ -1878,6 +1933,19 @@ h2 {
 
   .concept-title p {
     font-size: 12px;
+  }
+
+  .game-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding: 7px;
+  }
+
+  .game-stats div {
+    padding: 9px;
+  }
+
+  .game-stats strong {
+    font-size: 16px;
   }
 
   .concept-grid {
