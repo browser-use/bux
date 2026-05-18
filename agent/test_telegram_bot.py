@@ -176,6 +176,69 @@ class GoalCommandRoutingTest(unittest.TestCase):
         start_goal.assert_called_once()
         self.assertEqual(start_goal.call_args.args[-1], "/goal improve Agency UI")
 
+    def test_goal_relay_sends_codex_final_answer_events(self) -> None:
+        sent: list[tuple[int, str, dict]] = []
+
+        class FakeBot:
+            def send(self, chat_id: int, text: str, **kwargs) -> None:
+                sent.append((chat_id, text, kwargs))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rollout = Path(tmp) / "rollout.jsonl"
+            rollout.write_text(
+                json.dumps(
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "agent_message",
+                            "phase": "final_answer",
+                            "message": "1 2 3 4 5 6 7 8 9 10",
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            relay = telegram_bot.GoalTmuxRelay(FakeBot(), "slug", 100, 123, "tmux-name")
+            relay._rollout_path = rollout
+            relay._rollout_pos = 0
+
+            relay._relay_rollout_events()
+
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][0], 100)
+        self.assertEqual(sent[0][1], "1 2 3 4 5 6 7 8 9 10")
+        self.assertEqual(sent[0][2]["thread_id"], 123)
+
+    def test_goal_start_message_mentions_cancel(self) -> None:
+        sent: list[str] = []
+        bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
+        bot.state = {"offset": 0, "agents": {}, "codex_settings": {}, "owners": {}, "goal_tmux": {}}
+        bot.setup_token = None
+        bot._username = "bux_bot"
+        bot.react = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+        bot.typing = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+        bot.send = lambda _chat, text, **_kwargs: sent.append(text)  # type: ignore[method-assign]
+
+        with (
+            mock.patch.object(telegram_bot, "load_allow", return_value={100}),
+            mock.patch.object(telegram_bot, "save_state"),
+            mock.patch.object(telegram_bot, "_get_shell_session", return_value=None),
+            mock.patch.object(telegram_bot, "_goal_state_for", return_value=None),
+            mock.patch.object(telegram_bot, "_start_goal_tmux"),
+            mock.patch.object(telegram_bot, "_ensure_codex_goal_feature_enabled"),
+        ):
+            bot.handle(
+                {
+                    "chat": {"id": 100, "type": "private"},
+                    "from": {"id": 55, "username": "Magnus_Mueller"},
+                    "message_id": 123,
+                    "text": "/goal improve Agency UI",
+                }
+            )
+
+        self.assertIn("Use `/cancel` to stop it.", sent[-1])
+
 
 class MiniAppLaunchTest(unittest.TestCase):
     def test_public_url_can_be_read_from_tg_env_when_process_env_is_stale(self) -> None:
