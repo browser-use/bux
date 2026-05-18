@@ -50,6 +50,7 @@ The pilot is not meant to replace judgment or create an unsupervised sales bot. 
 ## Managed Telegram AI Operator
 
 Focused page: https://browser-use.github.io/bux/telegram-ai-operator.html
+n8n-focused page: https://browser-use.github.io/bux/n8n-telegram-ai-operator.html
 
 Use cases:
 
