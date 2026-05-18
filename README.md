@@ -28,6 +28,7 @@ More launch links:
 - [Managed Telegram AI operator](https://browser-use.github.io/bux/telegram-ai-operator.html)
 - [Telegram AI operator for agencies](https://browser-use.github.io/bux/telegram-ai-operator-agencies.html)
 - [n8n Telegram AI operator](https://browser-use.github.io/bux/n8n-telegram-ai-operator.html)
+- [Telegram AI operator for crypto and fintech teams](https://browser-use.github.io/bux/telegram-operator-crypto.html)
 - [Managed pilot for AI automation agencies](https://browser-use.github.io/bux/managed-pilot-partners.html)
 - [Managed pilot proof report demo](https://browser-use.github.io/bux/managed-pilot-proof-report.html)
 - [Managed pilot terms](https://browser-use.github.io/bux/managed-pilot-terms.html)
@@ -89,6 +90,8 @@ The [managed Telegram AI operator page](https://browser-use.github.io/bux/telegr
 The [Telegram AI operator for agencies page](https://browser-use.github.io/bux/telegram-ai-operator-agencies.html) gives AI automation agencies a managed implementation path for one Telegram-heavy client workflow.
 
 The [n8n Telegram AI operator page](https://browser-use.github.io/bux/n8n-telegram-ai-operator.html) gives n8n builders a managed Telegram-first operator that hands off cleanly into existing workflows and human approvals.
+
+The [Telegram AI operator for crypto and fintech teams](https://browser-use.github.io/bux/telegram-operator-crypto.html) packages the same managed pilot for partner, support, ecosystem, and ops teams that triage Telegram requests by hand.
 
 The [partner pilot page](https://browser-use.github.io/bux/managed-pilot-partners.html) packages the same $1,000/month workflow as a delivery layer for AI automation agencies with Telegram-heavy clients.
 
