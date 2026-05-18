@@ -145,39 +145,21 @@ class LoginRoutingTest(unittest.TestCase):
 
 
 class GoalCommandRoutingTest(unittest.TestCase):
-    def test_goal_command_starts_interactive_codex_session(self) -> None:
+    def test_goal_command_starts_durable_codex_goal_session(self) -> None:
         bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
-        bot.state = {"offset": 0, "agents": {}, "codex_settings": {}, "owners": {}}
+        bot.state = {"offset": 0, "agents": {}, "codex_settings": {}, "owners": {}, "goal_tmux": {}}
         bot.setup_token = None
         bot._username = "bux_bot"
         bot.react = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
         bot.typing = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
-
-        sent_to_pty: list[str] = []
-
-        class InstantThread:
-            def __init__(self, target, **_kwargs):
-                self.target = target
-
-            def start(self):
-                self.target()
-
-        sess = mock.Mock()
-        sess.alive = True
-        sess.send_input.side_effect = lambda text: sent_to_pty.append(text) or True
+        bot.send = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
 
         with (
             mock.patch.object(telegram_bot, "load_allow", return_value={100}),
             mock.patch.object(telegram_bot, "save_state"),
             mock.patch.object(telegram_bot, "_get_shell_session", return_value=None),
-            mock.patch.object(telegram_bot, "ShellSession", return_value=sess) as shell_session,
-            mock.patch.object(telegram_bot.threading, "Thread", InstantThread),
-            mock.patch.object(telegram_bot.time, "sleep", return_value=None),
-            mock.patch.object(
-                telegram_bot,
-                "_codex_interactive_command_for",
-                return_value="codex --no-alt-screen resume thread",
-            ),
+            mock.patch.object(telegram_bot, "_goal_state_for", return_value=None),
+            mock.patch.object(telegram_bot, "_start_goal_tmux") as start_goal,
             mock.patch.object(telegram_bot, "_ensure_codex_goal_feature_enabled") as ensure_goal,
         ):
             bot.handle(
@@ -191,13 +173,8 @@ class GoalCommandRoutingTest(unittest.TestCase):
 
         self.assertEqual(bot.state["agents"]["100_main"], "codex")
         ensure_goal.assert_called_once()
-        shell_session.assert_called_once()
-        self.assertEqual(
-            shell_session.call_args.kwargs["initial_cmd"],
-            "codex --no-alt-screen resume thread",
-        )
-        sess.start.assert_called_once()
-        self.assertEqual(sent_to_pty, ["/goal improve Agency UI"])
+        start_goal.assert_called_once()
+        self.assertEqual(start_goal.call_args.args[-1], "/goal improve Agency UI")
 
 
 class MiniAppLaunchTest(unittest.TestCase):
