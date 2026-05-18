@@ -71,6 +71,7 @@ TG_ENV = Path("/etc/bux/tg.env")
 BOX_ENV = Path("/etc/bux/env")
 BROWSER_ENV = Path("/home/bux/.claude/browser.env")
 OPENAI_ENV = Path("/home/bux/.secrets/openai.env")
+CODEX_CONFIG = Path(os.environ.get("CODEX_CONFIG", "/home/bux/.codex/config.toml"))
 ALLOWED_FILE = Path("/etc/bux/tg-allowed.txt")
 STATE_FILE = Path("/etc/bux/tg-state.json")
 QUEUE_FILE = Path("/etc/bux/tg-queue.json")
@@ -1065,6 +1066,38 @@ def save_state(s: dict) -> None:
         STATE_FILE.chmod(0o600)
     except Exception:
         pass
+
+
+def _ensure_codex_goal_feature_enabled(config_path: Path = CODEX_CONFIG) -> bool:
+    """Enable Codex's native /goal feature for the bux user config."""
+    try:
+        text = config_path.read_text() if config_path.exists() else ""
+        if re.search(r"(?m)^[ \t]*goals[ \t]*=[ \t]*true[ \t]*(?:#.*)?$", text):
+            return False
+        if re.search(r"(?m)^[ \t]*goals[ \t]*=", text):
+            updated = re.sub(
+                r"(?m)^[ \t]*goals[ \t]*=.*$",
+                "goals = true",
+                text,
+                count=1,
+            )
+        elif re.search(r"(?m)^[ \t]*\[features\][ \t]*$", text):
+            updated = re.sub(
+                r"(?m)^([ \t]*\[features\][ \t]*$)",
+                "\\1\ngoals = true",
+                text,
+                count=1,
+            )
+        else:
+            suffix = "\n" if text and not text.endswith("\n") else ""
+            updated = f"{text}{suffix}\n[features]\ngoals = true\n"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(updated)
+        config_path.chmod(0o644)
+        return True
+    except Exception:
+        LOG.exception("failed to enable Codex goals feature")
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -5122,12 +5155,20 @@ class Bot:
                 thread_id=thread_id,
             )
             return
-        # `/goal` is intentionally NOT intercepted by the bot. It flows
-        # through as a normal turn input — codex with `[features] goals
-        # = true` runs its native plan→act→test loop; claude treats it
-        # as a goal-shaped prompt and the system prompt's "act on goal"
-        # doctrine drives behavior. The agent itself saves goals to
-        # /opt/bux/repo/private/goals.md when it notices a new one.
+        if cmd == "/goal":
+            if not arg.strip():
+                self.send(
+                    chat_id,
+                    "Use `/goal <what to work on>`.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
+            _set_agent_for(key, AGENT_CODEX, self.state)
+            _ensure_codex_goal_feature_enabled()
+            text = "/goal " + arg.strip()
+
         if cmd in ("/agency", "/miniapp"):
             if not owner or not _is_owner(sender, owner):
                 self.send(

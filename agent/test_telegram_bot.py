@@ -62,6 +62,22 @@ class CodexSettingsTest(unittest.TestCase):
 
         self.assertEqual(settings, {"model": "gpt-5.4"})
 
+    def test_codex_goal_feature_enablement_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "config.toml"
+            self.assertTrue(telegram_bot._ensure_codex_goal_feature_enabled(config))
+            self.assertIn("[features]\ngoals = true", config.read_text())
+            self.assertFalse(telegram_bot._ensure_codex_goal_feature_enabled(config))
+
+    def test_codex_goal_feature_is_inserted_into_existing_features_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "config.toml"
+            config.write_text("[features]\nother = true\n", encoding="utf-8")
+
+            self.assertTrue(telegram_bot._ensure_codex_goal_feature_enabled(config))
+
+            self.assertIn("[features]\ngoals = true\nother = true", config.read_text())
+
 
 class LoginRoutingTest(unittest.TestCase):
     def test_login_provider_binds_lane_even_when_already_connected(self) -> None:
@@ -126,6 +142,41 @@ class LoginRoutingTest(unittest.TestCase):
         _, kwargs = start_login.call_args
         self.assertNotIn("force", kwargs)
         self.assertTrue(kwargs["minimal_login_mode"])
+
+
+class GoalCommandRoutingTest(unittest.TestCase):
+    def test_goal_command_forces_codex_before_enqueue(self) -> None:
+        bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
+        bot.state = {"offset": 0, "agents": {}, "codex_settings": {}, "owners": {}}
+        bot.setup_token = None
+        bot._username = "bux_bot"
+        bot.react = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+        bot.typing = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+
+        enqueued: list[dict] = []
+
+        def fake_enqueue(_slug, job, _drain):
+            enqueued.append(job)
+            return 1
+
+        with (
+            mock.patch.object(telegram_bot, "load_allow", return_value={100}),
+            mock.patch.object(telegram_bot, "save_state"),
+            mock.patch.object(telegram_bot, "_enqueue", side_effect=fake_enqueue),
+            mock.patch.object(telegram_bot, "_ensure_codex_goal_feature_enabled") as ensure_goal,
+        ):
+            bot.handle(
+                {
+                    "chat": {"id": 100, "type": "private"},
+                    "from": {"id": 55, "username": "Magnus_Mueller"},
+                    "message_id": 123,
+                    "text": "/goal improve Agency UI",
+                }
+            )
+
+        self.assertEqual(bot.state["agents"]["100_main"], "codex")
+        ensure_goal.assert_called_once()
+        self.assertEqual(enqueued[0]["prompt"], "/goal improve Agency UI")
 
 
 class MiniAppLaunchTest(unittest.TestCase):
