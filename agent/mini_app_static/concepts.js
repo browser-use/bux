@@ -19,22 +19,25 @@ const STORE_KEY = "buxMiniAppGoalGameLab:v1";
 const CONCEPT_COUNT = 10;
 
 const CONCEPTS = [
-  ["goal-quest", "Goal Quest", "quest", "Turn every useful approval into XP toward a named personal goal."],
-  ["boss-deck", "Boss Deck", "deck", "A Tinder-like daily boss fight: swipe through the highest-impact cards first."],
-  ["streak-coach", "Streak Coach", "coach", "Protect a daily streak by shipping one meaningful AI-prepared action."],
-  ["skill-tree", "Skill Tree", "roadmap", "Unlock goal branches as the agent learns which suggestions you accept."],
-  ["momentum-rings", "Momentum Rings", "habit", "Close rings for distribution, inbox, health, and shipping with real agent work."],
-  ["mission-control", "Mission Control", "command", "A game dashboard for level, open quests, streak, sources, and rewards."],
-  ["loot-picker", "Loot Picker", "arcade", "A playful picker where each AI card is a possible reward for your goals."],
-  ["one-tap-win", "One Tap Win", "onebutton", "Remove friction: one giant approval button when the agent already did the work."],
-  ["season-pass", "Season Pass", "sports", "Weekly scoreboard for progress, approvals, skipped cards, and unlocked goals."],
-  ["mission-card", "Mission Card", "mission", "One cinematic card per mission with a clear win condition and approval boundary."],
-].map(([slug, name, layout, line], index) => ({
+  ["goal-quest", "Goal Quest", "quest", "A map of goal missions where every approval unlocks the next useful step.", "Pick one mission", "XP, streak shield, next quest", "Tap a quest node"],
+  ["boss-deck", "Boss Deck", "deck", "A Tinder-style boss fight that forces one high-leverage decision at a time.", "Swipe or tap a move", "Combo meter and boss damage", "Right = do, left = skip"],
+  ["streak-coach", "Streak Coach", "coach", "A calm coach that protects momentum without guilt-tripping missed days.", "Choose today's move", "Streak save and confidence", "Tap the coach card"],
+  ["skill-tree", "Skill Tree", "roadmap", "Accept cards to unlock branches like distribution, customers, health, and shipping.", "Unlock a branch", "New abilities and source scans", "Tap a branch"],
+  ["momentum-rings", "Momentum Rings", "habit", "Close bright progress rings for the goals that matter today.", "Close one ring", "Visible completion and new cards", "Tap to close"],
+  ["mission-control", "Mission Control", "command", "A Telegram-native cockpit for open cards, sources, level, and daily focus.", "Clear the queue", "Level-up and fewer stale cards", "Tap a command"],
+  ["loot-picker", "Loot Picker", "arcade", "A playful loot reveal where the reward is real agent work already prepared.", "Reveal a reward", "Useful card, not fake coins", "Tap to claim"],
+  ["one-tap-win", "One Tap Win", "onebutton", "The lowest-friction version: one giant approval when the agent did enough work.", "Approve the win", "Instant progress and clean feed", "One thumb tap"],
+  ["season-pass", "Season Pass", "sports", "A weekly season board for approvals, skipped cards, goal progress, and milestones.", "Win the week", "Milestones and progress tiers", "Tap a match"],
+  ["mission-card", "Mission Card", "mission", "A cinematic single-mission card with the boundary and payoff obvious in one glance.", "Launch the mission", "A new agent session or final result", "Tap launch"],
+].map(([slug, name, layout, line, loop, reward, gesture], index) => ({
   id: index + 1,
   slug,
   name,
   layout,
   line,
+  loop,
+  reward,
+  gesture,
   accent: palette(index),
 }));
 
@@ -259,9 +262,12 @@ function loadLocalState() {
       cards: Array.isArray(parsed.cards) ? parsed.cards : [],
       notes: parsed.notes || {},
       points: Number(parsed.points || 0),
+      combo: Number(parsed.combo || 0),
+      streak: Number(parsed.streak || 0),
+      lastReward: parsed.lastReward || "",
     };
   } catch {
-    return { decisions: {}, cards: [], notes: {}, points: 0 };
+    return { decisions: {}, cards: [], notes: {}, points: 0, combo: 0, streak: 0, lastReward: "" };
   }
 }
 
@@ -427,6 +433,8 @@ function renderConcept(concept) {
   const card = focusedCard(cards);
   const ordered = prioritizeCard(cards, card);
   const renderer = LAYOUTS[concept.layout] || renderGeneric;
+  const showGlobalStats = concept.id === 6;
+  const showPreview = [1, 4].includes(concept.id);
   return `
     <section class="concept-screen" style="--accent:${concept.accent}">
       <header class="concept-title">
@@ -434,16 +442,35 @@ function renderConcept(concept) {
         <h1>${escapeHtml(concept.name)}</h1>
         <p>${escapeHtml(concept.line)}</p>
       </header>
-      ${renderGameStats(concept)}
-      ${renderPreviewStrip(ordered, card)}
+      ${showGlobalStats ? renderGameStats(concept) : ""}
+      ${showPreview ? renderPreviewStrip(ordered, card) : ""}
       ${renderer(concept, ordered, card)}
+    </section>
+  `;
+}
+
+function renderGameLoop(concept, card) {
+  const combo = Number(state.local.combo || 0);
+  const streak = Number(state.local.streak || 0);
+  const reward = state.local.lastReward || concept.reward;
+  return `
+    <section class="game-loop-panel" style="--accent:${concept.accent}">
+      <div class="loop-orbit" aria-hidden="true"><span></span><span></span><span></span></div>
+      <div class="loop-copy">
+        <span>Core loop</span>
+        <strong>${escapeHtml(concept.loop)}</strong>
+        <p>${escapeHtml(clip(card.title, 96))}</p>
+      </div>
+      <div class="loop-pill"><span>Gesture</span><strong>${escapeHtml(concept.gesture)}</strong></div>
+      <div class="loop-pill"><span>Reward</span><strong>${escapeHtml(reward)}</strong></div>
+      <div class="loop-pill live"><span>Live</span><strong>${combo} combo · ${streak} streak</strong></div>
     </section>
   `;
 }
 
 function renderGameStats(concept) {
   const accepted = Object.values(state.local.decisions).filter((item) => item.status === "started").length;
-  const skipped = Object.values(state.local.decisions).filter((item) => item.status === "skipped").length;
+  const combo = Number(state.local.combo || 0);
   const xp = Number(state.local.points || 0);
   const level = Math.max(1, Math.floor(xp / 500) + 1);
   const next = level * 500;
@@ -453,7 +480,7 @@ function renderGameStats(concept) {
       <div><span>Level</span><strong>${level}</strong></div>
       <div><span>XP</span><strong>${xp}/${next}</strong></div>
       <div><span>Accepted</span><strong>${accepted}</strong></div>
-      <div><span>Skipped</span><strong>${skipped}</strong></div>
+      <div><span>Combo</span><strong>${combo}</strong></div>
       <i style="--pct:${pct}%"></i>
     </section>
   `;
@@ -621,10 +648,19 @@ function renderStories(concept, cards, card) {
 }
 
 function renderDeck(concept, cards, card) {
+  const bossHp = Math.max(8, 100 - (Number(state.local.points || 0) % 100));
+  const combo = Number(state.local.combo || 0);
   return `
     <div class="deck-shell">
+      <section class="boss-meter">
+        <div><span>Daily boss</span><strong>${escapeHtml(sourceName(card))}</strong></div>
+        <p><i style="--hp:${bossHp}%"></i></p>
+        <em>${bossHp}% HP · ${combo} combo</em>
+      </section>
+      <div class="deck-swipe-cues" aria-hidden="true"><span>Skip</span><strong>Drag card</strong><span>Do it</span></div>
       ${cards.slice(0, 4).reverse().map((item, index) => `
-        <article class="swipe-card concept-card" style="--stack:${index}" data-card-id="${item.id}">
+        <article class="swipe-card concept-card" style="--stack:${index}" data-card-id="${item.id}" data-swipe-card>
+          <div class="card-rarity">Impact ${pointsFor(item)}</div>
           ${renderVisual(item, "deck-visual")}
           <section>
             ${renderMeta(item)}
@@ -729,12 +765,12 @@ function renderMail(concept, cards, card) {
 function renderCommand(concept, cards, card) {
   return `
     <div class="command-grid">
-      <section class="stat-card"><span>Open</span><strong>${activeCards(100).length}</strong></section>
-      <section class="stat-card"><span>Points</span><strong>${state.local.points || 0}</strong></section>
-      <section class="stat-card"><span>Sources</span><strong>${Object.keys(groupByCategory()).length}</strong></section>
+      <section class="stat-card"><span>Open</span><strong>${activeCards(100).length}</strong><small>cards</small></section>
+      <section class="stat-card"><span>XP</span><strong>${state.local.points || 0}</strong><small>earned</small></section>
+      <section class="stat-card"><span>Sources</span><strong>${Object.keys(groupByCategory()).length}</strong><small>online</small></section>
       <article class="command-main concept-card" data-card-id="${card.id}">
         ${renderVisual(card, "command-visual")}
-        <div>${renderMeta(card)}<h2>${escapeHtml(card.title)}</h2><p>${escapeHtml(clip(card.why, 180))}</p></div>
+        <div>${renderMeta(card)}<h2>${escapeHtml(card.title)}</h2><p>${escapeHtml(clip(card.why, 180))}</p><div class="source-radar">${Object.entries(groupByCategory()).slice(0, 5).map(([key, items]) => `<span>${escapeHtml(categoryMeta({ category: key }).label)} ${items.length}</span>`).join("")}</div></div>
         ${renderActions(card)}
       </article>
       <section class="command-queue">
@@ -808,10 +844,12 @@ function renderArcade(concept, cards, card) {
   const choices = cardButtons(card);
   return `
     <div class="arcade-shell">
+      <div class="loot-marquee"><span>Rare useful work ready</span><strong>Claim one reward</strong></div>
       <div class="slot-window">
         ${choices.slice(0, 3).map((button) => `<span>${escapeHtml(button.text)}</span>`).join("")}
       </div>
       <article class="arcade-card concept-card" data-card-id="${card.id}">
+        <div class="rarity-badge">${card.importance === "high" ? "Legendary" : "Useful"} drop</div>
         ${renderVisual(card, "arcade-visual")}
         <h2>${escapeHtml(card.title)}</h2>
         <p>${escapeHtml(clip(card.why, 150))}</p>
@@ -896,9 +934,13 @@ function renderTable(concept, cards) {
 }
 
 function renderCoach(concept, cards, card) {
+  const days = [1, 2, 3, 4, 5, 6, 7];
+  const accepted = Object.values(state.local.decisions).filter((item) => item.status === "started").length;
+  const streak = Number(state.local.streak || 0);
   return `
     <article class="coach-shell concept-card" data-card-id="${card.id}">
-      <section class="coach-advice"><span>Recommended next move</span><h2>${escapeHtml(clip(card.title, 82))}</h2></section>
+      <section class="streak-calendar">${days.map((day) => `<span class="${day <= Math.min(7, accepted + 1) ? "lit" : ""}">${day}</span>`).join("")}</section>
+      <section class="coach-advice"><span>${streak || 1}-day momentum</span><h2>${escapeHtml(clip(card.title, 82))}</h2></section>
       <section><h3>Why now</h3><p>${escapeHtml(clip(card.why, 180))}</p></section>
       <section><h3>Evidence</h3>${renderBlocks(card)}</section>
       ${renderActions(card)}
@@ -956,12 +998,14 @@ function renderPlaylist(concept, cards, card) {
 }
 
 function renderQuest(concept, cards) {
+  const accepted = Object.values(state.local.decisions).filter((item) => item.status === "started").length;
   return `
     <div class="quest-ladder">
+      <section class="quest-boss"><span>Goal boss</span><strong>${Math.max(0, 3 - accepted)} nodes to next unlock</strong><p>Pick the mission that is easiest to approve now. Each yes opens sharper cards.</p></section>
       ${cards.slice(0, 7).map((card, index) => `
-        <article class="quest-step concept-card" data-card-id="${card.id}">
+        <article class="quest-step concept-card ${decisionFor(card) ? "claimed" : ""}" style="--i:${index}" data-card-id="${card.id}">
           <span>${index + 1}</span>
-          <div><strong>${escapeHtml(clip(card.title, 76))}</strong><p>+${pointsFor(card)} momentum</p></div>
+          <div><strong>${escapeHtml(clip(card.title, 76))}</strong><p>+${pointsFor(card)} XP · ${escapeHtml(sourceName(card))}</p></div>
           ${renderMiniActions(card)}
         </article>
       `).join("")}
@@ -1059,12 +1103,14 @@ function renderComic(concept, cards, card) {
 function renderRoadmap(concept, cards) {
   const groups = groupedCards(cards);
   const card = cards[0];
+  const accepted = Object.values(state.local.decisions).filter((item) => item.status === "started").length;
   return `
     <div class="roadmap-shell">
+      <header class="tree-progress"><strong>${accepted} unlocked</strong><span>Branches open when cards get accepted.</span></header>
       ${groups.slice(0, 4).map(([key, items], lane) => `
-        <section><h2>${escapeHtml(categoryMeta({ category: key }).label)}</h2>${items.slice(0, 3).map((card) => `
-          <article class="road-card concept-card" style="--lane:${lane}" data-card-id="${card.id}">${escapeHtml(clip(card.title, 70))}</article>
-        `).join("")}</section>
+        <section><h2>${escapeHtml(categoryMeta({ category: key }).label)}</h2><p>${items.length + 1} unlocks</p>${items.slice(0, 3).map((card, index) => `
+          <article class="road-card concept-card ${index > accepted ? "locked" : ""}" style="--lane:${lane}" data-card-id="${card.id}"><span>${index > accepted ? "Locked" : `+${pointsFor(card)}`}</span>${escapeHtml(clip(card.title, 70))}</article>
+        `).join("")}<article class="road-card concept-card locked"><span>Locked</span>Next ability opens after one accepted card.</article></section>
       `).join("")}
       ${card ? renderActions(card, "road-actions") : ""}
     </div>
@@ -1072,9 +1118,12 @@ function renderRoadmap(concept, cards) {
 }
 
 function renderHabit(concept, cards, card) {
+  const groups = groupedCards(cards).slice(0, 3);
+  const accepted = Object.values(state.local.decisions).filter((item) => item.status === "started").length;
   return `
     <article class="habit-shell concept-card" data-card-id="${card.id}">
-      <div class="rings"><span>7</span><span>14</span><span>30</span></div>
+      <div class="ring-score"><strong>${accepted}/3</strong><span>rings closed today</span></div>
+      <div class="rings">${groups.map(([key, items], index) => `<span style="--ring:${Math.min(96, 28 + items.length * 18 + index * 9)}%"><b>${escapeHtml(categoryMeta({ category: key }).short)}</b><em>${items.length}</em></span>`).join("")}</div>
       <h2>${escapeHtml(card.title)}</h2>
       <p>${escapeHtml(clip(card.why, 160))}</p>
       ${renderActions(card)}
@@ -1087,9 +1136,11 @@ function renderMarket(concept, cards) {
 }
 
 function renderOneButton(concept, cards, card) {
+  const reward = state.local.lastReward || `+${pointsFor(card)} XP`;
   return `
     <article class="one-button-shell concept-card" data-card-id="${card.id}">
       ${renderMeta(card)}
+      <span class="win-label">Ready-to-approve win · ${escapeHtml(reward)}</span>
       <h2>${escapeHtml(card.title)}</h2>
       <p>${escapeHtml(clip(card.why, 180))}</p>
       <button class="mega-button" data-action="start" data-card-id="${card.id}">${escapeHtml(primaryButton(card))}</button>
@@ -1188,7 +1239,7 @@ function renderMission(concept, cards, card) {
   return `
     <div class="mission-shell concept-card" data-card-id="${card.id}">
       <section class="orbit">${renderVisual(card, "mission-visual")}</section>
-      <section><span>Mission objective</span><h2>${escapeHtml(card.title)}</h2><p>${escapeHtml(clip(card.why, 160))}</p>${renderActions(card)}</section>
+      <section><span>Mission objective</span><h2>${escapeHtml(card.title)}</h2><p>${escapeHtml(clip(card.why, 160))}</p><div class="mission-criteria"><strong>Success</strong><span>${escapeHtml(primaryButton(card))}</span><strong>Payoff</strong><span>${pointsFor(card)} XP and a cleaner next card</span><strong>Boundary</strong><span>Agent waits before visible external action.</span></div>${renderActions(card)}</section>
     </div>
   `;
 }
@@ -1198,6 +1249,7 @@ function renderSports(concept, cards, card) {
     <article class="sports-shell concept-card" data-card-id="${card.id}">
       ${renderVisual(card, "sports-visual")}
       <h2>${escapeHtml(card.title)}</h2>
+      <div class="season-track">${cards.slice(0, 5).map((item, index) => `<span class="${decisionFor(item) ? "claimed" : ""}"><b>Tier ${index + 1}</b><em>${pointsFor(item)} XP</em></span>`).join("")}</div>
       <div class="stats"><span>Impact ${pointsFor(card)}</span><span>${escapeHtml(card.importance)}</span><span>${escapeHtml(sourceName(card))}</span></div>
       ${renderActions(card)}
     </article>
@@ -1409,6 +1461,9 @@ function decisionFor(card) {
 
 function markDecision(card, status, detail = "") {
   if (!card) return;
+  haptic(status === "started" ? "success" : "light");
+  const gained = status === "started" ? pointsFor(card) : 5;
+  const combo = status === "started" ? Number(state.local.combo || 0) + 1 : 0;
   state.local.decisions[String(card.id)] = {
     status,
     detail,
@@ -1416,7 +1471,12 @@ function markDecision(card, status, detail = "") {
     source: sourceName(card),
     at: Date.now(),
   };
-  state.local.points = Number(state.local.points || 0) + (status === "started" ? pointsFor(card) : 5);
+  state.local.combo = combo;
+  state.local.streak = status === "started" ? Number(state.local.streak || 0) + 1 : Number(state.local.streak || 0);
+  state.local.lastReward = status === "started"
+    ? `+${gained} XP · ${combo} combo`
+    : "Combo reset · better next card";
+  state.local.points = Number(state.local.points || 0) + gained;
   saveLocalState();
   state.focusCardId = activeCards(1)[0]?.id || state.cards[0]?.id || null;
 }
@@ -1620,6 +1680,51 @@ app.addEventListener("click", (event) => {
     remixCard(focusedCard());
     if (initData) api("/api/generate", { method: "POST", body: "{}" }).catch(() => {});
   }
+});
+
+let swipe = null;
+
+app.addEventListener("pointerdown", (event) => {
+  const target = event.target.closest("[data-swipe-card]");
+  if (!target) return;
+  swipe = {
+    el: target,
+    id: target.dataset.cardId,
+    x: event.clientX,
+    y: event.clientY,
+  };
+  target.setPointerCapture?.(event.pointerId);
+  target.classList.add("swiping");
+});
+
+app.addEventListener("pointermove", (event) => {
+  if (!swipe) return;
+  const dx = event.clientX - swipe.x;
+  const dy = event.clientY - swipe.y;
+  const rot = Math.max(-12, Math.min(12, dx / 14));
+  swipe.el.style.transform = `translate(${dx}px, ${dy * 0.24}px) rotate(${rot}deg)`;
+  swipe.el.dataset.intent = dx > 48 ? "start" : dx < -48 ? "skip" : "";
+});
+
+app.addEventListener("pointerup", (event) => {
+  if (!swipe) return;
+  const dx = event.clientX - swipe.x;
+  const card = state.cards.find((item) => String(item.id) === String(swipe.id));
+  swipe.el.classList.remove("swiping");
+  swipe.el.style.transform = "";
+  swipe.el.dataset.intent = "";
+  swipe = null;
+  if (!card || Math.abs(dx) < 96) return;
+  if (dx > 0) {
+    markDecision(card, "started", selectedRaw(card));
+    toast(`Boss hit: ${buttonText(selectedRaw(card))}`);
+    syncStart(card);
+  } else {
+    markDecision(card, "skipped", "swipe left");
+    toast("Dodged.");
+    syncSkip(card);
+  }
+  render();
 });
 
 await refresh();

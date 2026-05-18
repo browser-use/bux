@@ -1408,8 +1408,9 @@ def _format_codex_settings(settings: dict) -> str:
 #   queued_at — unix ts
 #   status    — 'queued' | 'in_flight'
 #
-# 'in_flight' rows on startup are dropped (worker died mid-task; we can't
-# tell if the agent finished, so we don't retry — user resends if needed).
+# 'in_flight' rows on startup mean the bot died mid-turn. Requeue them as
+# continuation prompts instead of deleting them silently, so the user sees a
+# resumed turn or an explicit interruption report.
 
 _lanes_lock = threading.Lock()
 _lanes: dict[str, list[dict]] = {}  # lane_slug → [job, ...]
@@ -1505,21 +1506,44 @@ def _save_lanes_to_disk_locked() -> None:
     tmp.replace(QUEUE_FILE)
 
 
+def _interrupted_turn_prompt(job: dict) -> str:
+    original = (job.get("prompt") or "").strip()
+    if len(original) > 2000:
+        original = original[:2000] + "\n...[truncated]"
+    return (
+        "[SYSTEM] The Telegram bot restarted while the previous turn was still "
+        "running. Continue the user's task from the existing conversation "
+        "context. First inspect any durable state you need. Do not repeat "
+        "external/visible side effects unless the user explicitly approves "
+        "again. If the prior work cannot be safely continued, explain what was "
+        "interrupted and what input is needed.\n\n"
+        "Interrupted user prompt:\n"
+        f"{original}"
+    ).strip()
+
+
 def _lanes_init() -> None:
-    """Hydrate from disk; scrub stale in_flight rows (worker died last run)."""
+    """Hydrate from disk; convert stale in_flight rows into continuations."""
     global _lanes
     with _lanes_lock:
         _lanes = _load_lanes_from_disk()
-        dropped = 0
+        recovered = 0
         for slug, jobs in list(_lanes.items()):
-            kept = [j for j in jobs if j.get("status") != "in_flight"]
-            dropped += len(jobs) - len(kept)
+            kept = []
+            for job in jobs:
+                if job.get("status") == "in_flight":
+                    job = dict(job)
+                    job["status"] = "queued"
+                    job["prompt"] = _interrupted_turn_prompt(job)
+                    job["interrupted_at"] = time.time()
+                    recovered += 1
+                kept.append(job)
             if kept:
                 _lanes[slug] = kept
             else:
                 _lanes.pop(slug, None)
-        if dropped:
-            LOG.warning("dropped %d stale in_flight job(s) from previous run", dropped)
+        if recovered:
+            LOG.warning("requeued %d stale in_flight job(s) from previous run", recovered)
         _save_lanes_to_disk_locked()
 
 
