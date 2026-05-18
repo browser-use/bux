@@ -1859,9 +1859,13 @@ def _send_goal_tmux_input(name: str, text: str, slug: str | None = None) -> bool
         r = _run_tmux(["send-keys", "-t", name, "Enter"], timeout=3.0)
         ok = r.returncode == 0
         if ok and slug:
+            relay: GoalTmuxRelay | None = None
             with _goal_relays_lock:
                 _goal_input_echoes.setdefault(slug, []).append(text.strip())
                 _goal_input_echoes[slug] = _goal_input_echoes[slug][-8:]
+                relay = _goal_relays.get(slug)
+            if relay is not None:
+                relay.begin_user_turn()
         return ok
     except Exception:
         LOG.exception("tmux send-keys failed for %s", name)
@@ -1946,6 +1950,7 @@ class GoalTmuxRelay:
         self._rollout_pos = 0
         self._thread: threading.Thread | None = None
         self._stream_msg: StreamingMessage | None = None
+        self._stream_lock = threading.Lock()
 
     def start(self) -> None:
         with _goal_relays_lock:
@@ -2022,18 +2027,31 @@ class GoalTmuxRelay:
                 continue
             self._relay_message(message, final=phase in {"final", "final_answer"})
 
+    def begin_user_turn(self) -> None:
+        """Start a fresh editable output bubble for the next goal response.
+
+        A durable /goal tmux session can stay alive for days and receive many
+        user follow-ups. Reusing one Telegram message for the entire session
+        makes later answers look invisible because Telegram edits an old bubble.
+        Each user input gets its own streaming bubble; within that turn we still
+        edit in place exactly like normal agent turns.
+        """
+        with self._stream_lock:
+            self._stream_msg = None
+
     def _relay_message(self, message: str, final: bool = False) -> None:
-        if self._stream_msg is None:
-            self._stream_msg = StreamingMessage(
-                self.bot,
-                self.chat_id,
-                reply_to=None,
-                thread_id=self.thread_id,
-                thinking_emoji="...",
-            )
-        self._stream_msg.append(message)
-        if final:
-            self._stream_msg.finalize()
+        with self._stream_lock:
+            if self._stream_msg is None:
+                self._stream_msg = StreamingMessage(
+                    self.bot,
+                    self.chat_id,
+                    reply_to=None,
+                    thread_id=self.thread_id,
+                    thinking_emoji="...",
+                )
+            self._stream_msg.append(message)
+            if final:
+                self._stream_msg.finalize()
 
 
 def _ensure_goal_relay(bot: "Bot", slug: str, chat_id: int, thread_id: int, state: dict) -> bool:
@@ -5540,6 +5558,42 @@ class Bot:
                     reply_to=mid,
                     thread_id=thread_id,
                     markdown=True,
+                )
+                return
+            if arg.strip().lower() in {"stop", "cancel", "exit", "off"}:
+                if not _is_owner(sender, owner):
+                    self.send(
+                        chat_id,
+                        "❌ `/goal stop` is owner-only.",
+                        reply_to=mid,
+                        thread_id=thread_id,
+                        markdown=True,
+                    )
+                    return
+                goal_entry = _goal_state_for(self.state, slug)
+                if goal_entry is None:
+                    self.send(
+                        chat_id,
+                        "No live Codex goal session here.",
+                        reply_to=mid,
+                        thread_id=thread_id,
+                    )
+                    return
+                name = str(goal_entry.get("name") or "")
+                killed = False
+                if name and _goal_tmux_alive(name):
+                    try:
+                        killed = _run_tmux(["kill-session", "-t", name], timeout=3.0).returncode == 0
+                    except Exception:
+                        LOG.exception("failed to stop goal tmux session %s", name)
+                _forget_goal_tmux(self.state, slug)
+                self.send(
+                    chat_id,
+                    "✓ stopped the live Codex goal session. Normal messages now run as normal turns."
+                    if killed
+                    else "✓ cleared the stale Codex goal session. Normal messages now run as normal turns.",
+                    reply_to=mid,
+                    thread_id=thread_id,
                 )
                 return
             if not _is_owner(sender, owner):
