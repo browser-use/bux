@@ -22,6 +22,7 @@ More launch links:
 - [Pinned announcement discussion](https://github.com/browser-use/bux/discussions/181)
 - [Browser Use Box wiki](https://github.com/browser-use/bux/wiki)
 - [Launch page](https://browser-use.github.io/bux/)
+- [Managed pilot for Telegram-heavy teams](https://browser-use.github.io/bux/pilot.html)
 
 ## Setup prompt
 
@@ -68,6 +69,8 @@ Three small services under systemd. Agent state lives in `/home/bux`, so reboots
 ## Managed offering
 
 If you'd rather not run your own VPS: [cloud.browser-use.com](https://cloud.browser-use.com) provisions a box for you in ~60s — same software, zero setup, one-command `bux up` via a Claude Code skill.
+
+For teams that already run sales, support, partner onboarding, or operations in Telegram, there is also a [$1,000/month managed pilot](https://browser-use.github.io/bux/pilot.html): one scoped private operator workflow, launched in 7 days, with human handoff and weekly tuning.
 
 ## Contributing
 
