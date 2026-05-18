@@ -75,6 +75,8 @@ For teams that already run sales, support, partner onboarding, or operations in 
 
 The pilot scope, handoff format, and example operator rules are in the [managed pilot playbook](https://browser-use.github.io/bux/managed-pilot-playbook.html).
 
+Pilot inquiries can start on [Telegram](https://t.me/Magnus_Mueller) or through the [managed pilot issue form](https://github.com/browser-use/bux/issues/new?template=managed-pilot.yml).
+
 ## Contributing
 
 PRs welcome — bug fixes, docs tweaks, and new features all appreciated. Open an issue first if you're planning something larger.
