@@ -137,4 +137,6 @@ Start on Telegram: https://t.me/Magnus_Mueller
 
 Apply on GitHub: https://github.com/browser-use/bux/issues/new?template=managed-pilot.yml
 
+Demo transcript: https://browser-use.github.io/bux/managed-pilot-demo.html
+
 Pilot page: https://browser-use.github.io/bux/pilot.html
