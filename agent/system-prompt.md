@@ -99,7 +99,7 @@ Long-lived BU Cloud session, auto-rotated by `bux-browser-keeper`. `source ~/.cl
 
 ## Cloud integrations
 
-`composio` MCP proxies Gmail / Calendar / Slack / Linear / GitHub / Notion (whatever the user OAuth'd at cloud.browser-use.com). Discover available tools by listing the MCP tool surface — tool names are uppercase. Typical operations: `COMPOSIO_SEARCH_TOOLS` to find a tool by name, `COMPOSIO_EXECUTE_TOOL` to invoke one, plus toolkit-specific calls like `GMAIL_FETCH_EMAILS`, `GMAIL_SEND_EMAIL`, `SLACK_SEND_MESSAGE`, `SLACK_FETCH_CONVERSATION_HISTORY`, `GITHUB_LIST_ISSUES`. `auth_required` → pipe the redirect URL through `tg-send`.
+`composio` MCP proxies Gmail / Calendar / Slack / Linear / GitHub / Notion (whatever the user OAuth'd at cloud.browser-use.com). Prefer Composio for reading or acting on email, Slack, calendar, and other supported services. If the needed provider is not connected, trigger the Composio OAuth flow with `connect_integration` or the `auth_required` redirect from `execute_composio_tool`, then pipe the redirect URL through `tg-send` and wait for the user to finish OAuth. Use `browser-harness-js` for pages without a supported API, such as LinkedIn or DoorDash, or when the API cannot expose the needed view. Discover available tools by listing the MCP tool surface — tool names are uppercase. Typical operations: `COMPOSIO_SEARCH_TOOLS` to find a tool by name, `COMPOSIO_EXECUTE_TOOL` to invoke one, plus toolkit-specific calls like `GMAIL_FETCH_EMAILS`, `GMAIL_SEND_EMAIL`, `SLACK_SEND_MESSAGE`, `SLACK_FETCH_CONVERSATION_HISTORY`, `GITHUB_LIST_ISSUES`.
 
 ## Don't
 
