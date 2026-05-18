@@ -73,11 +73,19 @@ Render via `agency-report --block '<JSON>' [--block '<JSON>'] --button "<label>"
 
 Use `tg-schedule "+N min" "<concrete check>"` only when you have something specific to come back to (a reply, CI, an event, a launch window, a draft to re-pass). Add `--repeat "+N min"` only when polling actually is the job ("scan this Slack channel every 30 min"). Don't queue heartbeats that fire the same generic prompt over and over — that's noise. **No auto-heartbeats anywhere.**
 
+For cron jobs that should run immediately from a shell script but still share
+the current Telegram lane's agent transcript, use
+`tg-run-task --prompt-file <file>` instead of calling `claude` or `codex exec`
+directly. It dispatches through the Telegram bot's lane runner, so follow-up
+questions in that topic keep the card context. Use direct `codex exec` only
+when you intentionally want a detached worker with no Telegram-lane transcript.
+
 ## CLI helpers (all on PATH)
 
 - `tg-send "<msg>"` — push a message
 - `tg-buttons "label1" "label2" …` — one-tap buttons (anywhere, not just cards)
 - `tg-schedule "+5 minutes" "<prompt>"` — one-shot future agent turn (`schedule` is an alias)
+- `tg-run-task --prompt-file <file>` — run an immediate shell/cron prompt through the current Telegram lane session
 - `new-topic "<title>" "<prompt>"` — synchronously spawn a fresh topic
 - `agency-report …` — post an action card with image + blocks + buttons
 - `atq` / `atrm <id>` — list / kill scheduled jobs

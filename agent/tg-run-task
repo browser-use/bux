@@ -1,0 +1,110 @@
+#!/opt/bux/venv/bin/python
+"""Run a prompt through the Telegram lane agent.
+
+This is the cron-friendly sibling of ``tg-schedule-fire``: it dispatches a
+prompt through ``telegram_bot.Bot.run_task`` so Codex/Claude resumes the same
+per-topic session used for normal Telegram messages. Direct ``codex exec`` cron
+runs do not have that transcript.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+REPO_AGENT = "/opt/bux/repo/agent"
+sys.path.insert(0, REPO_AGENT)
+
+from telegram_bot import AGENT_CODEX, Bot, _set_agent_for  # noqa: E402
+
+TG_ENV = Path("/etc/bux/tg.env")
+TG_ALLOWED = Path("/etc/bux/tg-allowed.txt")
+
+
+def _load_dotenv(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not path.is_file():
+        return out
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        out[key.strip()] = value.strip().strip('"').strip("'")
+    return out
+
+
+def _default_chat_id() -> int:
+    raw = os.environ.get("TG_CHAT_ID", "").strip()
+    if raw:
+        return int(raw)
+    if TG_ALLOWED.is_file():
+        for line in TG_ALLOWED.read_text().splitlines():
+            line = line.strip()
+            if line:
+                return int(line.split()[0])
+    raise RuntimeError("TG_CHAT_ID is unset and /etc/bux/tg-allowed.txt is empty")
+
+
+def _read_prompt(args: argparse.Namespace) -> str:
+    if args.prompt_file:
+        return Path(args.prompt_file).read_text()
+    data = sys.stdin.read()
+    if data:
+        return data
+    raise RuntimeError("no prompt provided; pass --prompt-file or stdin")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--prompt-file")
+    parser.add_argument("--label", default="scheduled cron")
+    parser.add_argument("--chat-id", type=int, default=None)
+    parser.add_argument("--thread-id", type=int, default=None)
+    parser.add_argument("--agent", choices=["codex"], default="codex")
+    ns = parser.parse_args()
+
+    env = _load_dotenv(TG_ENV)
+    token = env.get("TG_BOT_TOKEN") or os.environ.get("TG_BOT_TOKEN", "")
+    setup_token = env.get("TG_SETUP_TOKEN", "") or os.environ.get("TG_SETUP_TOKEN", "")
+    if not token:
+        raise RuntimeError("TG_BOT_TOKEN missing")
+
+    chat_id = ns.chat_id if ns.chat_id is not None else _default_chat_id()
+    thread_id = ns.thread_id
+    if thread_id is None:
+        thread_id = int(os.environ.get("TG_THREAD_ID") or 0)
+
+    prompt = _read_prompt(ns).strip()
+    body = (
+        f"[scheduled: {ns.label}]\n"
+        "Run this as a follow-up in the current Telegram lane/session. "
+        "Use the existing conversation context and the user's latest stated "
+        "preferences. If you create Agency cards, use agency-report so they "
+        "land in this same topic. Keep any normal final chat message short.\n\n"
+        f"{prompt}"
+    )
+
+    bot = Bot(token, setup_token)
+    key = (chat_id, thread_id)
+    _set_agent_for(key, AGENT_CODEX, bot.state)
+    bot.run_task(
+        key,
+        body,
+        reply_to=None,
+        sender={
+            "user_id": "scheduler",
+            "username": "scheduler",
+            "name": "Scheduler",
+        },
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        print(f"tg-run-task: {exc}", file=sys.stderr)
+        raise SystemExit(1)
