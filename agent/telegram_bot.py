@@ -1181,7 +1181,7 @@ def _codex_thread_id_for(key: LaneKey) -> str | None:
         return None
 
 
-def _codex_interactive_command_for(key: LaneKey, state: dict) -> str:
+def _codex_interactive_command_for(key: LaneKey, state: dict, prompt: str | None = None) -> str:
     """Command line for a persistent interactive Codex session in a lane."""
     args = ["codex", "--no-alt-screen", "-a", "never", "-s", "danger-full-access"]
     settings = _codex_settings_for(key, state)
@@ -1192,6 +1192,8 @@ def _codex_interactive_command_for(key: LaneKey, state: dict) -> str:
     thread_id = _codex_thread_id_for(key)
     if thread_id:
         args += ["resume", "--include-non-interactive", thread_id]
+    if prompt:
+        args.append(prompt)
     return shlex.join(args)
 
 
@@ -1930,6 +1932,7 @@ class GoalTmuxRelay:
         thread_id: int,
         name: str,
         codex_thread_id: str | None = None,
+        initial_rollout_pos: int | None = None,
     ) -> None:
         self.bot = bot
         self.slug = slug
@@ -1937,6 +1940,7 @@ class GoalTmuxRelay:
         self.thread_id = thread_id
         self.name = name
         self.codex_thread_id = codex_thread_id
+        self.initial_rollout_pos = initial_rollout_pos
         self._stop = threading.Event()
         self._rollout_path: Path | None = None
         self._rollout_pos = 0
@@ -1951,7 +1955,11 @@ class GoalTmuxRelay:
         self._rollout_path = _codex_rollout_path(self.codex_thread_id)
         if self._rollout_path is not None:
             try:
-                self._rollout_pos = self._rollout_path.stat().st_size
+                self._rollout_pos = (
+                    self.initial_rollout_pos
+                    if self.initial_rollout_pos is not None
+                    else self._rollout_path.stat().st_size
+                )
             except OSError:
                 self._rollout_pos = 0
         self._thread = threading.Thread(
@@ -2036,19 +2044,35 @@ def _ensure_goal_relay(bot: "Bot", slug: str, chat_id: int, thread_id: int, stat
 
 def _start_goal_tmux(bot: "Bot", key: LaneKey, slug: str, chat_id: int, thread_id: int, state: dict, goal_line: str) -> str:
     name = _goal_tmux_name(slug)
+    codex_thread_id = _codex_thread_id_for(key)
+    rollout_path = _codex_rollout_path(codex_thread_id)
+    rollout_pos = None
+    if rollout_path is not None:
+        try:
+            rollout_pos = rollout_path.stat().st_size
+        except OSError:
+            rollout_pos = None
     if not _goal_tmux_alive(name):
-        cmd = _codex_interactive_command_for(key, state)
+        cmd = _codex_interactive_command_for(key, state, prompt=goal_line)
         r = _run_tmux(["new-session", "-d", "-s", name, "-c", str(WORKSPACE), cmd], timeout=8.0)
         if r.returncode != 0:
             raise RuntimeError((r.stderr or r.stdout or f"tmux rc={r.returncode}").strip())
         time.sleep(1.5)
+    else:
+        if not _send_goal_tmux_input(name, goal_line, slug=slug):
+            raise RuntimeError("tmux session did not accept input")
     _record_goal_tmux(state, slug, chat_id, thread_id, name)
-    codex_thread_id = _codex_thread_id_for(key)
     state.setdefault("goal_tmux", {}).setdefault(slug, {})["codex_thread_id"] = codex_thread_id
     save_state(state)
-    GoalTmuxRelay(bot, slug, chat_id, thread_id or 0, name, codex_thread_id).start()
-    if not _send_goal_tmux_input(name, goal_line, slug=slug):
-        raise RuntimeError("tmux session started but did not accept input")
+    GoalTmuxRelay(
+        bot,
+        slug,
+        chat_id,
+        thread_id or 0,
+        name,
+        codex_thread_id,
+        initial_rollout_pos=rollout_pos,
+    ).start()
     return name
 
 
