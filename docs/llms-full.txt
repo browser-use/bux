@@ -51,6 +51,7 @@ The pilot is not meant to replace judgment or create an unsupervised sales bot. 
 
 Focused page: https://browser-use.github.io/bux/telegram-ai-operator.html
 n8n-focused page: https://browser-use.github.io/bux/n8n-telegram-ai-operator.html
+Crypto and fintech page: https://browser-use.github.io/bux/telegram-operator-crypto.html
 
 Use cases:
 
@@ -58,6 +59,7 @@ Use cases:
 - Support triage.
 - Partner onboarding.
 - Browser-backed research and handoff summaries.
+- Crypto, fintech, and infrastructure Telegram operations triage.
 
 ## Agency Implementation Page
 
