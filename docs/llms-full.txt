@@ -79,6 +79,7 @@ Best-fit partner projects have existing message volume and operational pain. Bad
 
 - Pilot playbook: https://browser-use.github.io/bux/managed-pilot-playbook.html
 - Demo transcript: https://browser-use.github.io/bux/managed-pilot-demo.html
+- Weekly proof report demo: https://browser-use.github.io/bux/managed-pilot-proof-report.html
 - Pilot terms: https://browser-use.github.io/bux/managed-pilot-terms.html
 - GitHub application form: https://github.com/browser-use/bux/issues/new?template=managed-pilot.yml
 - Telegram contact: https://t.me/Magnus_Mueller
