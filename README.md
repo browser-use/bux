@@ -26,6 +26,7 @@ More launch links:
 - [Managed pilot playbook](https://browser-use.github.io/bux/managed-pilot-playbook.html)
 - [Managed pilot demo transcript](https://browser-use.github.io/bux/managed-pilot-demo.html)
 - [Managed Telegram AI operator](https://browser-use.github.io/bux/telegram-ai-operator.html)
+- [Managed pilot for AI automation agencies](https://browser-use.github.io/bux/managed-pilot-partners.html)
 - [Managed pilot terms](https://browser-use.github.io/bux/managed-pilot-terms.html)
 
 ## Setup prompt
@@ -81,6 +82,8 @@ The pilot scope, handoff format, and example operator rules are in the [managed 
 The [demo transcript](https://browser-use.github.io/bux/managed-pilot-demo.html) shows the first workflow: Telegram lead triage into a clean human handoff.
 
 The [managed Telegram AI operator page](https://browser-use.github.io/bux/telegram-ai-operator.html) is the focused entry point for lead qualification, support triage, and partner onboarding use cases.
+
+The [partner pilot page](https://browser-use.github.io/bux/managed-pilot-partners.html) packages the same $1,000/month workflow as a delivery layer for AI automation agencies with Telegram-heavy clients.
 
 The [managed pilot terms](https://browser-use.github.io/bux/managed-pilot-terms.html) summarize the $1,000/month scope, first-week deliverables, and acceptance criteria.
 
