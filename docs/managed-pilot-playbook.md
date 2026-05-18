@@ -135,4 +135,6 @@ Optional expansion after the pilot:
 
 Start on Telegram: https://t.me/Magnus_Mueller
 
+Apply on GitHub: https://github.com/browser-use/bux/issues/new?template=managed-pilot.yml
+
 Pilot page: https://browser-use.github.io/bux/pilot.html
