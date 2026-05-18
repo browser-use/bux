@@ -178,6 +178,47 @@ class GoalCommandRoutingTest(unittest.TestCase):
         start_goal.assert_called_once()
         self.assertEqual(start_goal.call_args.args[-1], "/goal improve Agency UI")
 
+    def test_goal_command_updates_existing_goal_session_without_nested_slash_command(self) -> None:
+        bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
+        bot.state = {
+            "offset": 0,
+            "agents": {},
+            "codex_settings": {},
+            "owners": {},
+            "goal_tmux": {"100_main": {"name": "goal-session", "chat_id": 100, "thread_id": 0}},
+        }
+        bot.setup_token = None
+        bot._username = "bux_bot"
+        sent: list[str] = []
+        bot.react = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+        bot.typing = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+        bot.send = lambda _chat_id, text, **_kwargs: sent.append(text)  # type: ignore[method-assign]
+
+        with (
+            mock.patch.object(telegram_bot, "load_allow", return_value={100}),
+            mock.patch.object(telegram_bot, "save_state"),
+            mock.patch.object(telegram_bot, "_goal_tmux_alive", return_value=True),
+            mock.patch.object(telegram_bot, "_ensure_goal_relay", return_value=True),
+            mock.patch.object(telegram_bot, "_send_goal_tmux_input", return_value=True) as send_input,
+            mock.patch.object(telegram_bot, "_ensure_codex_goal_feature_enabled"),
+        ):
+            bot.handle(
+                {
+                    "chat": {"id": 100, "type": "private"},
+                    "from": {"id": 55, "username": "Magnus_Mueller"},
+                    "message_id": 124,
+                    "text": "/goal count to 12",
+                }
+            )
+
+        send_input.assert_called_once()
+        self.assertEqual(send_input.call_args.args[0], "goal-session")
+        routed_text = send_input.call_args.args[1]
+        self.assertFalse(routed_text.startswith("/goal "))
+        self.assertIn("New goal/follow-up:\ncount to 12", routed_text)
+        self.assertIn("same live session", routed_text)
+        self.assertIn("sent goal update", sent[-1])
+
     def test_goal_relay_sends_codex_final_answer_events(self) -> None:
         sent: list[tuple[int, str, dict]] = []
         edits: list[tuple[int, int, str, dict]] = []
