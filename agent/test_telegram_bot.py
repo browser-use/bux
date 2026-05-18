@@ -178,7 +178,7 @@ class GoalCommandRoutingTest(unittest.TestCase):
         start_goal.assert_called_once()
         self.assertEqual(start_goal.call_args.args[-1], "/goal improve Agency UI")
 
-    def test_goal_command_updates_existing_goal_session_without_nested_slash_command(self) -> None:
+    def test_goal_command_forwards_nested_slash_command_to_existing_goal_session(self) -> None:
         bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
         bot.state = {
             "offset": 0,
@@ -213,11 +213,8 @@ class GoalCommandRoutingTest(unittest.TestCase):
 
         send_input.assert_called_once()
         self.assertEqual(send_input.call_args.args[0], "goal-session")
-        routed_text = send_input.call_args.args[1]
-        self.assertFalse(routed_text.startswith("/goal "))
-        self.assertIn("New goal/follow-up:\ncount to 12", routed_text)
-        self.assertIn("same live session", routed_text)
-        self.assertIn("sent goal update", sent[-1])
+        self.assertEqual(send_input.call_args.args[1], "/goal count to 12")
+        self.assertIn("sent goal to the live Codex goal session", sent[-1])
 
     def test_goal_relay_sends_codex_final_answer_events(self) -> None:
         sent: list[tuple[int, str, dict]] = []
@@ -264,6 +261,60 @@ class GoalCommandRoutingTest(unittest.TestCase):
         self.assertEqual(edits[0][0], 100)
         self.assertEqual(edits[0][1], 777)
         self.assertIn("1 2 3 4 5 6 7 8 9 10", edits[0][2])
+
+    def test_goal_relay_clears_goal_mode_when_goal_completes(self) -> None:
+        sent: list[tuple[int, str, dict]] = []
+        edits: list[tuple[int, int, str, dict]] = []
+
+        class FakeBot:
+            def __init__(self) -> None:
+                self.state = {
+                    "goal_tmux": {"slug": {"name": "tmux-name", "chat_id": 100, "thread_id": 123}}
+                }
+
+            def send(self, chat_id: int, text: str, **kwargs) -> None:
+                sent.append((chat_id, text, kwargs))
+
+            def send_returning_id(self, chat_id: int, text: str, **kwargs) -> int:
+                sent.append((chat_id, text, kwargs))
+                return 777
+
+            def edit(self, chat_id: int, message_id: int, text: str, **kwargs) -> bool:
+                edits.append((chat_id, message_id, text, kwargs))
+                return True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rollout = Path(tmp) / "rollout.jsonl"
+            rollout.write_text(
+                json.dumps(
+                    {
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "agent_message",
+                            "phase": "final_answer",
+                            "message": "1 2 3\n\nGoal complete. Time used: 6 seconds.",
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            bot = FakeBot()
+            relay = telegram_bot.GoalTmuxRelay(bot, "slug", 100, 123, "tmux-name")
+            relay._rollout_path = rollout
+            relay._rollout_pos = 0
+
+            with (
+                mock.patch.object(telegram_bot, "_goal_tmux_alive", return_value=True),
+                mock.patch.object(telegram_bot, "_run_tmux") as run_tmux,
+                mock.patch.object(telegram_bot, "save_state"),
+            ):
+                run_tmux.return_value.returncode = 0
+                relay._relay_rollout_events()
+
+        self.assertEqual(bot.state["goal_tmux"], {})
+        run_tmux.assert_called_once_with(["kill-session", "-t", "tmux-name"], timeout=3.0)
+        self.assertIn("Goal complete", edits[-1][2])
 
     def test_goal_relay_reuses_one_editable_message_within_one_turn(self) -> None:
         sent: list[tuple[int, str, dict]] = []
