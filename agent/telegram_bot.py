@@ -1877,6 +1877,25 @@ def _capture_goal_tmux(name: str) -> str | None:
     return r.stdout
 
 
+def _codex_rollout_path(thread_id: str | None) -> Path | None:
+    if not thread_id:
+        return None
+    db = Path("/home/bux/.codex/state_5.sqlite")
+    if not db.exists():
+        return None
+    try:
+        con = sqlite3.connect(str(db))
+        row = con.execute("SELECT rollout_path FROM threads WHERE id = ?", (thread_id,)).fetchone()
+        con.close()
+    except Exception:
+        LOG.exception("failed to read codex rollout path for %s", thread_id)
+        return None
+    if not row or not row[0]:
+        return None
+    path = Path(str(row[0]))
+    return path if path.exists() else None
+
+
 def _strip_goal_terminal_noise(text: str) -> str:
     text = _ANSI_RE.sub("", text)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -1901,16 +1920,26 @@ def _strip_goal_terminal_noise(text: str) -> str:
 
 
 class GoalTmuxRelay:
-    """Poll a durable tmux-backed Codex goal session and relay clean deltas."""
+    """Relay structured Codex agent messages from a durable tmux goal session."""
 
-    def __init__(self, bot: "Bot", slug: str, chat_id: int, thread_id: int, name: str) -> None:
+    def __init__(
+        self,
+        bot: "Bot",
+        slug: str,
+        chat_id: int,
+        thread_id: int,
+        name: str,
+        codex_thread_id: str | None = None,
+    ) -> None:
         self.bot = bot
         self.slug = slug
         self.chat_id = chat_id
         self.thread_id = thread_id
         self.name = name
+        self.codex_thread_id = codex_thread_id
         self._stop = threading.Event()
-        self._last_clean = ""
+        self._rollout_path: Path | None = None
+        self._rollout_pos = 0
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
@@ -1919,9 +1948,12 @@ class GoalTmuxRelay:
             if existing is not None:
                 existing._stop.set()
             _goal_relays[self.slug] = self
-        captured = _capture_goal_tmux(self.name)
-        if captured:
-            self._last_clean = _strip_goal_terminal_noise(captured)
+        self._rollout_path = _codex_rollout_path(self.codex_thread_id)
+        if self._rollout_path is not None:
+            try:
+                self._rollout_pos = self._rollout_path.stat().st_size
+            except OSError:
+                self._rollout_pos = 0
         self._thread = threading.Thread(
             target=self._run,
             name=f"goal-tmux-relay-{self.slug}",
@@ -1930,46 +1962,60 @@ class GoalTmuxRelay:
         self._thread.start()
 
     def _run(self) -> None:
-        quiet_ticks = 0
         while not self._stop.is_set():
             if not _goal_tmux_alive(self.name):
                 break
-            captured = _capture_goal_tmux(self.name)
-            if captured is None:
-                time.sleep(1.0)
-                continue
-            clean = _strip_goal_terminal_noise(captured)
-            with _goal_relays_lock:
-                echoes = list(_goal_input_echoes.get(self.slug, ()))
-            if echoes:
-                clean = "\n".join(
-                    line for line in clean.splitlines()
-                    if line.strip() not in echoes
-                ).strip()
-            if clean and clean != self._last_clean:
-                delta = clean
-                if self._last_clean and clean.startswith(self._last_clean):
-                    delta = clean[len(self._last_clean):].strip()
-                self._last_clean = clean
-                # TUI repaint noise often changes a few characters while the
-                # model is still thinking. Only relay meaningful text deltas.
-                if len(delta) >= 12 and not delta.startswith("/goal "):
-                    quiet_ticks += 1
-                    if quiet_ticks >= 2:
-                        self._send_delta(delta)
-                        quiet_ticks = 0
-                else:
-                    quiet_ticks = 0
+            self._relay_rollout_events()
             time.sleep(1.0)
         with _goal_relays_lock:
             if _goal_relays.get(self.slug) is self:
                 _goal_relays.pop(self.slug, None)
 
-    def _send_delta(self, delta: str) -> None:
-        for chunk in _split_into_code_bubbles(delta, max_chars=3200):
-            # Goal relay output is already terminal-derived. Keep it plain
-            # enough to scan on a phone, without leaking raw TUI frames.
-            self.bot.send(self.chat_id, chunk, thread_id=self.thread_id)
+    def _relay_rollout_events(self) -> None:
+        if self._rollout_path is None:
+            self._rollout_path = _codex_rollout_path(self.codex_thread_id)
+            if self._rollout_path is None:
+                return
+            try:
+                self._rollout_pos = self._rollout_path.stat().st_size
+            except OSError:
+                self._rollout_pos = 0
+            return
+        try:
+            size = self._rollout_path.stat().st_size
+            if size < self._rollout_pos:
+                self._rollout_pos = 0
+            if size == self._rollout_pos:
+                return
+            with self._rollout_path.open("r", encoding="utf-8", errors="replace") as fh:
+                fh.seek(self._rollout_pos)
+                lines = fh.readlines()
+                self._rollout_pos = fh.tell()
+        except OSError:
+            return
+        for line in lines:
+            try:
+                event = json.loads(line)
+            except Exception:
+                continue
+            if event.get("type") != "event_msg":
+                continue
+            payload = event.get("payload") or {}
+            if payload.get("type") != "agent_message":
+                continue
+            message = str(payload.get("message") or "").strip()
+            if not message:
+                continue
+            phase = str(payload.get("phase") or "")
+            # Commentary/final are model-authored user-facing text. Tool
+            # output, raw reasoning, and TUI frames never pass through here.
+            if phase and phase not in {"commentary", "final"}:
+                continue
+            self._send_message(message)
+
+    def _send_message(self, message: str) -> None:
+        for chunk in _split_into_code_bubbles(message, max_chars=3400):
+            self.bot.send(self.chat_id, chunk, thread_id=self.thread_id, markdown=True)
 
 
 def _ensure_goal_relay(bot: "Bot", slug: str, chat_id: int, thread_id: int, state: dict) -> bool:
@@ -1983,7 +2029,8 @@ def _ensure_goal_relay(bot: "Bot", slug: str, chat_id: int, thread_id: int, stat
     with _goal_relays_lock:
         if slug in _goal_relays:
             return True
-    GoalTmuxRelay(bot, slug, chat_id, thread_id or 0, name).start()
+    codex_thread_id = str(entry.get("codex_thread_id") or "") or _codex_thread_id_for((chat_id, thread_id or 0))
+    GoalTmuxRelay(bot, slug, chat_id, thread_id or 0, name, codex_thread_id).start()
     return True
 
 
@@ -1996,7 +2043,10 @@ def _start_goal_tmux(bot: "Bot", key: LaneKey, slug: str, chat_id: int, thread_i
             raise RuntimeError((r.stderr or r.stdout or f"tmux rc={r.returncode}").strip())
         time.sleep(1.5)
     _record_goal_tmux(state, slug, chat_id, thread_id, name)
-    GoalTmuxRelay(bot, slug, chat_id, thread_id or 0, name).start()
+    codex_thread_id = _codex_thread_id_for(key)
+    state.setdefault("goal_tmux", {}).setdefault(slug, {})["codex_thread_id"] = codex_thread_id
+    save_state(state)
+    GoalTmuxRelay(bot, slug, chat_id, thread_id or 0, name, codex_thread_id).start()
     if not _send_goal_tmux_input(name, goal_line, slug=slug):
         raise RuntimeError("tmux session started but did not accept input")
     return name
@@ -3665,10 +3715,11 @@ class Bot:
             name = str(entry.get("name") or "")
             chat_id = int(entry.get("chat_id") or 0)
             thread_id = int(entry.get("thread_id") or 0)
+            codex_thread_id = str(entry.get("codex_thread_id") or "") or _codex_thread_id_for((chat_id, thread_id))
             if not name or not chat_id or not _goal_tmux_alive(name):
                 _forget_goal_tmux(self.state, str(slug))
                 continue
-            GoalTmuxRelay(self, str(slug), chat_id, thread_id, name).start()
+            GoalTmuxRelay(self, str(slug), chat_id, thread_id, name, codex_thread_id).start()
 
     # ----- Telegram API plumbing -----
 
