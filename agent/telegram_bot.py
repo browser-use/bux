@@ -1950,6 +1950,16 @@ def _strip_goal_terminal_noise(text: str) -> str:
     return cleaned.strip()
 
 
+def _goal_message_completes_goal(message: str) -> bool:
+    text = " ".join(message.strip().split())
+    if not text:
+        return False
+    low = text.lower()
+    if "time used" in low and ("goal complete" in low or "goal achieved" in low):
+        return True
+    return bool(re.search(r"\bgoal achieved\s*\([^)]*\)", low))
+
+
 class GoalTmuxRelay:
     """Relay structured Codex agent messages from a durable tmux goal session."""
 
@@ -2050,7 +2060,10 @@ class GoalTmuxRelay:
             # output, raw reasoning, and TUI frames never pass through here.
             if phase and phase not in {"commentary", "final", "final_answer"}:
                 continue
-            self._relay_message(message, final=phase in {"final", "final_answer"})
+            final = phase in {"final", "final_answer"}
+            self._relay_message(message, final=final)
+            if final and _goal_message_completes_goal(message):
+                self._finish_goal_session()
 
     def begin_user_turn(self) -> None:
         """Start a fresh editable output bubble for the next goal response.
@@ -2077,6 +2090,15 @@ class GoalTmuxRelay:
             self._stream_msg.append(message)
             if final:
                 self._stream_msg.finalize()
+
+    def _finish_goal_session(self) -> None:
+        try:
+            if _goal_tmux_alive(self.name):
+                _run_tmux(["kill-session", "-t", self.name], timeout=3.0)
+        except Exception:
+            LOG.exception("failed to kill completed goal tmux session %s", self.name)
+        _forget_goal_tmux(self.bot.state, self.slug)
+        self._stop.set()
 
 
 def _ensure_goal_relay(bot: "Bot", slug: str, chat_id: int, thread_id: int, state: dict) -> bool:
@@ -5640,17 +5662,10 @@ class Bot:
                 name = str(goal_entry.get("name") or "")
                 if name and _goal_tmux_alive(name):
                     _ensure_goal_relay(self, slug, chat_id, thread_id, self.state)
-                    goal_update = (
-                        "The user sent a new /goal while this Codex goal session is already live.\n"
-                        "Treat this as a direct update or follow-up inside the same live session, "
-                        "not as a request to open Codex's /goal command UI. Do not ask about "
-                        "overriding the current goal unless clarification is genuinely needed.\n\n"
-                        f"New goal/follow-up:\n{arg.strip()}"
-                    )
-                    if _send_goal_tmux_input(name, goal_update, slug=slug):
+                    if _send_goal_tmux_input(name, goal_line, slug=slug):
                         self.send(
                             chat_id,
-                            "🎯 sent goal update to the live Codex goal session. Use `/goal stop` to leave goal mode.",
+                            "🎯 sent goal to the live Codex goal session. Use `/goal stop` to leave goal mode.",
                             reply_to=mid,
                             thread_id=thread_id,
                             markdown=True,
