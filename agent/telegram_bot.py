@@ -1945,6 +1945,7 @@ class GoalTmuxRelay:
         self._rollout_path: Path | None = None
         self._rollout_pos = 0
         self._thread: threading.Thread | None = None
+        self._stream_msg: StreamingMessage | None = None
 
     def start(self) -> None:
         with _goal_relays_lock:
@@ -2019,11 +2020,20 @@ class GoalTmuxRelay:
             # output, raw reasoning, and TUI frames never pass through here.
             if phase and phase not in {"commentary", "final", "final_answer"}:
                 continue
-            self._send_message(message)
+            self._relay_message(message, final=phase in {"final", "final_answer"})
 
-    def _send_message(self, message: str) -> None:
-        for chunk in _split_into_code_bubbles(message, max_chars=3400):
-            self.bot.send(self.chat_id, chunk, thread_id=self.thread_id, markdown=True)
+    def _relay_message(self, message: str, final: bool = False) -> None:
+        if self._stream_msg is None:
+            self._stream_msg = StreamingMessage(
+                self.bot,
+                self.chat_id,
+                reply_to=None,
+                thread_id=self.thread_id,
+                thinking_emoji="...",
+            )
+        self._stream_msg.append(message)
+        if final:
+            self._stream_msg.finalize()
 
 
 def _ensure_goal_relay(bot: "Bot", slug: str, chat_id: int, thread_id: int, state: dict) -> bool:

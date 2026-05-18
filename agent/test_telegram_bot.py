@@ -178,10 +178,19 @@ class GoalCommandRoutingTest(unittest.TestCase):
 
     def test_goal_relay_sends_codex_final_answer_events(self) -> None:
         sent: list[tuple[int, str, dict]] = []
+        edits: list[tuple[int, int, str, dict]] = []
 
         class FakeBot:
             def send(self, chat_id: int, text: str, **kwargs) -> None:
                 sent.append((chat_id, text, kwargs))
+
+            def send_returning_id(self, chat_id: int, text: str, **kwargs) -> int:
+                sent.append((chat_id, text, kwargs))
+                return 777
+
+            def edit(self, chat_id: int, message_id: int, text: str, **kwargs) -> bool:
+                edits.append((chat_id, message_id, text, kwargs))
+                return True
 
         with tempfile.TemporaryDirectory() as tmp:
             rollout = Path(tmp) / "rollout.jsonl"
@@ -207,8 +216,60 @@ class GoalCommandRoutingTest(unittest.TestCase):
 
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0][0], 100)
-        self.assertEqual(sent[0][1], "1 2 3 4 5 6 7 8 9 10")
         self.assertEqual(sent[0][2]["thread_id"], 123)
+        self.assertEqual(len(edits), 1)
+        self.assertEqual(edits[0][0], 100)
+        self.assertEqual(edits[0][1], 777)
+        self.assertIn("1 2 3 4 5 6 7 8 9 10", edits[0][2])
+
+    def test_goal_relay_reuses_one_editable_message_for_followup_answers(self) -> None:
+        sent: list[tuple[int, str, dict]] = []
+        edits: list[tuple[int, int, str, dict]] = []
+
+        class FakeBot:
+            def send(self, chat_id: int, text: str, **kwargs) -> None:
+                sent.append((chat_id, text, kwargs))
+
+            def send_returning_id(self, chat_id: int, text: str, **kwargs) -> int:
+                sent.append((chat_id, text, kwargs))
+                return 777
+
+            def edit(self, chat_id: int, message_id: int, text: str, **kwargs) -> bool:
+                edits.append((chat_id, message_id, text, kwargs))
+                return True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rollout = Path(tmp) / "rollout.jsonl"
+            events = [
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "agent_message",
+                        "phase": "final_answer",
+                        "message": "1 2 3 4 5 6 7 8 9 10",
+                    },
+                },
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "agent_message",
+                        "phase": "final_answer",
+                        "message": "Yes.",
+                    },
+                },
+            ]
+            rollout.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+            relay = telegram_bot.GoalTmuxRelay(FakeBot(), "slug", 100, 123, "tmux-name")
+            relay._rollout_path = rollout
+            relay._rollout_pos = 0
+
+            relay._relay_rollout_events()
+
+        self.assertEqual(len(sent), 1)
+        self.assertGreaterEqual(len(edits), 2)
+        self.assertEqual({edit[1] for edit in edits}, {777})
+        self.assertIn("Yes", edits[-1][2])
+        self.assertIn("1 2 3 4 5 6 7 8 9 10", edits[-1][2])
 
     def test_goal_start_message_mentions_cancel(self) -> None:
         sent: list[str] = []
