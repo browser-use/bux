@@ -145,7 +145,7 @@ class LoginRoutingTest(unittest.TestCase):
 
 
 class GoalCommandRoutingTest(unittest.TestCase):
-    def test_goal_command_forces_codex_before_enqueue(self) -> None:
+    def test_goal_command_starts_interactive_codex_session(self) -> None:
         bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
         bot.state = {"offset": 0, "agents": {}, "codex_settings": {}, "owners": {}}
         bot.setup_token = None
@@ -153,16 +153,31 @@ class GoalCommandRoutingTest(unittest.TestCase):
         bot.react = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
         bot.typing = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
 
-        enqueued: list[dict] = []
+        sent_to_pty: list[str] = []
 
-        def fake_enqueue(_slug, job, _drain):
-            enqueued.append(job)
-            return 1
+        class InstantThread:
+            def __init__(self, target, **_kwargs):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        sess = mock.Mock()
+        sess.alive = True
+        sess.send_input.side_effect = lambda text: sent_to_pty.append(text) or True
 
         with (
             mock.patch.object(telegram_bot, "load_allow", return_value={100}),
             mock.patch.object(telegram_bot, "save_state"),
-            mock.patch.object(telegram_bot, "_enqueue", side_effect=fake_enqueue),
+            mock.patch.object(telegram_bot, "_get_shell_session", return_value=None),
+            mock.patch.object(telegram_bot, "ShellSession", return_value=sess) as shell_session,
+            mock.patch.object(telegram_bot.threading, "Thread", InstantThread),
+            mock.patch.object(telegram_bot.time, "sleep", return_value=None),
+            mock.patch.object(
+                telegram_bot,
+                "_codex_interactive_command_for",
+                return_value="codex --no-alt-screen resume thread",
+            ),
             mock.patch.object(telegram_bot, "_ensure_codex_goal_feature_enabled") as ensure_goal,
         ):
             bot.handle(
@@ -176,7 +191,13 @@ class GoalCommandRoutingTest(unittest.TestCase):
 
         self.assertEqual(bot.state["agents"]["100_main"], "codex")
         ensure_goal.assert_called_once()
-        self.assertEqual(enqueued[0]["prompt"], "/goal improve Agency UI")
+        shell_session.assert_called_once()
+        self.assertEqual(
+            shell_session.call_args.kwargs["initial_cmd"],
+            "codex --no-alt-screen resume thread",
+        )
+        sess.start.assert_called_once()
+        self.assertEqual(sent_to_pty, ["/goal improve Agency UI"])
 
 
 class MiniAppLaunchTest(unittest.TestCase):
@@ -252,6 +273,26 @@ class AgencyButtonPromptTest(unittest.TestCase):
 
         self.assertIn("[agency-button] 🔁 Redo (tapped by @Magnus)", prompt)
         self.assertIn("rethink this suggestion", prompt)
+
+    def test_plain_reply_context_includes_source_url(self) -> None:
+        prompt = telegram_bot._agency_build_plain_reply_context(
+            {
+                "id": 1272,
+                "title": "Post OpenClaw's Browser Harness guide",
+                "source": "browser-openclaw-browser-harness-guide",
+                "source_label": "OpenClaw guide",
+                "source_url": "https://openclawlaunch.com/guides/openclaw-browser-harness",
+                "description": "Third-party guide context.",
+                "prompt": "Re-open the guide before posting.",
+            },
+            "who built this?",
+        )
+
+        self.assertIn("Suggestion id: 1272", prompt)
+        self.assertIn("Post OpenClaw's Browser Harness guide", prompt)
+        self.assertIn("https://openclawlaunch.com/guides/openclaw-browser-harness", prompt)
+        self.assertIn("Re-open the guide before posting.", prompt)
+        self.assertIn("User reply:\nwho built this?", prompt)
 
 
 class UpdateRequestLanesTest(unittest.TestCase):

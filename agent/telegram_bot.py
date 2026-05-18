@@ -51,6 +51,7 @@ import random
 import re
 import secrets
 import select
+import shlex
 import shutil
 import signal
 import sqlite3
@@ -1175,6 +1176,20 @@ def _codex_thread_id_for(key: LaneKey) -> str | None:
     except OSError as e:
         LOG.warning("reading %s failed (%s); treating as fresh", f, e)
         return None
+
+
+def _codex_interactive_command_for(key: LaneKey, state: dict) -> str:
+    """Command line for a persistent interactive Codex session in a lane."""
+    args = ["codex", "--no-alt-screen", "-a", "never", "-s", "danger-full-access"]
+    settings = _codex_settings_for(key, state)
+    if settings.get("model"):
+        args += ["-m", settings["model"]]
+    if settings.get("reasoning_effort"):
+        args += ["-c", f'model_reasoning_effort="{settings["reasoning_effort"]}"']
+    thread_id = _codex_thread_id_for(key)
+    if thread_id:
+        args += ["resume", "--include-non-interactive", thread_id]
+    return shlex.join(args)
 
 
 def _save_codex_thread_id(key: LaneKey, thread_id: str) -> None:
@@ -3400,6 +3415,36 @@ def _agency_build_custom_dispatch_prompt(
     return prompt
 
 
+def _agency_build_plain_reply_context(sugg_row: dict, user_prompt: str) -> str:
+    """Prepend stored card context when the user replies to an Agency card.
+
+    Button taps already synthesize a prompt with the card row included. Plain
+    Telegram replies only carry the user's text plus a short quoted snippet, so
+    without this lookup the lane can lose the source URL, prompt, and blocks.
+    """
+    parts = ["The user replied to this Agency card. Use the full card context below before answering."]
+    if sugg_row.get("id") is not None:
+        parts.append(f"Suggestion id: {sugg_row['id']}")
+    title = (sugg_row.get("title") or "").strip()
+    if title:
+        parts.append(f"Title: {title}")
+    source = (sugg_row.get("source") or "").strip()
+    if source:
+        parts.append(f"Source: {source}")
+    source_label = (sugg_row.get("source_label") or "").strip()
+    source_url = (sugg_row.get("source_url") or "").strip()
+    if source_label or source_url:
+        parts.append(f"Source link: {source_label or source_url} {source_url}".strip())
+    description = (sugg_row.get("description") or "").strip()
+    if description:
+        parts.append(f"\nCard context:\n{description}")
+    action_prompt = (sugg_row.get("prompt") or "").strip()
+    if action_prompt:
+        parts.append(f"\nOriginal action prompt:\n{action_prompt}")
+    parts.append(f"\nUser reply:\n{user_prompt}")
+    return "\n".join(parts)
+
+
 class Bot:
     def __init__(self, token: str, setup_token: str) -> None:
         self.token = token
@@ -3802,6 +3847,20 @@ class Bot:
             if not owner or not sender_id or _is_owner({"user_id": sender_id}, owner):
                 self._send_login_picker(chat_id, reply_to, thread_id)
                 return
+        # Plain replies to Agency cards should carry the same durable card
+        # context that button taps receive. Telegram itself only gives the
+        # model a short quoted snippet, so look up the replied-to message id
+        # in agency.db and prepend the stored title/source/source_url/prompt.
+        try:
+            if reply_to:
+                import agency_db as _agency_db
+                db = _agency_db.conn()
+                card_ctx = _agency_db.find_by_message(db, chat_id, reply_to)
+                if card_ctx:
+                    prompt = _agency_build_plain_reply_context(card_ctx, prompt)
+                    LOG.info("agency: injected plain reply context into lane=%s", _lane_slug(key))
+        except Exception:
+            LOG.exception("agency plain reply context injection failed")
         # Refine-context injection: if the user tapped Edit on an
         # agency card and this is their first reply in the worker
         # topic, look up the suggestion via the DB and prepend its
@@ -5165,9 +5224,66 @@ class Bot:
                     markdown=True,
                 )
                 return
+            if not _is_owner(sender, owner):
+                self.send(
+                    chat_id,
+                    "❌ `/goal` is owner-only.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
             _set_agent_for(key, AGENT_CODEX, self.state)
             _ensure_codex_goal_feature_enabled()
-            text = "/goal " + arg.strip()
+            goal_line = "/goal " + arg.strip()
+            existing = _get_shell_session(slug)
+            if existing is not None:
+                if existing.send_input(goal_line):
+                    self.send(
+                        chat_id,
+                        "🎯 sent goal to the live Codex session.",
+                        reply_to=mid,
+                        thread_id=thread_id,
+                    )
+                else:
+                    self.send(
+                        chat_id,
+                        "❌ live Codex session is gone — send `/goal ...` again.",
+                        reply_to=mid,
+                        thread_id=thread_id,
+                        markdown=True,
+                    )
+                return
+            try:
+                sess = ShellSession(
+                    self,
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    slug=slug,
+                    initial_cmd=_codex_interactive_command_for(key, self.state),
+                    reply_to=mid,
+                )
+                sess.start()
+
+                def _send_goal_when_ready() -> None:
+                    time.sleep(2.0)
+                    if sess.alive:
+                        sess.send_input(goal_line)
+
+                threading.Thread(
+                    target=_send_goal_when_ready,
+                    name=f"codex-goal-seed-{slug}",
+                    daemon=True,
+                ).start()
+            except Exception as e:
+                LOG.exception("interactive codex goal start failed for %s", slug)
+                self.send(
+                    chat_id,
+                    f"❌ failed to start interactive Codex goal: {e}",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                )
+            return
 
         if cmd in ("/agency", "/miniapp"):
             if not owner or not _is_owner(sender, owner):
