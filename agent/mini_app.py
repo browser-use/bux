@@ -28,7 +28,7 @@ from typing import Any
 
 REPO_AGENT = Path(__file__).resolve().parent
 STATIC_DIR = REPO_AGENT / "mini_app_static"
-CONCEPT_ROUTE_RE = re.compile(r"^/(?:mini-apps?|miniapps?|mini_app|mini[-_]?app[-/]?(?:[1-9]|1[0-9]|20))/?$")
+CONCEPT_ROUTE_RE = re.compile(r"^/(?:mini-apps?|miniapps?|mini_app|mini[-_]?app[-/]?(?:[1-9]|10))/?$")
 TG_ENV = Path("/etc/bux/tg.env")
 TG_STATE = Path("/etc/bux/tg-state.json")
 TG_ALLOWED = Path("/etc/bux/tg-allowed.txt")

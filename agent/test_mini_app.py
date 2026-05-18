@@ -12,6 +12,7 @@ import threading
 import time
 import types
 import unittest
+import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -228,6 +229,10 @@ class MiniAppTest(unittest.TestCase):
             for asset in ["/concepts.css", "/concepts.js"]:
                 with urllib.request.urlopen(base + asset, timeout=5) as res:
                     self.assertEqual(res.status, 200)
+
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(base + "/mini-app-11", timeout=5)
+            self.assertEqual(ctx.exception.code, 404)
         finally:
             server.shutdown()
             server.server_close()
