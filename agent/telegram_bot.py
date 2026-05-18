@@ -5640,12 +5640,20 @@ class Bot:
                 name = str(goal_entry.get("name") or "")
                 if name and _goal_tmux_alive(name):
                     _ensure_goal_relay(self, slug, chat_id, thread_id, self.state)
-                    if _send_goal_tmux_input(name, goal_line, slug=slug):
+                    goal_update = (
+                        "The user sent a new /goal while this Codex goal session is already live.\n"
+                        "Treat this as a direct update or follow-up inside the same live session, "
+                        "not as a request to open Codex's /goal command UI. Do not ask about "
+                        "overriding the current goal unless clarification is genuinely needed.\n\n"
+                        f"New goal/follow-up:\n{arg.strip()}"
+                    )
+                    if _send_goal_tmux_input(name, goal_update, slug=slug):
                         self.send(
                             chat_id,
-                            "🎯 sent goal to the live Codex goal session.",
+                            "🎯 sent goal update to the live Codex goal session. Use `/goal stop` to leave goal mode.",
                             reply_to=mid,
                             thread_id=thread_id,
+                            markdown=True,
                         )
                     else:
                         self.send(
