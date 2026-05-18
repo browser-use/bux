@@ -1796,6 +1796,8 @@ _shell_sessions: dict[str, "ShellSession"] = {}  # lane_slug → session
 _goal_relays_lock = threading.Lock()
 _goal_relays: dict[str, "GoalTmuxRelay"] = {}
 _goal_input_echoes: dict[str, list[str]] = {}
+_goal_starting_lock = threading.Lock()
+_goal_starting: dict[str, threading.Event] = {}
 
 
 def _get_shell_session(slug: str) -> "ShellSession | None":
@@ -1832,6 +1834,29 @@ def _goal_tmux_alive(name: str) -> bool:
 def _goal_state_for(state: dict, slug: str) -> dict | None:
     entry = state.get("goal_tmux", {}).get(slug)
     return entry if isinstance(entry, dict) else None
+
+
+def _begin_goal_start(slug: str) -> threading.Event:
+    ev = threading.Event()
+    with _goal_starting_lock:
+        _goal_starting[slug] = ev
+    return ev
+
+
+def _finish_goal_start(slug: str, ev: threading.Event) -> None:
+    with _goal_starting_lock:
+        if _goal_starting.get(slug) is ev:
+            _goal_starting.pop(slug, None)
+            ev.set()
+
+
+def _wait_for_goal_start(slug: str, timeout: float = 8.0) -> bool:
+    with _goal_starting_lock:
+        ev = _goal_starting.get(slug)
+    if ev is None:
+        return False
+    ev.wait(timeout)
+    return True
 
 
 def _record_goal_tmux(state: dict, slug: str, chat_id: int, thread_id: int, name: str) -> None:
@@ -5482,6 +5507,8 @@ class Bot:
         # so the user can still `/cancel`, `/queue`, etc.
         if not text.startswith("/"):
             goal_entry = _goal_state_for(self.state, slug)
+            if goal_entry is None and _is_owner(sender, owner) and _wait_for_goal_start(slug):
+                goal_entry = _goal_state_for(self.state, slug)
             if goal_entry is not None and _is_owner(sender, owner):
                 name = str(goal_entry.get("name") or "")
                 if name and _goal_tmux_alive(name):
@@ -5649,7 +5676,11 @@ class Bot:
                     )
                 return
             try:
-                _start_goal_tmux(self, key, slug, chat_id, thread_id, self.state, goal_line)
+                start_ev = _begin_goal_start(slug)
+                try:
+                    _start_goal_tmux(self, key, slug, chat_id, thread_id, self.state, goal_line)
+                finally:
+                    _finish_goal_start(slug, start_ev)
                 self.send(
                     chat_id,
                     "🎯 goal session started. Follow-ups in this topic go into the live Codex goal. Use `/cancel` to stop it.",

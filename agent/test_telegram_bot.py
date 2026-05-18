@@ -4,6 +4,8 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -366,6 +368,57 @@ class GoalCommandRoutingTest(unittest.TestCase):
         run_tmux.assert_called_once_with(["kill-session", "-t", "goal-session"], timeout=3.0)
         self.assertEqual(bot.state["goal_tmux"], {})
         self.assertIn("stopped the live Codex goal session", sent[-1])
+
+    def test_plain_followup_waits_for_in_progress_goal_start(self) -> None:
+        bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
+        bot.state = {
+            "offset": 0,
+            "agents": {},
+            "codex_settings": {},
+            "owners": {"100": {"user_id": "55", "name": "Magnus"}},
+            "goal_tmux": {},
+        }
+        bot.setup_token = None
+        bot._username = "bux_bot"
+        bot.react = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+        bot.typing = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+        bot.send = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+        slug = "100_main"
+        start_ev = telegram_bot._begin_goal_start(slug)
+
+        def finish_goal_start() -> None:
+            time.sleep(0.02)
+            bot.state["goal_tmux"][slug] = {
+                "name": "goal-session",
+                "chat_id": 100,
+                "thread_id": 0,
+            }
+            telegram_bot._finish_goal_start(slug, start_ev)
+
+        finisher = threading.Thread(target=finish_goal_start)
+        finisher.start()
+        try:
+            with (
+                mock.patch.object(telegram_bot, "load_allow", return_value={100}),
+                mock.patch.object(telegram_bot, "_goal_tmux_alive", return_value=True),
+                mock.patch.object(telegram_bot, "_ensure_goal_relay", return_value=True),
+                mock.patch.object(telegram_bot, "_send_goal_tmux_input", return_value=True) as send_input,
+                mock.patch.object(telegram_bot, "_enqueue") as enqueue,
+            ):
+                bot.handle(
+                    {
+                        "chat": {"id": 100, "type": "private"},
+                        "from": {"id": 55, "username": "Magnus_Mueller"},
+                        "message_id": 123,
+                        "text": "What's the time?",
+                    }
+                )
+        finally:
+            telegram_bot._finish_goal_start(slug, start_ev)
+            finisher.join(timeout=1)
+
+        send_input.assert_called_once_with("goal-session", "What's the time?", slug=slug)
+        enqueue.assert_not_called()
 
 
 class MiniAppLaunchTest(unittest.TestCase):
