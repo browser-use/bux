@@ -1,0 +1,20 @@
+# Browser Use Box
+
+Browser Use Box is an open-source way to run a 24/7 Claude Code agent on a Linux box with Telegram control, Browser Use Cloud, and a persistent real browser.
+
+## Primary links
+
+- Launch page: https://browser-use.github.io/bux/
+- GitHub: https://github.com/browser-use/bux
+- Install guide: https://github.com/browser-use/bux/blob/main/install.md
+
+## Managed pilot
+
+- Managed pilot for Telegram-heavy teams: https://browser-use.github.io/bux/pilot.html
+- Managed Telegram AI operator: https://browser-use.github.io/bux/telegram-ai-operator.html
+- Partner pilot for AI automation agencies: https://browser-use.github.io/bux/managed-pilot-partners.html
+- Pilot playbook: https://browser-use.github.io/bux/managed-pilot-playbook.html
+- Demo transcript: https://browser-use.github.io/bux/managed-pilot-demo.html
+- Pilot terms: https://browser-use.github.io/bux/managed-pilot-terms.html
+
+The managed pilot is $1,000/month for one scoped private Telegram AI operator workflow, launched in 7 days, with human handoff and weekly tuning.
