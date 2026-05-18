@@ -1,0 +1,75 @@
+# Browser Use Box
+
+Browser Use Box is a 24/7 Claude Code agent setup for a Linux VPS or other box. It combines a Telegram bot, a persistent Browser Use Cloud browser session, and local systemd services so a user can text an agent from anywhere and let it work with a real browser.
+
+Repository: https://github.com/browser-use/bux
+Public site: https://browser-use.github.io/bux/
+
+## What Bux Provides
+
+- Claude Code logged in and always available.
+- Telegram control through a private bot.
+- A persistent Chromium session via Browser Use Cloud and `browser-harness`.
+- Live login handoff when a site requires 2FA, CAPTCHA, or manual login.
+- Scheduled checks and long-running goal work on a user-owned Linux box.
+
+## Install
+
+Install from a blank Ubuntu box:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/browser-use/bux/main/install.sh | sudo BROWSER_USE_API_KEY=bu_xxx bash
+```
+
+Full docs: https://github.com/browser-use/bux/blob/main/install.md
+
+## Managed Pilot Offer
+
+Bux also has a managed pilot for teams that already use Telegram for sales, support, partner onboarding, or operations.
+
+Pilot page: https://browser-use.github.io/bux/pilot.html
+
+Offer:
+
+- $1,000/month.
+- One scoped private Telegram AI operator workflow.
+- Launched in 7 days.
+- Telegram first.
+- Optional browser, Gmail, Calendar, GitHub, Slack, Sheets, or CRM handoff depending on the job.
+- Human handoff and weekly tuning included.
+
+Good workflows:
+
+- Qualify Telegram inbound before a human responds.
+- Summarize partner or support requests into a clean handoff.
+- Check web, GitHub, CI, or status pages and report only what matters.
+- Schedule follow-up checks so leads or operational tasks do not disappear.
+
+The pilot is not meant to replace judgment or create an unsupervised sales bot. It is for repetitive first-line handling, context collection, and cleaner human handoff.
+
+## Managed Telegram AI Operator
+
+Focused page: https://browser-use.github.io/bux/telegram-ai-operator.html
+
+Use cases:
+
+- Lead qualification.
+- Support triage.
+- Partner onboarding.
+- Browser-backed research and handoff summaries.
+
+## Partner Pilot For Agencies
+
+Partner page: https://browser-use.github.io/bux/managed-pilot-partners.html
+
+This is for AI automation agencies with Telegram-heavy client workflows. Bux can act as the managed runtime and delivery layer for one client workflow while the agency remains client-facing.
+
+Best-fit partner projects have existing message volume and operational pain. Bad fits include generic chatbot demos, unsolicited broadcast bots, or workflows that require irreversible agent decisions without human review.
+
+## Supporting Pages
+
+- Pilot playbook: https://browser-use.github.io/bux/managed-pilot-playbook.html
+- Demo transcript: https://browser-use.github.io/bux/managed-pilot-demo.html
+- Pilot terms: https://browser-use.github.io/bux/managed-pilot-terms.html
+- GitHub application form: https://github.com/browser-use/bux/issues/new?template=managed-pilot.yml
+- Telegram contact: https://t.me/Magnus_Mueller
