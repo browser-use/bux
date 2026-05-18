@@ -41,6 +41,7 @@ from __future__ import annotations
 import errno
 import fcntl
 import grp
+import hashlib
 import hmac
 import json
 import logging
@@ -102,6 +103,7 @@ LAST_ANNOUNCED_SHA = Path("/var/lib/bux/last-announced.sha")
 UPDATE_REQUEST_LANES = Path("/var/lib/bux/update-request.lanes")
 UPDATE_REQUEST_KIND_BACK_ONLINE = "back-online"
 UPDATE_REQUEST_KIND_SELF_RESTART = "self-restart"
+GOAL_TMUX_PREFIX = "bux_goal_"
 
 # Per-lane session-uuid root. Bot creates lazily as bux-owned.
 SESSIONS_DIR = Path("/home/bux/.bux/sessions")
@@ -1053,10 +1055,11 @@ def load_state() -> dict:
                 data.setdefault("agents", {})
                 data.setdefault("codex_settings", {})
                 data.setdefault("owners", {})
+                data.setdefault("goal_tmux", {})
                 return data
         except Exception:
             pass
-    return {"offset": 0, "agents": {}, "codex_settings": {}, "owners": {}}
+    return {"offset": 0, "agents": {}, "codex_settings": {}, "owners": {}, "goal_tmux": {}}
 
 
 def save_state(s: dict) -> None:
@@ -1788,6 +1791,9 @@ _SHELL_FLUSH_QUIET_SEC = 0.8
 
 _shell_sessions_lock = threading.Lock()
 _shell_sessions: dict[str, "ShellSession"] = {}  # lane_slug → session
+_goal_relays_lock = threading.Lock()
+_goal_relays: dict[str, "GoalTmuxRelay"] = {}
+_goal_input_echoes: dict[str, list[str]] = {}
 
 
 def _get_shell_session(slug: str) -> "ShellSession | None":
@@ -1797,6 +1803,203 @@ def _get_shell_session(slug: str) -> "ShellSession | None":
             _shell_sessions.pop(slug, None)
             return None
         return sess
+
+
+def _goal_tmux_name(slug: str) -> str:
+    digest = hashlib.sha256(slug.encode("utf-8")).hexdigest()[:14]
+    safe = re.sub(r"[^A-Za-z0-9_]", "_", slug)[:34].strip("_") or "lane"
+    return f"{GOAL_TMUX_PREFIX}{safe}_{digest}"
+
+
+def _run_tmux(args: list[str], *, timeout: float = 8.0) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["sudo", "-iu", "bux", "--", "tmux", *args],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+
+
+def _goal_tmux_alive(name: str) -> bool:
+    try:
+        return _run_tmux(["has-session", "-t", name], timeout=3.0).returncode == 0
+    except Exception:
+        return False
+
+
+def _goal_state_for(state: dict, slug: str) -> dict | None:
+    entry = state.get("goal_tmux", {}).get(slug)
+    return entry if isinstance(entry, dict) else None
+
+
+def _record_goal_tmux(state: dict, slug: str, chat_id: int, thread_id: int, name: str) -> None:
+    state.setdefault("goal_tmux", {})[slug] = {
+        "chat_id": chat_id,
+        "thread_id": thread_id or 0,
+        "name": name,
+        "updated_at": int(time.time()),
+    }
+    save_state(state)
+
+
+def _forget_goal_tmux(state: dict, slug: str) -> None:
+    sessions = state.setdefault("goal_tmux", {})
+    if slug in sessions:
+        sessions.pop(slug, None)
+        save_state(state)
+
+
+def _send_goal_tmux_input(name: str, text: str, slug: str | None = None) -> bool:
+    try:
+        r = _run_tmux(["send-keys", "-t", name, "-l", text], timeout=3.0)
+        if r.returncode != 0:
+            return False
+        r = _run_tmux(["send-keys", "-t", name, "Enter"], timeout=3.0)
+        ok = r.returncode == 0
+        if ok and slug:
+            with _goal_relays_lock:
+                _goal_input_echoes.setdefault(slug, []).append(text.strip())
+                _goal_input_echoes[slug] = _goal_input_echoes[slug][-8:]
+        return ok
+    except Exception:
+        LOG.exception("tmux send-keys failed for %s", name)
+        return False
+
+
+def _capture_goal_tmux(name: str) -> str | None:
+    try:
+        r = _run_tmux(["capture-pane", "-p", "-J", "-S", "-300", "-t", name], timeout=3.0)
+    except Exception:
+        LOG.exception("tmux capture-pane failed for %s", name)
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout
+
+
+def _strip_goal_terminal_noise(text: str) -> str:
+    text = _ANSI_RE.sub("", text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    lines: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        low = line.lower()
+        if "live browser:" in low:
+            continue
+        if line.startswith(("›", "▌", "╭", "╰", "│", "┌", "└", "├", "┤", "─")):
+            continue
+        if "press" in low and "enter" in low and "send" in low:
+            continue
+        if low.startswith(("esc ", "ctrl-", "shift+", "tab ")):
+            continue
+        lines.append(line)
+    cleaned = "\n".join(lines)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+class GoalTmuxRelay:
+    """Poll a durable tmux-backed Codex goal session and relay clean deltas."""
+
+    def __init__(self, bot: "Bot", slug: str, chat_id: int, thread_id: int, name: str) -> None:
+        self.bot = bot
+        self.slug = slug
+        self.chat_id = chat_id
+        self.thread_id = thread_id
+        self.name = name
+        self._stop = threading.Event()
+        self._last_clean = ""
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        with _goal_relays_lock:
+            existing = _goal_relays.get(self.slug)
+            if existing is not None:
+                existing._stop.set()
+            _goal_relays[self.slug] = self
+        captured = _capture_goal_tmux(self.name)
+        if captured:
+            self._last_clean = _strip_goal_terminal_noise(captured)
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"goal-tmux-relay-{self.slug}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _run(self) -> None:
+        quiet_ticks = 0
+        while not self._stop.is_set():
+            if not _goal_tmux_alive(self.name):
+                break
+            captured = _capture_goal_tmux(self.name)
+            if captured is None:
+                time.sleep(1.0)
+                continue
+            clean = _strip_goal_terminal_noise(captured)
+            with _goal_relays_lock:
+                echoes = list(_goal_input_echoes.get(self.slug, ()))
+            if echoes:
+                clean = "\n".join(
+                    line for line in clean.splitlines()
+                    if line.strip() not in echoes
+                ).strip()
+            if clean and clean != self._last_clean:
+                delta = clean
+                if self._last_clean and clean.startswith(self._last_clean):
+                    delta = clean[len(self._last_clean):].strip()
+                self._last_clean = clean
+                # TUI repaint noise often changes a few characters while the
+                # model is still thinking. Only relay meaningful text deltas.
+                if len(delta) >= 12 and not delta.startswith("/goal "):
+                    quiet_ticks += 1
+                    if quiet_ticks >= 2:
+                        self._send_delta(delta)
+                        quiet_ticks = 0
+                else:
+                    quiet_ticks = 0
+            time.sleep(1.0)
+        with _goal_relays_lock:
+            if _goal_relays.get(self.slug) is self:
+                _goal_relays.pop(self.slug, None)
+
+    def _send_delta(self, delta: str) -> None:
+        for chunk in _split_into_code_bubbles(delta, max_chars=3200):
+            # Goal relay output is already terminal-derived. Keep it plain
+            # enough to scan on a phone, without leaking raw TUI frames.
+            self.bot.send(self.chat_id, chunk, thread_id=self.thread_id)
+
+
+def _ensure_goal_relay(bot: "Bot", slug: str, chat_id: int, thread_id: int, state: dict) -> bool:
+    entry = _goal_state_for(state, slug)
+    if not entry:
+        return False
+    name = str(entry.get("name") or "")
+    if not name or not _goal_tmux_alive(name):
+        _forget_goal_tmux(state, slug)
+        return False
+    with _goal_relays_lock:
+        if slug in _goal_relays:
+            return True
+    GoalTmuxRelay(bot, slug, chat_id, thread_id or 0, name).start()
+    return True
+
+
+def _start_goal_tmux(bot: "Bot", key: LaneKey, slug: str, chat_id: int, thread_id: int, state: dict, goal_line: str) -> str:
+    name = _goal_tmux_name(slug)
+    if not _goal_tmux_alive(name):
+        cmd = _codex_interactive_command_for(key, state)
+        r = _run_tmux(["new-session", "-d", "-s", name, "-c", str(WORKSPACE), cmd], timeout=8.0)
+        if r.returncode != 0:
+            raise RuntimeError((r.stderr or r.stdout or f"tmux rc={r.returncode}").strip())
+        time.sleep(1.5)
+    _record_goal_tmux(state, slug, chat_id, thread_id, name)
+    GoalTmuxRelay(bot, slug, chat_id, thread_id or 0, name).start()
+    if not _send_goal_tmux_input(name, goal_line, slug=slug):
+        raise RuntimeError("tmux session started but did not accept input")
+    return name
 
 
 class ShellSession:
@@ -3453,6 +3656,19 @@ class Bot:
         self.client = httpx.Client(timeout=POLL_TIMEOUT + 10)
         self.state = load_state()
         self._username: str | None = None
+        self._restore_goal_relays()
+
+    def _restore_goal_relays(self) -> None:
+        for slug, entry in list(self.state.get("goal_tmux", {}).items()):
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name") or "")
+            chat_id = int(entry.get("chat_id") or 0)
+            thread_id = int(entry.get("thread_id") or 0)
+            if not name or not chat_id or not _goal_tmux_alive(name):
+                _forget_goal_tmux(self.state, str(slug))
+                continue
+            GoalTmuxRelay(self, str(slug), chat_id, thread_id, name).start()
 
     # ----- Telegram API plumbing -----
 
@@ -5162,6 +5378,23 @@ class Bot:
         # answers, `y/n` prompts, …). Slash commands fall through below
         # so the user can still `/cancel`, `/queue`, etc.
         if not text.startswith("/"):
+            goal_entry = _goal_state_for(self.state, slug)
+            if goal_entry is not None and _is_owner(sender, owner):
+                name = str(goal_entry.get("name") or "")
+                if name and _goal_tmux_alive(name):
+                    _ensure_goal_relay(self, slug, chat_id, thread_id, self.state)
+                    if _send_goal_tmux_input(name, text, slug=slug):
+                        self.react(chat_id, mid, "✍")
+                    else:
+                        self.send(
+                            chat_id,
+                            "❌ goal session is gone — send `/goal ...` again.",
+                            reply_to=mid,
+                            thread_id=thread_id,
+                            markdown=True,
+                        )
+                    return
+                _forget_goal_tmux(self.state, slug)
             sess = _get_shell_session(slug)
             if sess is not None and _is_owner(sender, owner):
                 if sess.send_input(text):
@@ -5236,6 +5469,28 @@ class Bot:
             _set_agent_for(key, AGENT_CODEX, self.state)
             _ensure_codex_goal_feature_enabled()
             goal_line = "/goal " + arg.strip()
+            goal_entry = _goal_state_for(self.state, slug)
+            if goal_entry is not None:
+                name = str(goal_entry.get("name") or "")
+                if name and _goal_tmux_alive(name):
+                    _ensure_goal_relay(self, slug, chat_id, thread_id, self.state)
+                    if _send_goal_tmux_input(name, goal_line, slug=slug):
+                        self.send(
+                            chat_id,
+                            "🎯 sent goal to the live Codex goal session.",
+                            reply_to=mid,
+                            thread_id=thread_id,
+                        )
+                    else:
+                        self.send(
+                            chat_id,
+                            "❌ live Codex goal session is gone — send `/goal ...` again.",
+                            reply_to=mid,
+                            thread_id=thread_id,
+                            markdown=True,
+                        )
+                    return
+                _forget_goal_tmux(self.state, slug)
             existing = _get_shell_session(slug)
             if existing is not None:
                 if existing.send_input(goal_line):
@@ -5255,26 +5510,13 @@ class Bot:
                     )
                 return
             try:
-                sess = ShellSession(
-                    self,
-                    chat_id=chat_id,
-                    thread_id=thread_id,
-                    slug=slug,
-                    initial_cmd=_codex_interactive_command_for(key, self.state),
+                _start_goal_tmux(self, key, slug, chat_id, thread_id, self.state, goal_line)
+                self.send(
+                    chat_id,
+                    "🎯 goal session started. Follow-ups in this topic go into the live Codex goal.",
                     reply_to=mid,
+                    thread_id=thread_id,
                 )
-                sess.start()
-
-                def _send_goal_when_ready() -> None:
-                    time.sleep(2.0)
-                    if sess.alive:
-                        sess.send_input(goal_line)
-
-                threading.Thread(
-                    target=_send_goal_when_ready,
-                    name=f"codex-goal-seed-{slug}",
-                    daemon=True,
-                ).start()
             except Exception as e:
                 LOG.exception("interactive codex goal start failed for %s", slug)
                 self.send(
@@ -5591,7 +5833,18 @@ class Bot:
             if shell_sess is not None:
                 shell_sess.kill("cancelled")
                 killed_shell = True
-            if dropped == 0 and not killed_in_flight and not killed_shell:
+            killed_goal = False
+            goal_entry = _goal_state_for(self.state, slug)
+            if goal_entry is not None:
+                name = str(goal_entry.get("name") or "")
+                if name and _goal_tmux_alive(name):
+                    try:
+                        _run_tmux(["kill-session", "-t", name], timeout=3.0)
+                        killed_goal = True
+                    except Exception:
+                        LOG.exception("failed to kill goal tmux session %s", name)
+                _forget_goal_tmux(self.state, slug)
+            if dropped == 0 and not killed_in_flight and not killed_shell and not killed_goal:
                 self.send(
                     chat_id,
                     "Nothing to cancel.",
@@ -5604,6 +5857,8 @@ class Bot:
                 parts.append("killed running task")
             if killed_shell:
                 parts.append("killed shell session")
+            if killed_goal:
+                parts.append("killed goal session")
             if dropped > 0:
                 parts.append(f"cancelled {dropped} pending task(s)")
             self.send(
