@@ -222,7 +222,7 @@ class GoalCommandRoutingTest(unittest.TestCase):
         self.assertEqual(edits[0][1], 777)
         self.assertIn("1 2 3 4 5 6 7 8 9 10", edits[0][2])
 
-    def test_goal_relay_reuses_one_editable_message_for_followup_answers(self) -> None:
+    def test_goal_relay_reuses_one_editable_message_within_one_turn(self) -> None:
         sent: list[tuple[int, str, dict]] = []
         edits: list[tuple[int, int, str, dict]] = []
 
@@ -271,6 +271,37 @@ class GoalCommandRoutingTest(unittest.TestCase):
         self.assertIn("Yes", edits[-1][2])
         self.assertIn("1 2 3 4 5 6 7 8 9 10", edits[-1][2])
 
+    def test_goal_relay_starts_new_editable_message_after_user_input(self) -> None:
+        sent: list[tuple[int, str, dict]] = []
+        edits: list[tuple[int, int, str, dict]] = []
+        next_id = 776
+
+        class FakeBot:
+            def send(self, chat_id: int, text: str, **kwargs) -> None:
+                sent.append((chat_id, text, kwargs))
+
+            def send_returning_id(self, chat_id: int, text: str, **kwargs) -> int:
+                nonlocal next_id
+                next_id += 1
+                sent.append((chat_id, text, kwargs))
+                return next_id
+
+            def edit(self, chat_id: int, message_id: int, text: str, **kwargs) -> bool:
+                edits.append((chat_id, message_id, text, kwargs))
+                return True
+
+        relay = telegram_bot.GoalTmuxRelay(FakeBot(), "slug", 100, 123, "tmux-name")
+
+        relay._relay_message("first answer", final=True)
+        relay.begin_user_turn()
+        relay._relay_message("second answer", final=True)
+
+        self.assertEqual(len(sent), 2)
+        self.assertEqual([edit[1] for edit in edits], [777, 778])
+        self.assertIn("first answer", edits[0][2])
+        self.assertIn("second answer", edits[1][2])
+        self.assertNotIn("first answer", edits[1][2])
+
     def test_goal_start_message_mentions_cancel(self) -> None:
         sent: list[str] = []
         bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
@@ -299,6 +330,42 @@ class GoalCommandRoutingTest(unittest.TestCase):
             )
 
         self.assertIn("Use `/cancel` to stop it.", sent[-1])
+
+    def test_goal_stop_kills_goal_session_and_clears_state(self) -> None:
+        sent: list[str] = []
+        bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
+        bot.state = {
+            "offset": 0,
+            "agents": {},
+            "codex_settings": {},
+            "owners": {},
+            "goal_tmux": {"100_main": {"name": "goal-session", "chat_id": 100, "thread_id": 0}},
+        }
+        bot.setup_token = None
+        bot._username = "bux_bot"
+        bot.react = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+        bot.typing = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+        bot.send = lambda _chat, text, **_kwargs: sent.append(text)  # type: ignore[method-assign]
+
+        with (
+            mock.patch.object(telegram_bot, "load_allow", return_value={100}),
+            mock.patch.object(telegram_bot, "save_state"),
+            mock.patch.object(telegram_bot, "_goal_tmux_alive", return_value=True),
+            mock.patch.object(telegram_bot, "_run_tmux") as run_tmux,
+        ):
+            run_tmux.return_value.returncode = 0
+            bot.handle(
+                {
+                    "chat": {"id": 100, "type": "private"},
+                    "from": {"id": 55, "username": "Magnus_Mueller"},
+                    "message_id": 123,
+                    "text": "/goal stop",
+                }
+            )
+
+        run_tmux.assert_called_once_with(["kill-session", "-t", "goal-session"], timeout=3.0)
+        self.assertEqual(bot.state["goal_tmux"], {})
+        self.assertIn("stopped the live Codex goal session", sent[-1])
 
 
 class MiniAppLaunchTest(unittest.TestCase):
