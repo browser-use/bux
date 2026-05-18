@@ -24,6 +24,7 @@ More launch links:
 - [Launch page](https://browser-use.github.io/bux/)
 - [Managed pilot for Telegram-heavy teams](https://browser-use.github.io/bux/pilot.html)
 - [Managed pilot playbook](https://browser-use.github.io/bux/managed-pilot-playbook.html)
+- [Managed pilot demo transcript](https://browser-use.github.io/bux/managed-pilot-demo.html)
 
 ## Setup prompt
 
@@ -74,6 +75,8 @@ If you'd rather not run your own VPS: [cloud.browser-use.com](https://cloud.brow
 For teams that already run sales, support, partner onboarding, or operations in Telegram, there is also a [$1,000/month managed pilot](https://browser-use.github.io/bux/pilot.html): one scoped private operator workflow, launched in 7 days, with human handoff and weekly tuning.
 
 The pilot scope, handoff format, and example operator rules are in the [managed pilot playbook](https://browser-use.github.io/bux/managed-pilot-playbook.html).
+
+The [demo transcript](https://browser-use.github.io/bux/managed-pilot-demo.html) shows the first workflow: Telegram lead triage into a clean human handoff.
 
 Pilot inquiries can start on [Telegram](https://t.me/Magnus_Mueller) or through the [managed pilot issue form](https://github.com/browser-use/bux/issues/new?template=managed-pilot.yml).
 
