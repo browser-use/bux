@@ -11,6 +11,10 @@ body:
 
         Pilot page: https://browser-use.github.io/bux/pilot.html
 
+        Terms and acceptance criteria: https://browser-use.github.io/bux/managed-pilot-terms.html
+
+        Demo transcript: https://browser-use.github.io/bux/managed-pilot-demo.html
+
         Playbook: https://browser-use.github.io/bux/managed-pilot-playbook.html
 
   - type: input
@@ -44,12 +48,30 @@ body:
     validations:
       required: true
 
+  - type: input
+    id: volume
+    attributes:
+      label: Expected monthly thread volume
+      description: Approximate number of Telegram threads, leads, tickets, or operational checks this workflow should handle.
+      placeholder: "Example: 80 partner inquiries/month, 25 support threads/week, 10 lead checks/day"
+    validations:
+      required: true
+
   - type: textarea
     id: current-process
     attributes:
       label: Current process
       description: What happens today when this request arrives?
       placeholder: "A lead posts in a Telegram group, an operator asks 4-5 questions, then sales joins if qualified..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: handoff
+    attributes:
+      label: Desired human handoff
+      description: What should the operator collect before a person steps in?
+      placeholder: "Company, use case, budget, timeline, missing docs, risk flags, recommended next action..."
     validations:
       required: true
 
@@ -70,6 +92,8 @@ body:
         - label: This is for a real business workflow, not a consumer chatbot experiment.
           required: true
         - label: A human will remain responsible for commitments, pricing, legal/compliance, spend, and production access.
+          required: true
+        - label: I reviewed the pilot terms and acceptance criteria.
           required: true
         - label: The team is open to a $1,000/month managed pilot if there is a fit.
           required: true
