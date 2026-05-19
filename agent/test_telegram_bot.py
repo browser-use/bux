@@ -36,7 +36,7 @@ class CodexSettingsTest(unittest.TestCase):
             telegram_bot._codex_settings_for(first, state),
             {"model": "gpt-5.4-mini", "reasoning_effort": "low", "service_tier": "priority"},
         )
-        self.assertEqual(telegram_bot._codex_settings_for(second, state), {})
+        self.assertEqual(telegram_bot._codex_settings_for(second, state), telegram_bot.CODEX_DEFAULT_SETTINGS)
 
     def test_clear_codex_settings(self) -> None:
         state = {
@@ -49,8 +49,11 @@ class CodexSettingsTest(unittest.TestCase):
         with mock.patch.object(telegram_bot, "save_state"):
             settings = telegram_bot._set_codex_settings((1, 10), state, clear=True)
 
-        self.assertEqual(settings, {})
-        self.assertEqual(telegram_bot._codex_settings_for((1, 10), state), {})
+        self.assertEqual(settings, telegram_bot.CODEX_DEFAULT_SETTINGS)
+        self.assertEqual(
+            telegram_bot._codex_settings_for((1, 10), state),
+            telegram_bot.CODEX_DEFAULT_SETTINGS,
+        )
 
     def test_invalid_effort_is_ignored(self) -> None:
         state = {"offset": 0, "agents": {}, "codex_settings": {}, "owners": {}}
@@ -63,7 +66,10 @@ class CodexSettingsTest(unittest.TestCase):
                 reasoning_effort="turbo",
             )
 
-        self.assertEqual(settings, {"model": "gpt-5.4"})
+        self.assertEqual(
+            settings,
+            {"model": "gpt-5.4", "reasoning_effort": "xhigh", "service_tier": "priority"},
+        )
 
     def test_invalid_service_tier_is_ignored(self) -> None:
         state = {"offset": 0, "agents": {}, "codex_settings": {}, "owners": {}}
@@ -75,7 +81,7 @@ class CodexSettingsTest(unittest.TestCase):
                 service_tier="turbo",
             )
 
-        self.assertEqual(settings, {})
+        self.assertEqual(settings, telegram_bot.CODEX_DEFAULT_SETTINGS)
 
     def test_model_picker_marks_current_choices(self) -> None:
         markup = telegram_bot._codex_model_picker_markup(
@@ -163,11 +169,11 @@ class CodexSettingsTest(unittest.TestCase):
 
         self.assertEqual(
             bot.state["codex_settings"]["100_123"],
-            {"service_tier": "priority"},
+            {"service_tier": "off"},
         )
         self.assertTrue(any(method == "editMessageText" for method, _ in calls))
 
-    def test_plain_fast_switches_codex_fast_service_tier(self) -> None:
+    def test_plain_fast_toggles_default_fast_service_tier_off(self) -> None:
         sent: list[tuple[str, dict]] = []
         bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
         bot.state = {"offset": 0, "agents": {}, "codex_settings": {}, "owners": {}}
@@ -195,18 +201,18 @@ class CodexSettingsTest(unittest.TestCase):
         self.assertEqual(bot.state["agents"]["100_main"], "codex")
         self.assertEqual(
             bot.state["codex_settings"]["100_main"],
-            {"service_tier": "priority"},
+            {"service_tier": "off"},
         )
-        self.assertIn("Fast mode on.", sent[-1][0])
+        self.assertIn("Fast mode off.", sent[-1][0])
         self.assertNotIn("reply_markup", sent[-1][1])
 
-    def test_plain_fast_toggles_fast_service_tier_off(self) -> None:
+    def test_plain_fast_toggles_fast_service_tier_on(self) -> None:
         sent: list[tuple[str, dict]] = []
         bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
         bot.state = {
             "offset": 0,
             "agents": {},
-            "codex_settings": {"100_main": {"service_tier": "priority", "reasoning_effort": "xhigh"}},
+            "codex_settings": {"100_main": {"service_tier": "off", "reasoning_effort": "xhigh"}},
             "owners": {},
         }
         bot.setup_token = None
@@ -232,9 +238,9 @@ class CodexSettingsTest(unittest.TestCase):
 
         self.assertEqual(
             bot.state["codex_settings"]["100_main"],
-            {"reasoning_effort": "xhigh"},
+            {"service_tier": "priority", "reasoning_effort": "xhigh"},
         )
-        self.assertIn("Fast mode off.", sent[-1][0])
+        self.assertIn("Fast mode on.", sent[-1][0])
 
     def test_codex_goal_feature_enablement_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

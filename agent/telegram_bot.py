@@ -258,6 +258,11 @@ DEFAULT_AGENT = AGENT_CLAUDE
 CODEX_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
 CODEX_MODEL_CHOICES = ("gpt-5.5", "gpt-5.4", "gpt-5.4-mini")
 CODEX_FAST_SERVICE_TIER = "priority"
+CODEX_DEFAULT_SETTINGS = {
+    "model": "gpt-5.5",
+    "reasoning_effort": "xhigh",
+    "service_tier": CODEX_FAST_SERVICE_TIER,
+}
 
 
 # Registered with Telegram via setMyCommands at boot. Order = order shown
@@ -1389,8 +1394,8 @@ def _set_agent_for(key: LaneKey, agent: str, state: dict) -> None:
 def _codex_settings_for(key: LaneKey, state: dict) -> dict:
     raw = (state.get("codex_settings") or {}).get(_lane_slug(key)) or {}
     if not isinstance(raw, dict):
-        return {}
-    out: dict[str, str] = {}
+        raw = {}
+    out: dict[str, str] = dict(CODEX_DEFAULT_SETTINGS)
     model = str(raw.get("model") or "").strip()
     if model:
         out["model"] = model
@@ -1400,6 +1405,8 @@ def _codex_settings_for(key: LaneKey, state: dict) -> dict:
     service_tier = str(raw.get("service_tier") or "").strip().lower()
     if service_tier == CODEX_FAST_SERVICE_TIER:
         out["service_tier"] = service_tier
+    elif "service_tier" in raw:
+        out.pop("service_tier", None)
     return out
 
 
@@ -1417,8 +1424,9 @@ def _set_codex_settings(
     if clear:
         settings_by_lane.pop(slug, None)
         save_state(state)
-        return {}
-    current = dict(_codex_settings_for(key, state))
+        return dict(CODEX_DEFAULT_SETTINGS)
+    raw = settings_by_lane.get(slug) or {}
+    current = dict(raw) if isinstance(raw, dict) else {}
     if model is not None:
         model = model.strip()
         if model:
@@ -1436,13 +1444,13 @@ def _set_codex_settings(
         if service_tier == CODEX_FAST_SERVICE_TIER:
             current["service_tier"] = service_tier
         elif not service_tier:
-            current.pop("service_tier", None)
+            current["service_tier"] = "off"
     if current:
         settings_by_lane[slug] = current
     else:
         settings_by_lane.pop(slug, None)
     save_state(state)
-    return current
+    return _codex_settings_for(key, state)
 
 
 def _format_codex_settings(settings: dict) -> str:
@@ -1460,23 +1468,13 @@ def _codex_model_picker_markup(settings: dict) -> dict:
     def label(text: str, active: bool) -> str:
         return f"✓ {text}" if active else text
 
-    model_row = [
-        {
-            "text": label("Default", not current_model),
-            "callback_data": "codex_model:model:default",
-        }
-    ]
+    model_row = []
     for model in CODEX_MODEL_CHOICES:
         model_row.append({
             "text": label(model.replace("gpt-", ""), current_model == model),
             "callback_data": f"codex_model:model:{model}",
         })
     effort_row = [
-        {
-            "text": label("Default", not current_effort),
-            "callback_data": "codex_model:effort:default",
-        }
-    ] + [
         {
             "text": label(effort.title(), current_effort == effort),
             "callback_data": f"codex_model:effort:{effort}",
