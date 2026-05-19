@@ -26,9 +26,9 @@ body {
   min-height: 100dvh;
   color: var(--ink);
   background:
-    radial-gradient(circle at 14% 8%, rgba(255, 90, 122, 0.16), transparent 28%),
-    radial-gradient(circle at 90% 16%, rgba(56, 189, 248, 0.18), transparent 30%),
-    linear-gradient(135deg, #fff7ed, #ecfeff 70%, #f8fafc);
+    linear-gradient(135deg, rgba(255, 90, 122, 0.10), transparent 34%),
+    linear-gradient(245deg, rgba(56, 189, 248, 0.12), transparent 42%),
+    linear-gradient(180deg, #ffffff 0%, #f3f7f6 58%, #e5eef0 100%);
   font: 15px/1.42 var(--font-ui);
 }
 
@@ -60,16 +60,29 @@ h2 {
 .concept-shell {
   min-height: 100vh;
   min-height: 100dvh;
+  position: relative;
+  z-index: 1;
+}
+
+.concept-scene {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
 }
 
 .lab-nav {
   position: fixed;
   z-index: 80;
   top: max(10px, env(safe-area-inset-top));
-  left: 10px;
-  right: 10px;
+  left: 50%;
+  width: min(520px, calc(100% - 20px));
+  transform: translateX(-50%);
   display: grid;
-  grid-template-columns: auto auto 1fr auto auto;
+  grid-template-columns: auto auto auto auto auto;
   gap: 7px;
   align-items: center;
   padding: 7px;
@@ -966,24 +979,37 @@ h2 {
 .deck-shell {
   position: relative;
   max-width: 420px;
-  min-height: 760px;
+  height: min(760px, calc(100dvh - 190px));
+  min-height: 560px;
   margin: 0 auto;
   touch-action: pan-y;
 }
 
 .swipe-card {
   position: absolute;
-  inset: 116px 0 188px;
+  z-index: var(--z, 1);
+  inset: 94px 0 132px;
   display: grid;
-  grid-template-rows: minmax(0, 46%) auto;
+  grid-template-rows: minmax(150px, 42%) minmax(0, 1fr);
   gap: 12px;
   padding: 14px;
   border-radius: 38px;
   background: white;
   overflow: hidden;
+  opacity: calc(1 - var(--stack) * 0.16);
   transform: translateY(calc(var(--stack) * 12px)) scale(calc(1 - var(--stack) * 0.035));
   transition: transform 180ms ease, box-shadow 180ms ease, filter 180ms ease;
   will-change: transform;
+}
+
+.swipe-card:not([data-swipe-card="1"]) {
+  pointer-events: none;
+}
+
+.swipe-card:not([data-swipe-card="1"]) section,
+.swipe-card:not([data-swipe-card="1"]) .deck-visual,
+.swipe-card:not([data-swipe-card="1"]) .card-rarity {
+  opacity: 0;
 }
 
 .swipe-card.swiping {
@@ -1001,16 +1027,26 @@ h2 {
 }
 
 .deck-visual {
-  min-height: 230px;
+  min-height: 0;
 }
 
 .swipe-card section {
   display: grid;
   gap: 8px;
+  min-height: 0;
+  align-content: start;
+  overflow: hidden;
 }
 
 .swipe-card h2 {
   font-size: 28px;
+}
+
+.swipe-card p {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .deck-actions {
@@ -1018,6 +1054,14 @@ h2 {
   left: 0;
   right: 0;
   bottom: 0;
+}
+
+.deck-actions .agent-buttons {
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+}
+
+.deck-actions .utility-buttons {
+  justify-content: center;
 }
 
 .deck-swipe-cues {
@@ -1945,17 +1989,17 @@ h2 {
 }
 
 .concept-2 .swipe-card {
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.42);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.12)),
-    #30303a;
-  color: #fff;
-  box-shadow: 0 34px 90px rgba(0, 0, 0, 0.48);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(229, 237, 245, 0.92)),
+    #f8fafc;
+  color: #111827;
+  box-shadow: 0 34px 90px rgba(0, 0, 0, 0.34);
 }
 
 .concept-2 .swipe-card p,
 .concept-2 .swipe-card .meta-line {
-  color: rgba(255, 255, 255, 0.78);
+  color: rgba(17, 24, 39, 0.72);
 }
 
 .concept-2 .deck-visual {
@@ -2417,7 +2461,9 @@ h2 {
 
 @media (max-width: 560px) {
   .lab-nav {
-    grid-template-columns: auto auto 1fr auto;
+    grid-template-columns: auto auto auto auto;
+    gap: 5px;
+    padding: 5px;
   }
 
   .lab-nav small {
@@ -2432,7 +2478,7 @@ h2 {
   }
 
   .concept-screen {
-    padding: 58px 10px 12px;
+    padding: 54px 10px 10px;
   }
 
   .card-preview {
@@ -2450,11 +2496,11 @@ h2 {
   }
 
   .concept-title h1 {
-    font-size: 18px;
+    font-size: 17px;
   }
 
-  .concept-title p {
-    font-size: 12px;
+  .concept-title {
+    display: none;
   }
 
   .game-loop-panel {
@@ -2577,11 +2623,52 @@ h2 {
   }
 
   .deck-shell {
-    min-height: 720px;
+    height: calc(100dvh - 82px);
+    min-height: 560px;
+  }
+
+  .concept-2 .boss-meter {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 7px;
+    margin-bottom: 8px;
+    padding: 9px 10px;
+    border-radius: 20px;
+  }
+
+  .concept-2 .boss-meter p {
+    grid-column: 1 / -1;
+    height: 8px;
+  }
+
+  .concept-2 .boss-meter span {
+    display: none;
+  }
+
+  .concept-2 .boss-meter strong,
+  .concept-2 .boss-meter em {
+    font-size: 12px;
   }
 
   .swipe-card {
-    inset: 116px 0 190px;
+    inset: 92px 0 116px;
+    grid-template-rows: minmax(128px, 38%) minmax(0, 1fr);
+    border-radius: 30px;
+    padding: 12px;
+  }
+
+  .deck-swipe-cues {
+    margin-bottom: 7px;
+  }
+
+  .deck-actions {
+    gap: 6px;
+  }
+
+  .deck-actions .agent-buttons button,
+  .deck-actions .utility-buttons button {
+    min-height: 38px;
+    padding: 7px 10px;
+    font-size: 12px;
   }
 
   .table-head {
@@ -2593,5 +2680,75 @@ h2 {
   .compact-row,
   .check-row {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-height: 680px) {
+  .concept-screen {
+    padding-top: 50px;
+    padding-bottom: 8px;
+  }
+
+  .concept-title {
+    display: none;
+  }
+
+  .deck-swipe-cues {
+    display: none;
+  }
+
+  .deck-shell {
+    height: calc(100dvh - 94px);
+    min-height: 420px;
+  }
+
+  .concept-2 .boss-meter {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    margin-bottom: 8px;
+    padding: 9px 10px;
+    border-radius: 20px;
+  }
+
+  .boss-meter p {
+    grid-column: 1 / -1;
+    height: 8px;
+  }
+
+  .boss-meter em {
+    font-size: 11px;
+  }
+
+  .swipe-card {
+    inset: 72px 0 104px;
+    grid-template-rows: minmax(110px, 36%) minmax(0, 1fr);
+    gap: 8px;
+    padding: 10px;
+    border-radius: 28px;
+  }
+
+  .swipe-card h2 {
+    font-size: 22px;
+  }
+
+  .swipe-card p {
+    -webkit-line-clamp: 2;
+  }
+
+  .deck-actions {
+    gap: 5px;
+  }
+
+  .deck-actions .agent-buttons {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+  }
+
+  .deck-actions .agent-buttons button,
+  .deck-actions .utility-buttons button {
+    min-height: 40px;
+    padding: 7px 11px;
+    font-size: 12px;
   }
 }

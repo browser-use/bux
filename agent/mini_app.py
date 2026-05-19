@@ -1075,9 +1075,53 @@ def _game_state() -> dict[str, Any]:
                 """
             )
         ]
+        accepted_today = int(
+            db.execute(
+                """
+                SELECT COUNT(*) AS n FROM quest_events
+                 WHERE event IN ('start', 'complete')
+                   AND created_at >= ?
+                """,
+                (_now() - 86400,),
+            ).fetchone()["n"]
+            or 0
+        )
+        active_days = [
+            str(row["day"])
+            for row in db.execute(
+                """
+                SELECT DISTINCT date(created_at, 'unixepoch') AS day
+                  FROM quest_events
+                 WHERE event IN ('start', 'complete', 'comment')
+                 ORDER BY day DESC
+                 LIMIT 14
+                """
+            )
+        ]
+        domain_rows = db.execute(
+            """
+            SELECT COALESCE(NULLIF(detail, ''), event) AS label,
+                   COUNT(*) AS n,
+                   COALESCE(SUM(points), 0) AS points
+              FROM quest_events
+             GROUP BY label
+             ORDER BY points DESC, n DESC
+             LIMIT 6
+            """
+        ).fetchall()
     fallback_points = stats.get("done", 0) * 180 + stats.get("comments", 0) * 45 + stats.get("goals", 0) * 90
     points = max(0, (event_points + goal_points) if event_points else fallback_points)
     rank, next_rank, progress = _rank_for_points(points)
+    daily_target = 3
+    streak = 0
+    if active_days:
+        today = time.strftime("%Y-%m-%d", time.gmtime())
+        cursor = _now()
+        while time.strftime("%Y-%m-%d", time.gmtime(cursor)) in active_days:
+            streak += 1
+            cursor -= 86400
+        if streak == 0 and active_days[0] == today:
+            streak = 1
     return {
         "points": points,
         "rank": rank,
@@ -1085,6 +1129,26 @@ def _game_state() -> dict[str, Any]:
         "progress": progress,
         "stats": stats,
         "recent_events": recent_events,
+        "daily": {
+            "accepted": accepted_today,
+            "target": daily_target,
+            "progress": min(100, int((accepted_today / daily_target) * 100)),
+            "label": "Win 3 useful approvals today",
+        },
+        "streak": streak,
+        "boss": {
+            "label": "Daily boss",
+            "hp": max(0, 100 - min(100, int((accepted_today / daily_target) * 100))),
+        },
+        "domains": [
+            {
+                "label": _clip_text(_clean_mobile_text(str(row["label"] or "Agency")), 24),
+                "count": int(row["n"] or 0),
+                "points": int(row["points"] or 0),
+            }
+            for row in domain_rows
+            if str(row["label"] or "").strip()
+        ],
     }
 
 
@@ -1297,6 +1361,7 @@ def _goal_agent_prompt(
         "Card-shape doctrine is in CLAUDE.md / AGENTS.md (## Cards). "
         f"Scan the user's available context and generate {count} high-signal action items for this goal. "
         "This is the generator lane for a personal King of Life social feed: create quests the user will want to accept because they move real goals. "
+        "One card should correspond to one concrete task/agent session, with a clear visible boundary and an obvious next tap. "
         "Read the goals file and agency.db history first so you do not repeat skipped ideas. "
         "Do all reversible/internal work before posting a card, then ask only at the visible boundary. "
         "If the user explicitly says to work autonomously, that they are going away, or that no approval is needed, switch to autopilot: do the private/reversible work directly, post concise progress updates in this topic, and create approval cards only for visible/external side effects. "
@@ -1310,6 +1375,7 @@ def _goal_agent_prompt(
         "Set source_label/source_url to the real platform object; never use https://github.com/browser-use/bux as a generic source for non-GitHub cards. "
         "The first sentence must say the platform/source, exact object, and the concrete action. Avoid raw IDs, source slugs, RICE scores, and abbreviations a user cannot understand instantly. "
         "Every card should include proof of what the agent already inspected/prepared, the visible-action approval boundary, and why it earns progress toward the user's goals. "
+        "For message, email, social, or launch cards, provide 2-4 genuinely different variants as separate blocks with matching buttons; for info-only cards, do not invent a fake action button. "
         "Keep each card short, concrete, and easy to swipe. For Mini App visuals, prefer portrait 9:16 image_url/image_file assets with a recognizable subject and no embedded title/caption/button text; the card title, description, buttons, and blocks are rendered separately by the Mini App. "
         "If there is no genuinely useful visual, leave image_url/image_file empty so the Mini App can render a clean text-first card. "
         "Use blocks for expandable context, drafts, variants, or message options; use buttons for the actual one-tap choices, and assume long button labels must still be readable on a phone. "
@@ -1396,9 +1462,11 @@ def _topic_generate_prompt(thread_id: int, title: str) -> str:
         "Card-shape doctrine is in CLAUDE.md / AGENTS.md (## Cards). "
         "The user explicitly wants more cards/action items for this topic. "
         "Treat this topic as a King of Life generator lane. Read the private goals and the existing card history, learn from skipped/accepted decisions, and avoid duplicates. "
+        "One card should equal one concrete task/agent session, not a vague workflow area. "
         "Do not generate generic channel/workflow ideas. Each card must name a specific person, company, thread, repo, PR, incident, signup, page, post, or file and explain why it moves the topic goal. "
         "Set source_label/source_url to the real platform object; never use the bux GitHub repo URL as a generic source for non-GitHub cards. "
         "The first sentence must name the platform/source, exact object, and action. Put proof, drafts, variants, visible-action boundary, and next step in expandable blocks with matching buttons when relevant. "
+        "For message, email, social, or launch cards, generate separate variant blocks and matching buttons; for info-only cards, skip action buttons instead of defaulting to Do it. "
         "For Mini App visuals, prefer portrait 9:16 image_url/image_file assets with a clear subject and no embedded title/caption/button text; title, description, buttons, and blocks are the readable text layer. "
         "If no good image exists, omit image_url/image_file and rely on the clean text-first card. Put draft messages, alternatives, and supporting context in expandable blocks, not in the title or image. "
         "If the topic goal is unclear, generate high-level goal-lock cards or ask one short clarifying goal question instead of posting filler. "
@@ -1447,6 +1515,8 @@ def _ensure_goal_topic(goal_id: int, title: str) -> tuple[int, int]:
         import telegram_bot
 
         env = _tg_env()
+        if env.get("TG_BOT_TOKEN", "").endswith(":test-token") and getattr(telegram_bot.Bot, "__module__", "") == "telegram_bot":
+            return 0, 0
         bot = telegram_bot.Bot(env["TG_BOT_TOKEN"], env.get("TG_SETUP_TOKEN", ""))
         res = bot.call("createForumTopic", chat_id=chat_id, name=title[:128])
         if not res.get("ok"):
@@ -1493,6 +1563,8 @@ def _dispatch_topic_context(
         import telegram_bot
 
         env = _tg_env()
+        if env.get("TG_BOT_TOKEN", "").endswith(":test-token") and getattr(telegram_bot.Bot, "__module__", "") == "telegram_bot":
+            return False
         bot = telegram_bot.Bot(env["TG_BOT_TOKEN"], env.get("TG_SETUP_TOKEN", ""))
         provider = (_settings().get("provider") or "").strip().lower()
         if provider in {"codex", "claude"} and hasattr(telegram_bot, "_set_agent_for"):

@@ -222,6 +222,7 @@ const state = {
   apiError: "",
   local: loadLocalState(),
 };
+const scene = initConceptScene();
 
 function palette(index) {
   return [
@@ -354,9 +355,37 @@ function normalizeCard(raw, demo) {
     category: raw.category || fallback.category || inferCategory(raw),
     importance: raw.importance || fallback.importance || "med",
     demo,
-    visual: raw.visual || { kind: "none" },
+    visual: conceptVisual(raw.visual || fallback.visual, raw.category || fallback.category || "ops"),
     created_at: raw.created_at || Math.round(Date.now() / 1000),
   };
+}
+
+function conceptVisual(visual, category) {
+  if (visual?.src && ["image", "video"].includes(visual.kind)) return visual;
+  return demoVisual(category);
+}
+
+function demoVisual(category) {
+  const meta = CATEGORY_META[category] || CATEGORY_META.ops;
+  const color = meta.color || "#ff5a7a";
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="900" height="1200" viewBox="0 0 900 1200">
+      <defs>
+        <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="${color}"/>
+          <stop offset=".58" stop-color="#111827"/>
+          <stop offset="1" stop-color="#14b8a6"/>
+        </linearGradient>
+      </defs>
+      <rect width="900" height="1200" rx="64" fill="url(#g)"/>
+      <path d="M90 850 C220 640 430 560 720 612 L810 1120 H90 Z" fill="#fff" opacity=".14"/>
+      <path d="M180 240 L450 110 L720 240 L648 640 L252 640 Z" fill="#fff" opacity=".20"/>
+      <path d="M292 636 L450 366 L608 636 Z" fill="#fff" opacity=".30"/>
+      <circle cx="692" cy="250" r="78" fill="#fff" opacity=".22"/>
+      <circle cx="220" cy="760" r="118" fill="#fff" opacity=".12"/>
+    </svg>
+  `;
+  return { kind: "image", src: `data:image/svg+xml;base64,${btoa(svg.replace(/\n\s+/g, ""))}` };
 }
 
 function ensureButtons(buttons) {
@@ -384,6 +413,7 @@ function render() {
     document.body.className = "hub";
     app.className = "concept-shell hub-mode";
     app.innerHTML = renderHub();
+    scene?.set?.({ color: [1, 0.35, 0.48], mode: 0, progress: conceptProgress().pct / 100 });
     return;
   }
   document.body.className = `concept-page layout-${concept.layout} concept-${concept.id}`;
@@ -392,6 +422,162 @@ function render() {
     ${renderLabNav(concept)}
     ${renderConcept(concept)}
   `;
+  scene?.set?.({ color: hexToRgb(concept.accent), mode: concept.id, progress: conceptProgress().pct / 100 });
+}
+
+function initConceptScene() {
+  const canvas = document.querySelector("#conceptScene");
+  const gl = canvas?.getContext?.("webgl", { alpha: true, antialias: true, preserveDrawingBuffer: true });
+  if (!canvas || !gl) return null;
+  function compileShader(type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      console.warn("Agency concept shader failed", gl.getShaderInfoLog(shader));
+      gl.deleteShader(shader);
+      return null;
+    }
+    return shader;
+  }
+  const vertex = compileShader(gl.VERTEX_SHADER, `
+    attribute vec2 a_pos;
+    attribute vec4 a_color;
+    varying vec4 v_color;
+    void main() {
+      gl_Position = vec4(a_pos, 0.0, 1.0);
+      v_color = a_color;
+    }
+  `);
+  const fragment = compileShader(gl.FRAGMENT_SHADER, `
+    precision mediump float;
+    varying vec4 v_color;
+    void main() { gl_FragColor = v_color; }
+  `);
+  if (!vertex || !fragment) return null;
+  const program = gl.createProgram();
+  gl.attachShader(program, vertex);
+  gl.attachShader(program, fragment);
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    console.warn("Agency concept program failed", gl.getProgramInfoLog(program));
+    return null;
+  }
+  gl.useProgram(program);
+  const buffer = gl.createBuffer();
+  const pos = gl.getAttribLocation(program, "a_pos");
+  const color = gl.getAttribLocation(program, "a_color");
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+  gl.enableVertexAttribArray(pos);
+  gl.vertexAttribPointer(pos, 2, gl.FLOAT, false, 24, 0);
+  gl.enableVertexAttribArray(color);
+  gl.vertexAttribPointer(color, 4, gl.FLOAT, false, 24, 8);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  let settings = { color: [1, 0.35, 0.48], mode: 0, progress: 0 };
+
+  function resize() {
+    const rect = canvas.getBoundingClientRect();
+    const ratio = Math.min(2, window.devicePixelRatio || 1);
+    const width = Math.max(1, Math.floor(rect.width * ratio));
+    const height = Math.max(1, Math.floor(rect.height * ratio));
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+    gl.viewport(0, 0, width, height);
+  }
+
+  if (window.ResizeObserver) {
+    const observer = new ResizeObserver(resize);
+    observer.observe(canvas);
+  } else {
+    window.addEventListener("resize", resize, { passive: true });
+  }
+  resize();
+
+  let rafId = 0;
+  let timerId = 0;
+  let running = true;
+
+  function scheduleDraw(force = false) {
+    if (!running || rafId || timerId) return;
+    if (document.hidden) {
+      if (!force) return;
+      timerId = window.setTimeout(() => {
+        timerId = 0;
+        draw(performance.now());
+      }, 16);
+      return;
+    }
+    rafId = requestAnimationFrame(draw);
+  }
+
+  canvas.addEventListener("webglcontextlost", (event) => {
+    event.preventDefault();
+    running = false;
+    cancelAnimationFrame(rafId);
+    clearTimeout(timerId);
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && running && !rafId) scheduleDraw();
+  });
+
+  function push(vertices, x, y, c) {
+    vertices.push(x, y, c[0], c[1], c[2], c[3]);
+  }
+
+  function quad(vertices, x, y, w, h, c) {
+    push(vertices, x - w, y - h, c);
+    push(vertices, x + w, y - h, c);
+    push(vertices, x + w, y + h, c);
+    push(vertices, x - w, y - h, c);
+    push(vertices, x + w, y + h, c);
+    push(vertices, x - w, y + h, c);
+  }
+
+  function draw(time) {
+    resize();
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    const vertices = [];
+    const c = settings.color;
+    const progress = Math.max(0.08, settings.progress || 0);
+    for (let i = 0; i < 28; i += 1) {
+      const row = Math.floor(i / 7);
+      const col = i % 7;
+      const x = -0.86 + col * 0.29 + Math.sin(time * 0.0005 + i) * 0.012;
+      const y = -0.62 + row * 0.36 + Math.cos(time * 0.0004 + i * 0.7) * 0.014;
+      const active = i / 28 < progress;
+      const size = 0.018 + (active ? 0.018 : 0.006) + (settings.mode % 4) * 0.002;
+      quad(vertices, x, y, size, size, active ? [c[0], c[1], c[2], 0.30] : [0.10, 0.12, 0.16, 0.10]);
+      if (col > 0) {
+        quad(vertices, x - 0.145, y, 0.09, 0.004, [c[0], c[1], c[2], active ? 0.10 : 0.035]);
+      }
+    }
+    const pulse = 0.12 + Math.sin(time * 0.0016) * 0.03;
+    quad(vertices, 0.72, -0.62, pulse, pulse, [c[0], c[1], c[2], 0.13]);
+    quad(vertices, 0.72, -0.62, pulse * 0.52, pulse * 0.52, [1, 1, 1, 0.16]);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.DYNAMIC_DRAW);
+    gl.drawArrays(gl.TRIANGLES, 0, vertices.length / 6);
+    rafId = 0;
+    scheduleDraw();
+  }
+
+  scheduleDraw(true);
+  return {
+    set(next) {
+      settings = { ...settings, ...next };
+      scheduleDraw(true);
+    },
+  };
+}
+
+function hexToRgb(hex) {
+  const value = String(hex || "#ff5a7a").replace("#", "");
+  const int = Number.parseInt(value.length === 3 ? value.split("").map((x) => x + x).join("") : value, 16);
+  return [((int >> 16) & 255) / 255, ((int >> 8) & 255) / 255, (int & 255) / 255];
 }
 
 function renderHub() {
@@ -426,10 +612,10 @@ function renderLabNav(concept) {
   const next = concept.id === CONCEPT_COUNT ? 1 : concept.id + 1;
   return `
     <nav class="lab-nav" aria-label="Mini App concepts">
-      <a class="lab-home" href="${hubPath()}">All 10</a>
-      <a href="${conceptPath(prev)}">Prev ${prev}</a>
+      <a class="lab-home" href="${hubPath()}">All</a>
+      <a href="${conceptPath(prev)}">Prev</a>
       <span>${concept.id} / ${CONCEPT_COUNT}</span>
-      <a href="${conceptPath(next)}">Next ${next}</a>
+      <a href="${conceptPath(next)}">Next</a>
       <small>${escapeHtml(concept.layout)}</small>
     </nav>
   `;
@@ -674,6 +860,7 @@ function renderStories(concept, cards, card) {
 function renderDeck(concept, cards, card) {
   const bossHp = Math.max(8, 100 - (Number(state.local.points || 0) % 100));
   const combo = Number(state.local.combo || 0);
+  const stackCards = prioritizeCard(cards, card).slice(0, 4);
   return `
     <div class="deck-shell">
       <section class="boss-meter">
@@ -682,8 +869,8 @@ function renderDeck(concept, cards, card) {
         <em>${bossHp}% HP · ${combo} combo</em>
       </section>
       <div class="deck-swipe-cues" aria-hidden="true"><span>Skip</span><strong>Drag card</strong><span>Do it</span></div>
-      ${cards.slice(0, 4).reverse().map((item, index) => `
-        <article class="swipe-card concept-card" style="--stack:${index}" data-card-id="${item.id}" data-swipe-card>
+      ${stackCards.map((item, index) => `
+        <article class="swipe-card concept-card" style="--stack:${index}; --z:${stackCards.length - index}; --shade:${index === 0 ? 1 : 0}" data-card-id="${item.id}" data-swipe-card="${index === 0 ? "1" : "0"}">
           <div class="card-rarity">Impact ${pointsFor(item)}</div>
           ${renderVisual(item, "deck-visual")}
           <section>
@@ -1616,7 +1803,7 @@ function addVoiceNote(card) {
 }
 
 function syncStart(card) {
-  if (!initData || card.demo) return;
+  if (isConceptDemoOnly(card)) return;
   api(`/api/cards/${card.id}/start`, {
     method: "POST",
     body: JSON.stringify({ button: selectedRaw(card) }),
@@ -1626,18 +1813,22 @@ function syncStart(card) {
 }
 
 function syncSkip(card) {
-  if (!initData || card.demo) return;
+  if (isConceptDemoOnly(card)) return;
   api(`/api/cards/${card.id}/dismiss`, { method: "POST", body: "{}" })
     .then(() => refresh())
     .catch(() => toast("Skipped locally. Backend write did not accept it yet."));
 }
 
 function syncComment(card, comment) {
-  if (!initData || card.demo) return;
+  if (isConceptDemoOnly(card)) return;
   api(`/api/cards/${card.id}/comment`, {
     method: "POST",
     body: JSON.stringify({ comment }),
   }).catch(() => toast("Note saved locally. Backend write did not accept it yet."));
+}
+
+function isConceptDemoOnly(card) {
+  return !initData || card.demo || params.get("dev") === "1" || params.get("concept_sync") !== "1";
 }
 
 app.addEventListener("click", (event) => {

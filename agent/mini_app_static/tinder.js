@@ -57,9 +57,12 @@ const els = {
   more: document.querySelector("#moreButton"),
   skipAction: document.querySelector("#skipAction"),
   startAction: document.querySelector("#startAction"),
+  skipLabel: document.querySelector("#skipActionLabel"),
+  startLabel: document.querySelector("#startActionLabel"),
   newGoal: document.querySelector("#newGoalButton"),
   mobileGoalButton: document.querySelector("#mobileGoalsButton"),
   collapseRail: document.querySelector("#collapseRailButton"),
+  scene: document.querySelector("#kingScene"),
   sheet: document.querySelector("#contextSheet"),
   form: document.querySelector("#contextForm"),
   input: document.querySelector("#contextInput"),
@@ -69,11 +72,20 @@ const els = {
   goalInput: document.querySelector("#goalInput"),
   workSheet: document.querySelector("#workSheet"),
   workForm: document.querySelector("#workForm"),
+  confirmSheet: document.querySelector("#confirmSheet"),
+  confirmForm: document.querySelector("#confirmForm"),
+  confirmTitle: document.querySelector("#confirmTitle"),
+  confirmNote: document.querySelector("#confirmNote"),
+  confirmSummary: document.querySelector("#confirmSummary"),
+  confirmButton: document.querySelector("#confirmButton"),
   laneSheet: document.querySelector("#laneSheet"),
   laneList: document.querySelector("#laneList"),
 };
 
 let dragState = null;
+let pendingConfirm = null;
+let scenePulse = 0;
+const scene = initKingScene();
 
 const RANKS = [
   { name: "Farmer", floor: 0, icon: "seed" },
@@ -136,6 +148,285 @@ function haptic(kind = "selection") {
   } catch {
     // Haptics are best-effort.
   }
+}
+
+function initKingScene() {
+  const canvas = els.scene;
+  const gl = canvas?.getContext?.("webgl", { alpha: true, antialias: true, preserveDrawingBuffer: true, powerPreference: "high-performance" });
+  if (!canvas || !gl) return null;
+  const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+  function compileShader(type, source) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      console.warn("Agency WebGL shader failed", gl.getShaderInfoLog(shader));
+      gl.deleteShader(shader);
+      return null;
+    }
+    return shader;
+  }
+  const vertex = compileShader(gl.VERTEX_SHADER, `
+    attribute vec3 a_pos;
+    attribute vec4 a_color;
+    varying vec4 v_color;
+    void main() {
+      gl_Position = vec4(a_pos, 1.0);
+      v_color = a_color;
+    }
+  `);
+  const fragment = compileShader(gl.FRAGMENT_SHADER, `
+    precision mediump float;
+    varying vec4 v_color;
+    void main() {
+      gl_FragColor = v_color;
+    }
+  `);
+  if (!vertex || !fragment) return null;
+  const program = gl.createProgram();
+  gl.attachShader(program, vertex);
+  gl.attachShader(program, fragment);
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    console.warn("Agency WebGL program failed", gl.getProgramInfoLog(program));
+    return null;
+  }
+  gl.useProgram(program);
+  const buffer = gl.createBuffer();
+  const posLoc = gl.getAttribLocation(program, "a_pos");
+  const colorLoc = gl.getAttribLocation(program, "a_color");
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+  gl.enableVertexAttribArray(posLoc);
+  gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 28, 0);
+  gl.enableVertexAttribArray(colorLoc);
+  gl.vertexAttribPointer(colorLoc, 4, gl.FLOAT, false, 28, 12);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+  let metrics = {
+    progress: 0.1,
+    points: 0,
+    open: 0,
+    rankIndex: 0,
+    sourceColor: [1, 0.31, 0.41],
+    drag: 0,
+  };
+
+  function resize() {
+    const rect = canvas.getBoundingClientRect();
+    const ratio = Math.min(2, window.devicePixelRatio || 1);
+    const width = Math.max(1, Math.floor(rect.width * ratio));
+    const height = Math.max(1, Math.floor(rect.height * ratio));
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+    gl.viewport(0, 0, width, height);
+  }
+
+  if (window.ResizeObserver) {
+    const observer = new ResizeObserver(resize);
+    observer.observe(canvas);
+  } else {
+    window.addEventListener("resize", resize, { passive: true });
+  }
+  resize();
+  let rafId = 0;
+  let timerId = 0;
+  let running = true;
+
+  function scheduleDraw(force = false) {
+    if (!running || rafId || timerId) return;
+    if (document.hidden) {
+      if (!force) return;
+      timerId = window.setTimeout(() => {
+        timerId = 0;
+        draw(performance.now());
+      }, 16);
+      return;
+    }
+    rafId = requestAnimationFrame(draw);
+  }
+
+  canvas.addEventListener("webglcontextlost", (event) => {
+    event.preventDefault();
+    running = false;
+    cancelAnimationFrame(rafId);
+    clearTimeout(timerId);
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && running && !rafId) scheduleDraw();
+  });
+
+  function push(vertices, x, y, z, color) {
+    vertices.push(x, y, z, color[0], color[1], color[2], color[3]);
+  }
+
+  function project(x, y, z, t) {
+    const yaw = Math.sin(t * 0.00023) * 0.22 + metrics.drag * 0.0009;
+    const pitch = -0.54 + Math.sin(t * 0.00017) * 0.05;
+    const cy = Math.cos(yaw);
+    const sy = Math.sin(yaw);
+    const cp = Math.cos(pitch);
+    const sp = Math.sin(pitch);
+    const x1 = x * cy - z * sy;
+    const z1 = x * sy + z * cy;
+    const y1 = y * cp - z1 * sp;
+    const z2 = y * sp + z1 * cp + 4.6;
+    const f = 1.35 / Math.max(1.4, z2);
+    return [x1 * f, y1 * f + 0.08, 0];
+  }
+
+  function tri(vertices, a, b, c, color) {
+    push(vertices, a[0], a[1], a[2], color);
+    push(vertices, b[0], b[1], b[2], color);
+    push(vertices, c[0], c[1], c[2], color);
+  }
+
+  function quad(vertices, a, b, c, d, color) {
+    tri(vertices, a, b, c, color);
+    tri(vertices, a, c, d, color);
+  }
+
+  function prism(vertices, x, z, w, h, d, t, color, topColor) {
+    const y0 = -0.22;
+    const y1 = y0 + h;
+    const p = (px, py, pz) => project(px, py, pz, t);
+    const front = [p(x - w, y0, z - d), p(x + w, y0, z - d), p(x + w, y1, z - d), p(x - w, y1, z - d)];
+    const side = [p(x + w, y0, z - d), p(x + w, y0, z + d), p(x + w, y1, z + d), p(x + w, y1, z - d)];
+    const top = [p(x - w, y1, z - d), p(x + w, y1, z - d), p(x + w, y1, z + d), p(x - w, y1, z + d)];
+    quad(vertices, ...front, color);
+    quad(vertices, ...side, color.map((v, i) => (i < 3 ? v * 0.82 : v)));
+    quad(vertices, ...top, topColor);
+  }
+
+  function draw(time) {
+    resize();
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    const vertices = [];
+    const progress = Math.max(0.04, Math.min(1, metrics.progress));
+    const pulse = scenePulse;
+    scenePulse = Math.max(0, scenePulse * 0.92 - 0.006);
+    const source = metrics.sourceColor;
+    const accent = [source[0], source[1], source[2], 0.74];
+    const gold = [0.95, 0.72, 0.30, 0.82];
+    const mint = [0.08, 0.65, 0.48, 0.72];
+    const ink = [0.10, 0.15, 0.22, 0.28];
+
+    for (let i = 0; i < 14; i += 1) {
+      const z0 = -1.6 + i * 0.28;
+      const z1 = z0 + 0.3;
+      const w0 = 1.65 + i * 0.06;
+      const w1 = 1.68 + i * 0.06;
+      const y = -0.28 - i * 0.004;
+      const shade = 0.10 + i * 0.012;
+      quad(
+        vertices,
+        project(-w0, y, z0, time),
+        project(w0, y, z0, time),
+        project(w1, y, z1, time),
+        project(-w1, y, z1, time),
+        [source[0], source[1], source[2], shade]
+      );
+    }
+
+    for (let i = 0; i < 10; i += 1) {
+      const z = -1.3 + i * 0.34;
+      const width = 0.12 + i * 0.025;
+      quad(
+        vertices,
+        project(-width, -0.255, z, time),
+        project(width, -0.255, z, time),
+        project(width * 1.4, -0.252, z + 0.22, time),
+        project(-width * 1.4, -0.252, z + 0.22, time),
+        [1, 1, 1, 0.16 + progress * 0.16]
+      );
+    }
+
+    const castleZ = 1.15;
+    const rankBoost = metrics.rankIndex * 0.045 + pulse * 0.15;
+    prism(vertices, -0.34, castleZ, 0.16, 0.34 + rankBoost, 0.13, time, accent, gold);
+    prism(vertices, 0.0, castleZ + 0.04, 0.22, 0.52 + rankBoost, 0.15, time, [0.98, 0.98, 1, 0.72], gold);
+    prism(vertices, 0.34, castleZ, 0.16, 0.34 + rankBoost, 0.13, time, mint, gold);
+
+    const crownY = 0.48 + rankBoost;
+    const crownBase = [project(-0.28, crownY, castleZ - 0.18, time), project(0.28, crownY, castleZ - 0.18, time), project(0.34, crownY + 0.10, castleZ - 0.12, time), project(-0.34, crownY + 0.10, castleZ - 0.12, time)];
+    quad(vertices, ...crownBase, [0.96, 0.73, 0.24, 0.86]);
+    [-0.22, 0, 0.22].forEach((x, index) => {
+      tri(
+        vertices,
+        project(x - 0.12, crownY + 0.08, castleZ - 0.12, time),
+        project(x + 0.12, crownY + 0.08, castleZ - 0.12, time),
+        project(x, crownY + 0.28 + (index === 1 ? 0.08 : 0), castleZ - 0.08, time),
+        [1, 0.86, 0.38, 0.9]
+      );
+    });
+
+    const nodeCount = Math.max(5, Math.min(18, Math.round(metrics.open || 8)));
+    for (let i = 0; i < nodeCount; i += 1) {
+      const angle = i * 1.618 + time * 0.00033;
+      const radius = 0.82 + (i % 4) * 0.13;
+      const x = Math.cos(angle) * radius;
+      const z = -0.85 + Math.sin(angle) * 0.34 + (i / nodeCount) * 1.65;
+      const y = 0.02 + Math.sin(time * 0.001 + i) * 0.04;
+      const p = project(x, y, z, time);
+      const s = 0.012 + (i % 3) * 0.004 + pulse * 0.008;
+      quad(
+        vertices,
+        [p[0] - s, p[1] - s, 0],
+        [p[0] + s, p[1] - s, 0],
+        [p[0] + s, p[1] + s, 0],
+        [p[0] - s, p[1] + s, 0],
+        i / nodeCount < progress ? [0.08, 0.65, 0.48, 0.72] : ink
+      );
+    }
+
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.DYNAMIC_DRAW);
+    gl.drawArrays(gl.TRIANGLES, 0, vertices.length / 7);
+    rafId = 0;
+    if (!reducedMotion || scenePulse > 0.02) scheduleDraw();
+  }
+
+  scheduleDraw(true);
+  return {
+    set(next) {
+      metrics = { ...metrics, ...next };
+      if (reducedMotion) scheduleDraw(true);
+    },
+    setDrag(dx) {
+      metrics.drag = dx;
+    },
+    pulse() {
+      scenePulse = 1;
+      if (reducedMotion) scheduleDraw(true);
+    },
+  };
+}
+
+function updateKingScene(progress, card) {
+  if (!scene) return;
+  const meta = card ? sourceMeta(card) : { name: "Agency", domain: "" };
+  const rankIndex = RANKS.findIndex((rank) => rank.name === progress.rank.name);
+  scene.set({
+    progress: Math.max(0.04, Number(progress.pct || 0) / 100),
+    points: Number(progress.points || 0),
+    open: Number(progress.open || 0),
+    rankIndex: Math.max(0, rankIndex),
+    sourceColor: sourceColor(meta),
+  });
+}
+
+function sourceColor(meta) {
+  const text = `${meta?.name || ""} ${meta?.domain || ""}`.toLowerCase();
+  if (text.includes("gmail")) return [0.92, 0.22, 0.17];
+  if (text.includes("slack")) return [0.25, 0.72, 0.50];
+  if (text.includes("github")) return [0.12, 0.13, 0.16];
+  if (text.includes("reddit")) return [1.0, 0.32, 0.12];
+  if (text.includes("product")) return [0.86, 0.26, 0.18];
+  if (text.includes("x.com") || text === "x") return [0.04, 0.05, 0.06];
+  if (text.includes("calendar")) return [0.21, 0.48, 0.98];
+  return [1.0, 0.31, 0.41];
 }
 
 function escapeHtml(value) {
@@ -219,6 +510,7 @@ function render() {
   renderActivity();
   renderDeck(cards);
   syncGlobalButtons(Boolean(card));
+  updateKingScene(progress, card);
 }
 
 function kingProgress() {
@@ -234,6 +526,10 @@ function kingProgress() {
       rank: state.game.rank,
       next: state.game.next_rank || state.game.rank,
       pct: Number(state.game.progress || 0),
+      streak: Number(state.game.streak || 0),
+      daily: state.game.daily || null,
+      boss: state.game.boss || null,
+      domains: Array.isArray(state.game.domains) ? state.game.domains : [],
     };
   }
   const done = Number(state.stats.done || 0) + state.started;
@@ -250,11 +546,13 @@ function kingProgress() {
   const next = RANKS[Math.min(rankIndex + 1, RANKS.length - 1)];
   const span = Math.max(1, next.floor - rank.floor);
   const pct = rank === next ? 100 : Math.min(100, Math.round(((points - rank.floor) / span) * 100));
-  return { points, done, skipped, comments, goals, open, rank, next, pct };
+  return { points, done, skipped, comments, goals, open, rank, next, pct, streak: 0, daily: null, boss: null, domains: [] };
 }
 
 function renderKingPanel(progress) {
   if (!els.kingPanel) return;
+  const daily = progress.daily || { accepted: 0, target: 3, progress: 0, label: "Win 3 useful approvals today" };
+  const topDomains = (progress.domains || []).slice(0, 3);
   els.kingPanel.innerHTML = `
     <div class="rank-orbit" aria-hidden="true">
       <span></span><span></span><span></span>
@@ -270,13 +568,34 @@ function renderKingPanel(progress) {
       <span><strong>${progress.open}</strong> open</span>
       <span><strong>${progress.comments}</strong> comments</span>
     </div>
+    <div class="daily-quest">
+      <div>
+        <span>Daily quest</span>
+        <strong>${escapeHtml(daily.label || "Win 3 useful approvals today")}</strong>
+      </div>
+      <small>${Number(daily.accepted || 0)}/${Number(daily.target || 3)}</small>
+      <i><b style="width:${Math.max(8, Number(daily.progress || 0))}%"></b></i>
+    </div>
+    ${topDomains.length ? `<div class="domain-row">${topDomains.map((domain) => `<span>${escapeHtml(domain.label)} <b>${Number(domain.points || 0)}</b></span>`).join("")}</div>` : ""}
   `;
 }
 
 function syncGlobalButtons(hasCard) {
-  els.startAction.disabled = !hasCard || !selectedButton(currentCard());
+  const card = currentCard();
+  const action = selectedButton(card);
+  const actionLabel = hasCard && action ? clipLabel(action.text || "Do it", 20) : "Do it";
+  els.startAction.disabled = !hasCard || !action;
   els.skipAction.disabled = !hasCard;
   els.context.disabled = !hasCard && state.activeGoalId === "all";
+  if (els.startLabel) els.startLabel.textContent = actionLabel;
+  if (els.skipLabel) els.skipLabel.textContent = hasCard ? "Skip" : "Done";
+  els.startAction.setAttribute("aria-label", action ? `Start: ${action.text}` : "No action available");
+  els.context.textContent = hasCard ? "Comment" : "Give context";
+  try {
+    tg?.MainButton?.hide?.();
+  } catch {
+    // Telegram's native bottom buttons are optional.
+  }
 }
 
 function renderGoals() {
@@ -445,11 +764,11 @@ function cardHtml(card, stackIndex) {
   const progress = kingProgress();
   return `
     <article
-      class="deck-card king-card stack-${stackIndex} ${top ? "is-top" : ""}"
+      class="deck-card king-card stack-${stackIndex} ${top ? "is-top" : ""} ${hero.hasMedia ? "has-visual" : "no-visual"}"
       data-card-id="${card.id}"
       data-top="${top ? "1" : "0"}"
     >
-      <section class="hero-panel ${hero.hasMedia ? "has-media" : ""}">
+      <section class="hero-panel ${hero.hasMedia ? "has-media" : "no-media"}">
         ${hero.media}
         <div class="hero-sheen"></div>
         <div class="hero-copy">
@@ -466,7 +785,7 @@ function cardHtml(card, stackIndex) {
           </div>
         </div>
         <div class="swipe-badge nope">Skip</div>
-        <div class="swipe-badge like">Start</div>
+        <div class="swipe-badge like">Review</div>
       </section>
 
       <section class="quest-meter" aria-label="Progress">
@@ -474,6 +793,8 @@ function cardHtml(card, stackIndex) {
         <i><b style="width:${Math.max(10, progress.pct)}%"></b></i>
         <span>${escapeHtml(cardFooterStatus(card))}</span>
       </section>
+
+      ${variantStripHtml(card)}
 
       <section class="card-summary">
         <div class="summary-copy">
@@ -523,15 +844,7 @@ function heroVisual(card, meta) {
   }
   return {
     hasMedia: false,
-    media: `
-      <div class="kingdom-visual" aria-hidden="true">
-        <div class="sun"></div>
-        <div class="castle"><span></span><span></span><span></span></div>
-        <div class="road"></div>
-        <div class="spark spark-a"></div>
-        <div class="spark spark-b"></div>
-      </div>
-    `,
+    media: "",
   };
 }
 
@@ -539,13 +852,7 @@ function sourceIconHtml(meta) {
   if (meta.domain) {
     return `<img class="source-favicon" src="https://www.google.com/s2/favicons?domain=${escapeAttr(meta.domain)}&sz=64" alt="" />`;
   }
-  const letters = String(meta.name || "A")
-    .split(/\s+/)
-    .map((part) => part[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
-  return `<span class="source-initials" aria-hidden="true">${escapeHtml(letters || "A")}</span>`;
+  return `<span class="source-initials source-orb" aria-hidden="true"></span>`;
 }
 
 function pointsLabel(card) {
@@ -677,7 +984,7 @@ function bindDeck() {
         state.variants[String(card.id)] = index;
         persistVariants();
       }
-      startCard(card.id, button.dataset.startButton || "", els.deck.querySelector(".deck-card.is-top"));
+      requestStartCard(card.id, button.dataset.startButton || "", els.deck.querySelector(".deck-card.is-top"));
     });
   });
   els.deck.querySelectorAll("[data-dismiss-current]").forEach((button) => {
@@ -712,7 +1019,8 @@ function bindDrag(node) {
     dragState.dx = event.clientX - dragState.startX;
     dragState.dy = event.clientY - dragState.startY;
     const rotate = dragState.dx / 16;
-    node.style.transform = `translate(${dragState.dx}px, ${dragState.dy * 0.18}px) rotate(${rotate}deg)`;
+    node.style.transform = `translate3d(${dragState.dx}px, ${dragState.dy * 0.18}px, 46px) rotate(${rotate}deg) rotateY(${dragState.dx / 36}deg)`;
+    scene?.setDrag?.(dragState.dx);
     node.classList.toggle("show-like", dragState.dx > 28);
     node.classList.toggle("show-nope", dragState.dx < -28);
   });
@@ -724,14 +1032,18 @@ function bindDrag(node) {
     node.classList.remove("dragging");
     node.releasePointerCapture?.(pointerId);
     if (Math.abs(dx) > 118 && Math.abs(dx) > Math.abs(dy)) {
-      if (dx > 0) startCurrentCard(node);
+      node.style.transform = "";
+      node.classList.remove("show-like", "show-nope");
+      if (dx > 0) reviewCurrentCard(node);
       else dismissCurrentCard(node);
       dragState = null;
+      scene?.setDrag?.(0);
       return;
     }
     node.style.transform = "";
     node.classList.remove("show-like", "show-nope");
     dragState = null;
+    scene?.setDrag?.(0);
   }
 
   node.addEventListener("pointerup", (event) => finish(event.pointerId));
@@ -778,7 +1090,7 @@ function primaryWhy(card) {
 
 function cardHeadline(card) {
   const source = String(card.source || "");
-  const limit = source.startsWith("miniapp-") ? 28 : 38;
+  const limit = source.startsWith("miniapp-") ? 60 : 72;
   return clipLabel(cleanCardTitle(card.title) || sourceMeta(card).name, limit);
 }
 
@@ -800,7 +1112,8 @@ function countLabel(card) {
 function actionPreview(card, action) {
   if (action && String(card.source || "").startsWith("miniapp-setup:")) return "Guide setup, then start using real data.";
   if (action && String(card.source || "").startsWith("miniapp-goal:")) return "Lock this as a standing goal and generate sharper follow-ups.";
-  if (action) return "Right swipe starts the selected version immediately.";
+  if (actionNeedsConfirm(card, action)) return "Review the visible-action boundary before Agency starts.";
+  if (action) return "Right swipe opens review; confirm to start this exact action.";
   return "Add context to improve the next version.";
 }
 
@@ -985,7 +1298,70 @@ async function startCurrentCard(item = null) {
     openContext();
     return;
   }
-  await startCard(card.id, action?.raw || "", item || els.deck.querySelector(".deck-card.is-top"));
+  await requestStartCard(card.id, action?.raw || "", item || els.deck.querySelector(".deck-card.is-top"));
+}
+
+function reviewCurrentCard(item = null) {
+  const card = currentCard();
+  if (!card) return;
+  const action = selectedButton(card);
+  if (!action) {
+    toast("Add context first.");
+    openContext();
+    return;
+  }
+  openConfirmStart(card, action?.raw || "", item || els.deck.querySelector(".deck-card.is-top"), true);
+}
+
+async function requestStartCard(id, button, item, forceConfirm = false) {
+  const card = state.cards.find((entry) => String(entry.id) === String(id));
+  const action = actionForButton(card, button);
+  if (card && action && (forceConfirm || actionNeedsConfirm(card, action))) {
+    openConfirmStart(card, action.raw || button, item, forceConfirm);
+    return;
+  }
+  await startCard(id, button, item);
+}
+
+function actionForButton(card, button) {
+  if (!card) return null;
+  const buttons = cardActionButtons(card);
+  return buttons.find((entry) => entry.raw === button) || selectedButton(card);
+}
+
+function actionNeedsConfirm(card, action) {
+  const text = [
+    action?.text,
+    action?.raw,
+    card?.title,
+    card?.why,
+    card?.action,
+  ].join(" ").toLowerCase();
+  return /\b(send|sent|reply|email|dm|message|post|publish|launch|submit|merge|delete|remove|archive|buy|pay|book|visible|public|external)\b/.test(text);
+}
+
+function openConfirmStart(card, button, item = null, fromSwipe = false) {
+  const action = actionForButton(card, button);
+  pendingConfirm = { id: card.id, button: action?.raw || button || "" };
+  item?.classList.remove("dragging", "show-like", "show-nope");
+  els.confirmTitle.textContent = action?.text ? `${action.text}?` : "Start this card?";
+  els.confirmButton.textContent = action?.text || "Start";
+  els.confirmNote.textContent = fromSwipe
+    ? "Right swipe only opens this review. Confirm here before Agency starts the selected action."
+    : boundaryText(card, action);
+  els.confirmSummary.innerHTML = `
+    <strong>${escapeHtml(cleanCardTitle(card.title) || "Selected card")}</strong>
+    <span>${escapeHtml(sourceMeta(card).name)} · ${escapeHtml(pointsLabel(card))}</span>
+    <p>${escapeHtml(summaryValue(card, selectedBlock(card)))}</p>
+  `;
+  els.confirmSheet.showModal();
+}
+
+function boundaryText(card, action) {
+  if (actionNeedsConfirm(card, action)) {
+    return "This may reach a visible boundary. Agency will prepare or continue the work, then ask again before anything visible to other people is sent, posted, merged, paid, or deleted.";
+  }
+  return "Agency will continue this exact task in the current goal lane and keep the Telegram topic synced.";
 }
 
 async function dismissCurrentCard(item = null) {
@@ -1002,6 +1378,7 @@ async function startCard(id, button, item) {
     const result = await api(`/api/cards/${id}/start`, { method: "POST", body: JSON.stringify({ button }) });
     if (result.game) state.game = result.game;
     haptic("success");
+    scene?.pulse?.("start");
     state.started += 1;
     decrementOpenCount();
     localStorage.setItem("buxTinderStarted", String(state.started));
@@ -1025,6 +1402,7 @@ async function dismissCard(id, item) {
     const result = await api(`/api/cards/${id}/dismiss`, { method: "POST", body: "{}" });
     if (result.game) state.game = result.game;
     haptic("medium");
+    scene?.pulse?.("skip");
     state.skipped += 1;
     decrementOpenCount();
     localStorage.setItem("buxTinderSkipped", String(state.skipped));
@@ -1214,6 +1592,11 @@ els.autopilot.addEventListener("click", openWorkSheet);
 els.more.addEventListener("click", generateMore);
 els.skipAction.addEventListener("click", () => dismissCurrentCard());
 els.startAction.addEventListener("click", () => startCurrentCard());
+try {
+  tg?.MainButton?.hide?.();
+} catch {
+  // Telegram native button cleanup is best-effort.
+}
 els.newGoal.addEventListener("click", () => {
   els.goalSheet.showModal();
   els.goalInput.focus({ preventScroll: true });
@@ -1232,11 +1615,23 @@ els.goalForm.addEventListener("submit", createGoal);
 document.querySelector("[data-close-context]").addEventListener("click", () => els.sheet.close());
 document.querySelector("[data-close-goal]").addEventListener("click", () => els.goalSheet.close());
 document.querySelector("[data-close-work]").addEventListener("click", () => els.workSheet.close());
+document.querySelector("[data-close-confirm]").addEventListener("click", () => {
+  pendingConfirm = null;
+  els.confirmSheet.close();
+});
 document.querySelector("[data-close-lanes]").addEventListener("click", () => els.laneSheet.close());
 els.workForm.addEventListener("submit", (event) => {
   event.preventDefault();
   els.workSheet.close();
   startAutopilot();
+});
+els.confirmForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const confirm = pendingConfirm;
+  pendingConfirm = null;
+  els.confirmSheet.close();
+  if (!confirm) return;
+  startCard(confirm.id, confirm.button, els.deck.querySelector(".deck-card.is-top"));
 });
 els.sheet.addEventListener("click", (event) => {
   if (event.target === els.sheet) els.sheet.close();
@@ -1246,6 +1641,12 @@ els.goalSheet.addEventListener("click", (event) => {
 });
 els.workSheet.addEventListener("click", (event) => {
   if (event.target === els.workSheet) els.workSheet.close();
+});
+els.confirmSheet.addEventListener("click", (event) => {
+  if (event.target === els.confirmSheet) {
+    pendingConfirm = null;
+    els.confirmSheet.close();
+  }
 });
 els.laneSheet.addEventListener("click", (event) => {
   if (event.target === els.laneSheet) els.laneSheet.close();
