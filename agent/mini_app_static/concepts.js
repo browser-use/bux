@@ -19,16 +19,16 @@ const STORE_KEY = "buxMiniAppGoalGameLab:v1";
 const CONCEPT_COUNT = 10;
 
 const CONCEPTS = [
-  ["goal-quest", "Goal Quest", "quest", "A map of goal missions where every approval unlocks the next useful step.", "Pick one mission", "XP, streak shield, next quest", "Tap a quest node"],
-  ["boss-deck", "Boss Deck", "deck", "A Tinder-style boss fight that forces one high-leverage decision at a time.", "Swipe or tap a move", "Combo meter and boss damage", "Right = do, left = skip"],
-  ["streak-coach", "Streak Coach", "coach", "A calm coach that protects momentum without guilt-tripping missed days.", "Choose today's move", "Streak save and confidence", "Tap the coach card"],
-  ["skill-tree", "Skill Tree", "roadmap", "Accept cards to unlock branches like distribution, customers, health, and shipping.", "Unlock a branch", "New abilities and source scans", "Tap a branch"],
-  ["momentum-rings", "Momentum Rings", "habit", "Close bright progress rings for the goals that matter today.", "Close one ring", "Visible completion and new cards", "Tap to close"],
-  ["mission-control", "Mission Control", "command", "A Telegram-native cockpit for open cards, sources, level, and daily focus.", "Clear the queue", "Level-up and fewer stale cards", "Tap a command"],
-  ["loot-picker", "Loot Picker", "arcade", "A playful loot reveal where the reward is real agent work already prepared.", "Reveal a reward", "Useful card, not fake coins", "Tap to claim"],
-  ["one-tap-win", "One Tap Win", "onebutton", "The lowest-friction version: one giant approval when the agent did enough work.", "Approve the win", "Instant progress and clean feed", "One thumb tap"],
-  ["season-pass", "Season Pass", "sports", "A weekly season board for approvals, skipped cards, goal progress, and milestones.", "Win the week", "Milestones and progress tiers", "Tap a match"],
-  ["mission-card", "Mission Card", "mission", "A cinematic single-mission card with the boundary and payoff obvious in one glance.", "Launch the mission", "A new agent session or final result", "Tap launch"],
+  ["kingdom-map", "Kingdom Map", "quest", "A world map where every AI-prepared action expands one goal realm.", "Conquer one realm", "XP, rank, next realm", "Tap a quest node"],
+  ["boss-swipe", "Boss Swipe", "deck", "A Tinder-style boss fight where one high-leverage decision clears the queue.", "Swipe or tap a move", "Combo meter and boss damage", "Right = do, left = skip"],
+  ["royal-coach", "Royal Coach", "coach", "A calm coach that turns fuzzy goals into the next concrete approval.", "Choose today's move", "Streak save and confidence", "Tap the coach card"],
+  ["crown-skill-tree", "Crown Skill Tree", "roadmap", "Approvals unlock powers like distribution, customers, health, and shipping.", "Unlock a branch", "New abilities and source scans", "Tap a branch"],
+  ["momentum-rings", "Momentum Rings", "habit", "Close bright rings for the goals that matter today and see the next unlock.", "Close one ring", "Visible completion and new cards", "Tap to close"],
+  ["command-throne", "Command Throne", "command", "A Telegram-native cockpit for open cards, live agent work, level, and daily focus.", "Clear the queue", "Level-up and fewer stale cards", "Tap a command"],
+  ["treasure-forge", "Treasure Forge", "arcade", "A reward reveal where the treasure is real agent work already prepared.", "Reveal a reward", "Useful card, not fake coins", "Tap to claim"],
+  ["one-tap-crown", "One Tap Crown", "onebutton", "The lowest-friction version: one giant approval when the agent did enough work.", "Approve the win", "Instant progress and clean feed", "One thumb tap"],
+  ["season-league", "Season League", "sports", "A weekly league board for approvals, skipped cards, goal progress, and milestones.", "Win the week", "Milestones and progress tiers", "Tap a match"],
+  ["crown-mission", "Crown Mission", "mission", "A cinematic single-mission card with payoff, boundary, and reward in one glance.", "Launch the mission", "A new agent session or final result", "Tap launch"],
 ].map(([slug, name, layout, line, loop, reward, gesture], index) => ({
   id: index + 1,
   slug,
@@ -212,6 +212,7 @@ const state = {
   goals: [],
   topics: [],
   stats: {},
+  game: null,
   activity: [],
   me: { settings: {} },
   conceptId: conceptIdFromPath(),
@@ -291,11 +292,12 @@ async function api(path, options = {}) {
 
 async function refresh() {
   try {
-    const [goals, topics, cards, stats, activity, me] = await Promise.all([
+    const [goals, topics, cards, stats, game, activity, me] = await Promise.all([
       api("/api/goals"),
       api("/api/topics"),
       api("/api/cards"),
       api("/api/stats"),
+      api("/api/game-state"),
       api("/api/activity"),
       api("/api/me"),
     ]);
@@ -304,6 +306,7 @@ async function refresh() {
     state.goals = goals.goals || [];
     state.topics = topics.topics || [];
     state.stats = stats.stats || {};
+    state.game = game.game || null;
     state.activity = activity.activity || [];
     state.me = me || { settings: {} };
     state.cards = mergeCards(cards.cards || []);
@@ -313,6 +316,7 @@ async function refresh() {
     state.goals = [];
     state.topics = [];
     state.stats = { open: 10, done: Object.keys(state.local.decisions).length };
+    state.game = null;
     state.activity = localActivity();
     state.cards = mergeCards([]);
   }
@@ -391,12 +395,15 @@ function render() {
 }
 
 function renderHub() {
+  const progress = conceptProgress();
   return `
     <section class="hub-hero">
-      <p class="eyebrow">agency goal game lab</p>
-      <h1>10 ways to make goals addictive.</h1>
-      <p>Ten focused Mini App prototypes for turning AI-suggested cards into progress, streaks, levels, and one-tap wins.</p>
+      <p class="eyebrow">agency prototypes</p>
+      <h1>King of Life lab.</h1>
+      <p>Ten focused Mini App prototypes for turning AI-suggested cards into goal realms, XP, streaks, levels, and one-tap wins.</p>
       <div class="hub-stats">
+        <span>${escapeHtml(progress.rankName)}</span>
+        <span>${progress.xp} XP</span>
         <span>${state.cards.length} cards loaded</span>
         <span>${Object.keys(groupByCategory()).length} source groups</span>
         <span>${state.apiOnline ? "live database" : "demo fallback"}</span>
@@ -450,6 +457,7 @@ function renderConcept(concept) {
 }
 
 function renderGameLoop(concept, card) {
+  const progress = conceptProgress();
   const combo = Number(state.local.combo || 0);
   const streak = Number(state.local.streak || 0);
   const reward = state.local.lastReward || concept.reward;
@@ -463,27 +471,43 @@ function renderGameLoop(concept, card) {
       </div>
       <div class="loop-pill"><span>Gesture</span><strong>${escapeHtml(concept.gesture)}</strong></div>
       <div class="loop-pill"><span>Reward</span><strong>${escapeHtml(reward)}</strong></div>
-      <div class="loop-pill live"><span>Live</span><strong>${combo} combo · ${streak} streak</strong></div>
+      <div class="loop-pill live"><span>${escapeHtml(progress.rankName)}</span><strong>${combo} combo · ${streak} streak</strong></div>
     </section>
   `;
 }
 
 function renderGameStats(concept) {
+  const progress = conceptProgress();
   const accepted = Object.values(state.local.decisions).filter((item) => item.status === "started").length;
   const combo = Number(state.local.combo || 0);
-  const xp = Number(state.local.points || 0);
-  const level = Math.max(1, Math.floor(xp / 500) + 1);
-  const next = level * 500;
-  const pct = Math.min(100, Math.round((xp % 500) / 5));
   return `
     <section class="game-stats" style="--accent:${concept.accent}">
-      <div><span>Level</span><strong>${level}</strong></div>
-      <div><span>XP</span><strong>${xp}/${next}</strong></div>
-      <div><span>Accepted</span><strong>${accepted}</strong></div>
+      <div><span>Rank</span><strong>${escapeHtml(progress.rankName)}</strong></div>
+      <div><span>XP</span><strong>${progress.xp}</strong></div>
+      <div><span>Accepted</span><strong>${progress.done || accepted}</strong></div>
       <div><span>Combo</span><strong>${combo}</strong></div>
-      <i style="--pct:${pct}%"></i>
+      <i style="--pct:${progress.pct}%"></i>
     </section>
   `;
+}
+
+function conceptProgress() {
+  if (state.game?.rank) {
+    return {
+      rankName: state.game.rank.name || "Farmer",
+      xp: Number(state.game.points || 0),
+      done: Number(state.game.stats?.done || 0),
+      pct: Number(state.game.progress || 0),
+    };
+  }
+  const xp = Number(state.local.points || 0);
+  const level = Math.max(1, Math.floor(xp / 500) + 1);
+  return {
+    rankName: level >= 8 ? "King of Life" : ["Farmer", "Builder", "Merchant", "Strategist", "Regent"][Math.min(4, level - 1)],
+    xp,
+    done: Object.values(state.local.decisions).filter((item) => item.status === "started").length,
+    pct: Math.min(100, Math.round((xp % 500) / 5)),
+  };
 }
 
 function renderPreviewStrip(cards, card) {

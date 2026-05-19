@@ -1,6 +1,13 @@
 const tg = window.Telegram?.WebApp;
 tg?.ready();
 tg?.expand();
+try {
+  tg?.setHeaderColor?.("#f7f4ec");
+  tg?.setBackgroundColor?.("#f7f4ec");
+  tg?.setBottomBarColor?.("#f7f4ec");
+} catch {
+  // Telegram clients expose different Mini App capabilities.
+}
 
 const params = new URLSearchParams(window.location.search);
 if (params.get("dev") === "1") localStorage.buxMiniAppDev = "1";
@@ -20,6 +27,7 @@ const state = {
   goals: [],
   topics: [],
   stats: {},
+  game: null,
   activity: [],
   me: { settings: {} },
   activeGoalId: localStorage.getItem(goalKey) || "all",
@@ -28,11 +36,14 @@ const state = {
   started: Number(localStorage.getItem("buxTinderStarted") || "0"),
   skipped: Number(localStorage.getItem("buxTinderSkipped") || "0"),
   variants: savedVariants,
+  commentOpenId: "",
+  pending: new Set(),
 };
 
 const els = {
   rail: document.querySelector("#goalRail"),
   tabs: document.querySelector("#goalTabs"),
+  kingPanel: document.querySelector("#kingPanel"),
   mobileGoals: document.querySelector("#mobileGoals"),
   goalCount: document.querySelector("#goalCountLabel"),
   deck: document.querySelector("#deck"),
@@ -63,6 +74,15 @@ const els = {
 };
 
 let dragState = null;
+
+const RANKS = [
+  { name: "Farmer", floor: 0, icon: "seed" },
+  { name: "Builder", floor: 260, icon: "hammer" },
+  { name: "Merchant", floor: 720, icon: "coin" },
+  { name: "Strategist", floor: 1380, icon: "map" },
+  { name: "Regent", floor: 2300, icon: "crown" },
+  { name: "King of Life", floor: 3600, icon: "king" },
+];
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -102,6 +122,20 @@ function toast(message) {
   els.toast.classList.add("show");
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => els.toast.classList.remove("show"), 1800);
+}
+
+function haptic(kind = "selection") {
+  try {
+    if (kind === "success" || kind === "error" || kind === "warning") {
+      tg?.HapticFeedback?.notificationOccurred?.(kind);
+    } else if (kind === "selection") {
+      tg?.HapticFeedback?.selectionChanged?.();
+    } else {
+      tg?.HapticFeedback?.impactOccurred?.(kind);
+    }
+  } catch {
+    // Haptics are best-effort.
+  }
 }
 
 function escapeHtml(value) {
@@ -174,15 +208,69 @@ function otherBlocks(card) {
 function render() {
   const cards = visibleCards();
   const card = currentCard();
+  const progress = kingProgress();
   const position = card ? `${Math.min(state.index + 1, cards.length)}/${cards.length}` : "0/0";
   els.deckTitle.textContent = goalTitle();
-  els.meta.textContent = `${cards.length} open, ${state.started} started, ${state.skipped} skipped, ${position}`;
+  els.meta.textContent = `${cards.length} open · ${progress.done} done · ${progress.rank.name} · ${position}`;
   els.provider.textContent = providerLabel();
   localStorage.setItem(indexKey, String(state.index));
+  renderKingPanel(progress);
   renderGoals();
   renderActivity();
   renderDeck(cards);
   syncGlobalButtons(Boolean(card));
+}
+
+function kingProgress() {
+  if (state.game?.rank) {
+    const stats = state.game.stats || state.stats || {};
+    return {
+      points: Number(state.game.points || 0),
+      done: Number(stats.done || 0),
+      skipped: Number(stats.dismissed || 0),
+      comments: Number(stats.comments || 0),
+      goals: Number(stats.goals || state.goals.length || 0),
+      open: Number(stats.open || state.cards.length || 0),
+      rank: state.game.rank,
+      next: state.game.next_rank || state.game.rank,
+      pct: Number(state.game.progress || 0),
+    };
+  }
+  const done = Number(state.stats.done || 0) + state.started;
+  const skipped = Number(state.stats.dismissed || 0) + state.skipped;
+  const comments = Number(state.stats.comments || 0);
+  const goals = Number(state.stats.goals || state.goals.length || 0);
+  const open = Number(state.stats.open || state.cards.length || 0);
+  const points = Math.max(0, done * 180 + comments * 45 + goals * 90 + Math.max(0, 10 - Math.min(open, 10)) * 12 - skipped * 6);
+  let rankIndex = 0;
+  RANKS.forEach((rank, index) => {
+    if (points >= rank.floor) rankIndex = index;
+  });
+  const rank = RANKS[rankIndex] || RANKS[0];
+  const next = RANKS[Math.min(rankIndex + 1, RANKS.length - 1)];
+  const span = Math.max(1, next.floor - rank.floor);
+  const pct = rank === next ? 100 : Math.min(100, Math.round(((points - rank.floor) / span) * 100));
+  return { points, done, skipped, comments, goals, open, rank, next, pct };
+}
+
+function renderKingPanel(progress) {
+  if (!els.kingPanel) return;
+  els.kingPanel.innerHTML = `
+    <div class="rank-orbit" aria-hidden="true">
+      <span></span><span></span><span></span>
+    </div>
+    <div class="rank-copy">
+      <span>${escapeHtml(progress.rank.icon)}</span>
+      <strong>${escapeHtml(progress.rank.name)}</strong>
+      <small>${progress.points} XP · ${progress.next.name === progress.rank.name ? "max rank" : `${progress.next.floor - progress.points} XP to ${progress.next.name}`}</small>
+    </div>
+    <div class="rank-meter"><i style="width:${progress.pct}%"></i></div>
+    <div class="rank-stats">
+      <span><strong>${progress.done}</strong> done</span>
+      <span><strong>${progress.open}</strong> open</span>
+      <span><strong>${progress.comments}</strong> comments</span>
+    </div>
+  `;
 }
 
 function syncGlobalButtons(hasCard) {
@@ -329,11 +417,14 @@ function renderDeck(cards) {
   const stack = currentStack();
   if (!stack.length) {
     els.deck.innerHTML = `
-      <article class="empty">
+      <article class="empty empty-kingdom">
+        <div class="empty-crown" aria-hidden="true"></div>
         <strong>${escapeHtml(emptyTitle())}</strong>
-        <p>Ask for more cards, lock a goal, or add context so the next suggestions are sharper and more actionable.</p>
+        <p>Tell Agency your goal or generate quests. The feed should never stay empty when there is progress to make.</p>
+        <button class="choice-button" data-empty-generate type="button">Generate quests</button>
       </article>
     `;
+    els.deck.querySelector("[data-empty-generate]")?.addEventListener("click", generateMore);
     return;
   }
   els.deck.innerHTML = stack
@@ -347,14 +438,14 @@ function cardHtml(card, stackIndex) {
   const top = stackIndex === 0;
   const meta = sourceMeta(card);
   const action = selectedButton(card);
-  const canStart = Boolean(action);
   const selected = selectedBlock(card);
   const prepared = completedWorkTags(card);
   const others = otherBlocks(card);
   const hero = heroVisual(card, meta);
+  const progress = kingProgress();
   return `
     <article
-      class="deck-card stack-${stackIndex} ${top ? "is-top" : ""}"
+      class="deck-card king-card stack-${stackIndex} ${top ? "is-top" : ""}"
       data-card-id="${card.id}"
       data-top="${top ? "1" : "0"}"
     >
@@ -363,7 +454,7 @@ function cardHtml(card, stackIndex) {
         <div class="hero-sheen"></div>
         <div class="hero-copy">
           <div class="hero-meta">
-            <span class="card-source">${escapeHtml(meta.name)}</span>
+            <span class="card-source">${sourceIconHtml(meta)}${escapeHtml(meta.name)}</span>
             <span class="hero-age">${escapeHtml(relativeAge(card.created_at))}</span>
           </div>
           <div class="hero-footer">
@@ -371,11 +462,17 @@ function cardHtml(card, stackIndex) {
               <h2 class="hero-title">${escapeHtml(cardHeadline(card))}</h2>
               <p class="hero-why">${escapeHtml(primaryWhy(card))}</p>
             </div>
-            <span class="status-pill">${escapeHtml(cardFooterStatus(card))}</span>
+            <span class="status-pill">${escapeHtml(pointsLabel(card))}</span>
           </div>
         </div>
         <div class="swipe-badge nope">Skip</div>
         <div class="swipe-badge like">Start</div>
+      </section>
+
+      <section class="quest-meter" aria-label="Progress">
+        <span>${escapeHtml(progress.rank.name)}</span>
+        <i><b style="width:${Math.max(10, progress.pct)}%"></b></i>
+        <span>${escapeHtml(cardFooterStatus(card))}</span>
       </section>
 
       <section class="card-summary">
@@ -386,12 +483,10 @@ function cardHtml(card, stackIndex) {
         <span class="count-pill">${escapeHtml(countLabel(card))}</span>
       </section>
 
-      ${variantStripHtml(card)}
-
       <section class="card-body">
         <div class="insight-grid">
           <article class="insight-panel">
-            <span class="insight-label">One-second read</span>
+            <span class="insight-label">Why this moves the goal</span>
             <div class="insight-value">${renderRichText(primaryInsight(card, selected))}</div>
           </article>
           ${prepared.length ? preparedPanelHtml(prepared) : ""}
@@ -400,13 +495,13 @@ function cardHtml(card, stackIndex) {
       </section>
 
       <footer class="card-footer">
-        <div class="choice-preview">
-          <strong>${escapeHtml(action?.text || "Needs context")}</strong>
-          <p>${escapeHtml(actionPreview(card, action))}</p>
+        ${actionButtonsHtml(card)}
+        <div class="utility-row">
+          <button class="utility-button skip-mini" data-dismiss-current type="button" aria-label="Skip">×</button>
+          <button class="utility-button comment-mini" data-toggle-comment type="button" aria-label="Comment">${commentSvg()}</button>
+          <span>${escapeHtml(actionPreview(card, action))}</span>
         </div>
-        <button class="choice-button" data-start-current type="button" ${canStart ? "" : "disabled"}>
-          ${escapeHtml(action?.text || "Add context")}
-        </button>
+        ${top && String(state.commentOpenId) === String(card.id) ? inlineCommentHtml(card) : ""}
       </footer>
     </article>
   `;
@@ -426,7 +521,85 @@ function heroVisual(card, meta) {
       media: `<div class="hero-media"><video src="${escapeAttr(visual.src)}" muted autoplay loop playsinline preload="metadata"></video></div>`,
     };
   }
-  return { hasMedia: false, media: "" };
+  return {
+    hasMedia: false,
+    media: `
+      <div class="kingdom-visual" aria-hidden="true">
+        <div class="sun"></div>
+        <div class="castle"><span></span><span></span><span></span></div>
+        <div class="road"></div>
+        <div class="spark spark-a"></div>
+        <div class="spark spark-b"></div>
+      </div>
+    `,
+  };
+}
+
+function sourceIconHtml(meta) {
+  if (meta.domain) {
+    return `<img class="source-favicon" src="https://www.google.com/s2/favicons?domain=${escapeAttr(meta.domain)}&sz=64" alt="" />`;
+  }
+  const letters = String(meta.name || "A")
+    .split(/\s+/)
+    .map((part) => part[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+  return `<span class="source-initials" aria-hidden="true">${escapeHtml(letters || "A")}</span>`;
+}
+
+function pointsLabel(card) {
+  return `+${pointsForCard(card)} XP`;
+}
+
+function pointsForCard(card) {
+  const importance = String(card.importance || "").toLowerCase();
+  if (importance === "high") return 220;
+  if (importance === "low") return 80;
+  if (String(card.source || "").startsWith("miniapp-goal:")) return 180;
+  return 140;
+}
+
+function actionButtonsHtml(card) {
+  const buttons = cardActionButtons(card);
+  if (!buttons.length) {
+    return `
+      <div class="action-button-row">
+        <button class="choice-button ghost" data-toggle-comment type="button">Add context</button>
+      </div>
+    `;
+  }
+  return `
+    <div class="action-button-row">
+      ${buttons
+        .slice(0, 5)
+        .map(
+          (button, index) => `
+            <button
+              class="choice-button ${index === selectedVariantIndex(card) ? "active" : ""}"
+              data-start-button="${escapeAttr(button.raw)}"
+              type="button"
+            >
+              ${escapeHtml(button.text)}
+            </button>
+          `
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function inlineCommentHtml(card) {
+  return `
+    <form class="inline-comment" data-inline-comment="${escapeAttr(card.id)}">
+      <textarea rows="2" placeholder="Add context, ask for variants, or change the angle."></textarea>
+      <button class="primary-button" type="submit">Send</button>
+    </form>
+  `;
+}
+
+function commentSvg() {
+  return `<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M7 17.5 4.5 20v-4.2A7.8 7.8 0 0 1 3 11c0-4.2 3.8-7.5 9-7.5s9 3.3 9 7.5-3.8 7.5-9 7.5c-1.9 0-3.6-.4-5-1Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>`;
 }
 
 function variantStripHtml(card) {
@@ -483,6 +656,7 @@ function bindDeck() {
       const id = String(button.dataset.variantCard || "");
       state.variants[id] = Number(button.dataset.variantIndex || "0");
       persistVariants();
+      haptic("selection");
       render();
     });
   });
@@ -492,6 +666,28 @@ function bindDeck() {
 
   els.deck.querySelectorAll("[data-start-current]").forEach((button) => {
     button.addEventListener("click", () => startCurrentCard());
+  });
+  els.deck.querySelectorAll("[data-start-button]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const card = currentCard();
+      if (!card) return;
+      const buttons = cardActionButtons(card);
+      const index = buttons.findIndex((item) => item.raw === button.dataset.startButton);
+      if (index >= 0) {
+        state.variants[String(card.id)] = index;
+        persistVariants();
+      }
+      startCard(card.id, button.dataset.startButton || "", els.deck.querySelector(".deck-card.is-top"));
+    });
+  });
+  els.deck.querySelectorAll("[data-dismiss-current]").forEach((button) => {
+    button.addEventListener("click", () => dismissCurrentCard());
+  });
+  els.deck.querySelectorAll("[data-toggle-comment]").forEach((button) => {
+    button.addEventListener("click", () => toggleInlineComment());
+  });
+  els.deck.querySelectorAll("[data-inline-comment]").forEach((form) => {
+    form.addEventListener("submit", sendInlineComment);
   });
 }
 
@@ -543,9 +739,16 @@ function bindDrag(node) {
 }
 
 function renderRichText(value) {
-  return escapeHtml(value)
+  const links = [];
+  const withMarkdownLinks = String(value || "").replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_match, label, url) => {
+    const token = `@@LINK_${links.length}@@`;
+    links.push(`<a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`);
+    return token;
+  });
+  return escapeHtml(withMarkdownLinks)
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/(https?:\/\/[^\s<]+)/g, (url) => `<a href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(shortUrl(url))}</a>`)
+    .replace(/@@LINK_(\d+)@@/g, (_match, index) => links[Number(index)] || "")
     .replace(/\n+/g, "<br />");
 }
 
@@ -614,8 +817,10 @@ function cardActionButtons(card) {
 
 function buttonText(label, card = {}) {
   const raw = String(label || "").trim();
-  if (/(skip|dismiss|delete|no\b|pass|edit|refine|change|context)/i.test(raw)) return "";
-  if (/^(yes|yes new thread|do it|start)$/i.test(raw.replace(/[^a-z ]/gi, " ").trim())) return inferredActionLabel(card);
+  const normalized = raw.replace(/[^a-z ]/gi, " ").replace(/\s+/g, " ").trim().toLowerCase();
+  if (/^(skip|dismiss|delete|pass|edit|refine|change|context|more|more options?)$/.test(normalized)) return "";
+  if (/^(no|no thanks|not now)$/.test(normalized)) return "";
+  if (/^(yes|yes new thread|do it|start)$/.test(normalized)) return inferredActionLabel(card);
   return raw.replace(/^[^\p{L}\p{N}]+/u, "").replace(/\s+/g, " ").trim().slice(0, 32);
 }
 
@@ -790,25 +995,36 @@ async function dismissCurrentCard(item = null) {
 }
 
 async function startCard(id, button, item) {
+  if (state.pending.has(String(id))) return;
+  state.pending.add(String(id));
   item?.classList.add("accept-right");
   try {
-    await api(`/api/cards/${id}/start`, { method: "POST", body: JSON.stringify({ button }) });
+    const result = await api(`/api/cards/${id}/start`, { method: "POST", body: JSON.stringify({ button }) });
+    if (result.game) state.game = result.game;
+    haptic("success");
     state.started += 1;
     decrementOpenCount();
     localStorage.setItem("buxTinderStarted", String(state.started));
     removeLocal(id);
     scheduleRefresh();
-    toast("Started.");
+    toast(result.reward?.points ? `Started. +${result.reward.points} XP` : "Started.");
   } catch (error) {
     item?.classList.remove("accept-right");
+    haptic("error");
     toast(error.message);
+  } finally {
+    state.pending.delete(String(id));
   }
 }
 
 async function dismissCard(id, item) {
+  if (state.pending.has(String(id))) return;
+  state.pending.add(String(id));
   item?.classList.add("dismiss-left");
   try {
-    await api(`/api/cards/${id}/dismiss`, { method: "POST", body: "{}" });
+    const result = await api(`/api/cards/${id}/dismiss`, { method: "POST", body: "{}" });
+    if (result.game) state.game = result.game;
+    haptic("medium");
     state.skipped += 1;
     decrementOpenCount();
     localStorage.setItem("buxTinderSkipped", String(state.skipped));
@@ -817,7 +1033,10 @@ async function dismissCard(id, item) {
     toast("Skipped.");
   } catch (error) {
     item?.classList.remove("dismiss-left");
+    haptic("error");
     toast(error.message);
+  } finally {
+    state.pending.delete(String(id));
   }
 }
 
@@ -834,8 +1053,53 @@ function removeLocal(id) {
 }
 
 function openContext() {
+  const card = currentCard();
+  if (card?.id) {
+    toggleInlineComment();
+    return;
+  }
   els.sheet.showModal();
   els.input.focus({ preventScroll: true });
+}
+
+function toggleInlineComment() {
+  const card = currentCard();
+  if (!card?.id) {
+    openContext();
+    return;
+  }
+  state.commentOpenId = String(state.commentOpenId) === String(card.id) ? "" : String(card.id);
+  haptic("selection");
+  render();
+  if (state.commentOpenId) {
+    setTimeout(() => {
+      els.deck.querySelector(".inline-comment textarea")?.focus({ preventScroll: true });
+    }, 0);
+  }
+}
+
+async function sendInlineComment(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const textarea = form.querySelector("textarea");
+  const comment = textarea?.value.trim() || "";
+  if (!comment) return;
+  const card = currentCard();
+  if (!card?.id) return;
+  form.classList.add("sending");
+  toast("Refining it...");
+  try {
+    const result = await api(`/api/cards/${card.id}/comment`, { method: "POST", body: JSON.stringify({ comment }) });
+    if (result.game) state.game = result.game;
+    haptic("success");
+    state.commentOpenId = "";
+    removeLocal(card.id);
+    scheduleRefresh();
+  } catch (error) {
+    form.classList.remove("sending");
+    haptic("error");
+    toast(error.message);
+  }
 }
 
 async function sendContext(event) {
@@ -847,7 +1111,8 @@ async function sendContext(event) {
   toast("Refining it...");
   try {
     if (card?.id) {
-      await api(`/api/cards/${card.id}/comment`, { method: "POST", body: JSON.stringify({ comment }) });
+      const result = await api(`/api/cards/${card.id}/comment`, { method: "POST", body: JSON.stringify({ comment }) });
+      if (result.game) state.game = result.game;
     } else if (state.activeGoalId.startsWith("topic:")) {
       await api(`/api/topics/${state.activeGoalId.slice("topic:".length)}/context`, { method: "POST", body: JSON.stringify({ comment }) });
     } else if (state.activeGoalId !== "all") {
@@ -994,11 +1259,12 @@ document.querySelectorAll("[data-goal-example]").forEach((button) => {
 attachSpeech();
 
 async function refresh(options = {}) {
-  const [goals, topics, cards, stats, activity, me] = await Promise.all([
+  const [goals, topics, cards, stats, game, activity, me] = await Promise.all([
     api("/api/goals"),
     api("/api/topics"),
     api("/api/cards"),
     api("/api/stats"),
+    api("/api/game-state"),
     api("/api/activity"),
     api("/api/me"),
   ]);
@@ -1006,6 +1272,7 @@ async function refresh(options = {}) {
   state.topics = topics.topics || [];
   state.cards = cards.cards || [];
   state.stats = stats.stats || {};
+  state.game = game.game || null;
   state.activity = activity.activity || [];
   state.me = me || { settings: {} };
   if (options.resetToTop) state.index = 0;
