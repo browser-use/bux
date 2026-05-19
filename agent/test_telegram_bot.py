@@ -64,6 +64,58 @@ class CodexSettingsTest(unittest.TestCase):
 
         self.assertEqual(settings, {"model": "gpt-5.4"})
 
+    def test_model_picker_marks_current_choices(self) -> None:
+        markup = telegram_bot._codex_model_picker_markup(
+            {"model": "gpt-5.4", "reasoning_effort": "high"}
+        )
+
+        labels = [
+            button["text"]
+            for row in markup["inline_keyboard"]
+            for button in row
+        ]
+        self.assertIn("✓ 5.4", labels)
+        self.assertIn("✓ High", labels)
+        self.assertIn("Reset Codex defaults", labels)
+
+    def test_model_picker_callback_updates_effort_in_place(self) -> None:
+        bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
+        bot.state = {
+            "offset": 0,
+            "agents": {},
+            "codex_settings": {},
+            "owners": {"100": {"user_id": "55", "name": "Magnus"}},
+        }
+        calls: list[tuple[str, dict]] = []
+
+        def fake_call(method: str, **kwargs):
+            calls.append((method, kwargs))
+            return {"ok": True}
+
+        bot.call = fake_call  # type: ignore[method-assign]
+        bot.send = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+
+        with mock.patch.object(telegram_bot, "save_state"):
+            bot._handle_codex_model_callback(
+                {
+                    "id": "cb1",
+                    "from": {"id": 55, "username": "Magnus_Mueller"},
+                    "message": {
+                        "chat": {"id": 100},
+                        "message_id": 99,
+                        "message_thread_id": 123,
+                    },
+                },
+                "codex_model:effort:high",
+            )
+
+        self.assertEqual(
+            bot.state["codex_settings"]["100_123"],
+            {"reasoning_effort": "high"},
+        )
+        self.assertEqual(bot.state["agents"]["100_123"], "codex")
+        self.assertTrue(any(method == "editMessageText" for method, _ in calls))
+
     def test_codex_goal_feature_enablement_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config = Path(tmp) / "config.toml"
