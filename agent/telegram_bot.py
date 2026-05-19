@@ -1876,13 +1876,21 @@ def _forget_goal_tmux(state: dict, slug: str) -> None:
         save_state(state)
 
 
-def _send_goal_tmux_input(name: str, text: str, slug: str | None = None) -> bool:
+def _send_goal_tmux_input(name: str, text: str, slug: str | None = None, queue_if_busy: bool = True) -> bool:
+    if slug and queue_if_busy:
+        with _goal_relays_lock:
+            relay = _goal_relays.get(slug)
+        if relay is not None and relay.queue_if_busy(text):
+            return True
     try:
         r = _run_tmux(["send-keys", "-t", name, "-l", text], timeout=3.0)
         if r.returncode != 0:
             return False
         r = _run_tmux(["send-keys", "-t", name, "Enter"], timeout=3.0)
         ok = r.returncode == 0
+        if ok and text.lstrip().startswith("/goal "):
+            time.sleep(0.5)
+            _run_tmux(["send-keys", "-t", name, "Enter"], timeout=3.0)
         if ok and slug:
             relay: GoalTmuxRelay | None = None
             with _goal_relays_lock:
@@ -1986,6 +1994,8 @@ class GoalTmuxRelay:
         self._thread: threading.Thread | None = None
         self._stream_msg: StreamingMessage | None = None
         self._stream_lock = threading.Lock()
+        self._busy = True
+        self._pending_inputs: list[str] = []
 
     def start(self) -> None:
         with _goal_relays_lock:
@@ -2062,8 +2072,15 @@ class GoalTmuxRelay:
                 continue
             final = phase in {"final", "final_answer"}
             self._relay_message(message, final=final)
-            if final and _goal_message_completes_goal(message):
-                self._finish_goal_session()
+            if final:
+                self._after_final_message(completed=_goal_message_completes_goal(message))
+
+    def queue_if_busy(self, text: str) -> bool:
+        with self._stream_lock:
+            if not self._busy:
+                return False
+            self._pending_inputs.append(text)
+            return True
 
     def begin_user_turn(self) -> None:
         """Start a fresh editable output bubble for the next goal response.
@@ -2076,6 +2093,7 @@ class GoalTmuxRelay:
         """
         with self._stream_lock:
             self._stream_msg = None
+            self._busy = True
 
     def _relay_message(self, message: str, final: bool = False) -> None:
         with self._stream_lock:
@@ -2090,6 +2108,19 @@ class GoalTmuxRelay:
             self._stream_msg.append(message)
             if final:
                 self._stream_msg.finalize()
+
+    def _after_final_message(self, completed: bool) -> None:
+        next_input: str | None = None
+        with self._stream_lock:
+            if self._pending_inputs:
+                next_input = self._pending_inputs.pop(0)
+            else:
+                self._busy = False
+        if next_input is not None:
+            _send_goal_tmux_input(self.name, next_input, slug=self.slug, queue_if_busy=False)
+            return
+        if completed:
+            self._finish_goal_session()
 
     def _finish_goal_session(self) -> None:
         try:
