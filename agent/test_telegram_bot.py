@@ -221,6 +221,9 @@ class GoalCommandRoutingTest(unittest.TestCase):
         edits: list[tuple[int, int, str, dict]] = []
 
         class FakeBot:
+            def __init__(self) -> None:
+                self.state = {"goal_tmux": {}}
+
             def send(self, chat_id: int, text: str, **kwargs) -> None:
                 sent.append((chat_id, text, kwargs))
 
@@ -262,7 +265,7 @@ class GoalCommandRoutingTest(unittest.TestCase):
         self.assertEqual(edits[0][1], 777)
         self.assertIn("1 2 3 4 5 6 7 8 9 10", edits[0][2])
 
-    def test_goal_relay_clears_goal_mode_when_goal_completes(self) -> None:
+    def test_goal_relay_clears_goal_mode_after_final_answer(self) -> None:
         sent: list[tuple[int, str, dict]] = []
         edits: list[tuple[int, int, str, dict]] = []
 
@@ -292,7 +295,7 @@ class GoalCommandRoutingTest(unittest.TestCase):
                         "payload": {
                             "type": "agent_message",
                             "phase": "final_answer",
-                            "message": "1 2 3\n\nGoal complete. Time used: 6 seconds.",
+                            "message": "1 2 3",
                         },
                     }
                 )
@@ -314,7 +317,7 @@ class GoalCommandRoutingTest(unittest.TestCase):
 
         self.assertEqual(bot.state["goal_tmux"], {})
         run_tmux.assert_called_once_with(["kill-session", "-t", "tmux-name"], timeout=3.0)
-        self.assertIn("Goal complete", edits[-1][2])
+        self.assertIn("1 2 3", edits[-1][2])
 
     def test_goal_relay_sends_queued_followup_after_current_final_answer(self) -> None:
         sent: list[tuple[int, str, dict]] = []
@@ -399,6 +402,9 @@ class GoalCommandRoutingTest(unittest.TestCase):
         edits: list[tuple[int, int, str, dict]] = []
 
         class FakeBot:
+            def __init__(self) -> None:
+                self.state = {"goal_tmux": {}}
+
             def send(self, chat_id: int, text: str, **kwargs) -> None:
                 sent.append((chat_id, text, kwargs))
 

@@ -1958,16 +1958,6 @@ def _strip_goal_terminal_noise(text: str) -> str:
     return cleaned.strip()
 
 
-def _goal_message_completes_goal(message: str) -> bool:
-    text = " ".join(message.strip().split())
-    if not text:
-        return False
-    low = text.lower()
-    if "time used" in low and ("goal complete" in low or "goal achieved" in low):
-        return True
-    return bool(re.search(r"\bgoal achieved\s*\([^)]*\)", low))
-
-
 class GoalTmuxRelay:
     """Relay structured Codex agent messages from a durable tmux goal session."""
 
@@ -2073,7 +2063,7 @@ class GoalTmuxRelay:
             final = phase in {"final", "final_answer"}
             self._relay_message(message, final=final)
             if final:
-                self._after_final_message(completed=_goal_message_completes_goal(message))
+                self._after_final_message()
 
     def queue_if_busy(self, text: str) -> bool:
         with self._stream_lock:
@@ -2109,7 +2099,7 @@ class GoalTmuxRelay:
             if final:
                 self._stream_msg.finalize()
 
-    def _after_final_message(self, completed: bool) -> None:
+    def _after_final_message(self) -> None:
         next_input: str | None = None
         with self._stream_lock:
             if self._pending_inputs:
@@ -2119,8 +2109,7 @@ class GoalTmuxRelay:
         if next_input is not None:
             _send_goal_tmux_input(self.name, next_input, slug=self.slug, queue_if_busy=False)
             return
-        if completed:
-            self._finish_goal_session()
+        self._finish_goal_session()
 
     def _finish_goal_session(self) -> None:
         try:
