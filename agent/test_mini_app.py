@@ -583,6 +583,155 @@ class MiniAppTest(unittest.TestCase):
         self.assertIn("Slack signal: Saurav asked for reposts.", prompt)
         self.assertIn("find the matching entry by source or title", prompt)
 
+    def test_game_state_tracks_rank_points_from_durable_tables(self) -> None:
+        with self.agency_db.conn() as db:
+            accepted_id = self.agency_db.insert(
+                db,
+                title="Accepted win",
+                description="Moves the goal.",
+                importance="high",
+                source="gmail-thread",
+            )
+            dismissed_id = self.agency_db.insert(
+                db,
+                title="Skipped noise",
+                description="Too vague.",
+                importance="low",
+                source="slack-noise",
+            )
+            self.agency_db.set_status(db, accepted_id, "accepted")
+            self.agency_db.set_status(db, dismissed_id, "dismissed")
+        with self.app._mini_conn() as db:
+            db.execute(
+                """
+                INSERT INTO goals (title, context, created_at, updated_at)
+                VALUES ('Grow', 'Reach users', 1, 1)
+                """
+            )
+            db.execute(
+                """
+                INSERT INTO card_comments (suggestion_id, body, telegram_user_id, created_at)
+                VALUES (?, 'Make it sharper', '42', 1)
+                """,
+                (accepted_id,),
+            )
+            db.commit()
+
+        state = self.app._game_state()
+
+        self.assertGreaterEqual(state["points"], 180 + 45 + 90 - 6)
+        self.assertEqual(state["stats"]["done"], 1)
+        self.assertEqual(state["stats"]["comments"], 1)
+        self.assertIn("name", state["rank"])
+
+    def test_game_state_prefers_quest_event_ledger(self) -> None:
+        with self.agency_db.conn() as db:
+            suggestion_id = self.agency_db.insert(
+                db,
+                title="High-value win",
+                description="Moves the goal.",
+                importance="high",
+                source="launch",
+            )
+            self.agency_db.set_status(db, suggestion_id, "accepted")
+        self.app._record_quest_event(
+            suggestion_id,
+            "start",
+            {"id": 42},
+            points=220,
+            detail="Draft launch post",
+        )
+
+        state = self.app._game_state()
+
+        self.assertEqual(state["points"], 220)
+        self.assertEqual(state["recent_events"][0]["points"], 220)
+
+    def test_start_dispatch_is_idempotent_after_acceptance(self) -> None:
+        calls: list[tuple[str, dict]] = []
+        runs: list[tuple[tuple[int, int], str]] = []
+
+        class FakeBot:
+            def __init__(self, token: str, setup_token: str) -> None:
+                self.token = token
+                self.setup_token = setup_token
+
+            def call(self, method: str, **params: object) -> dict:
+                calls.append((method, dict(params)))
+                return {"ok": True, "result": {"message_id": 55}}
+
+            def run_task(
+                self,
+                key: tuple[int, int],
+                prompt: str,
+                reply_to: int | None = None,
+                sender: dict | None = None,
+            ) -> None:
+                del reply_to, sender
+                runs.append((key, prompt))
+
+        sys.modules["telegram_bot"] = types.SimpleNamespace(Bot=FakeBot)
+        with self.agency_db.conn() as db:
+            suggestion_id = self.agency_db.insert(
+                db,
+                title="Start once",
+                description="",
+                chat_id=100,
+                thread_id=123,
+                prompt="Do the work",
+            )
+
+        first = self.app._start_agent_work(suggestion_id, {"id": 42, "first_name": "Magnus"})
+        deadline = time.time() + 2
+        while not runs and time.time() < deadline:
+            time.sleep(0.02)
+        second = self.app._start_agent_work(suggestion_id, {"id": 42, "first_name": "Magnus"})
+
+        self.assertTrue(first["started"])
+        self.assertTrue(second["already_handled"])
+        self.assertEqual(second["thread_id"], 123)
+        self.assertEqual(len(runs), 1)
+
+    def test_start_dispatch_claims_pending_before_side_effects(self) -> None:
+        calls: list[tuple[str, dict]] = []
+
+        class FakeBot:
+            def __init__(self, token: str, setup_token: str) -> None:
+                self.token = token
+                self.setup_token = setup_token
+
+            def call(self, method: str, **params: object) -> dict:
+                calls.append((method, dict(params)))
+                raise RuntimeError("telegram down")
+
+            def run_task(
+                self,
+                key: tuple[int, int],
+                prompt: str,
+                reply_to: int | None = None,
+                sender: dict | None = None,
+            ) -> None:
+                del key, prompt, reply_to, sender
+
+        sys.modules["telegram_bot"] = types.SimpleNamespace(Bot=FakeBot)
+        with self.agency_db.conn() as db:
+            suggestion_id = self.agency_db.insert(
+                db,
+                title="Start atomically",
+                description="",
+                chat_id=100,
+                thread_id=123,
+                prompt="Do the work",
+            )
+
+        result = self.app._start_agent_work(suggestion_id, {"id": 42, "first_name": "Magnus"})
+
+        self.assertFalse(result["started"])
+        self.assertTrue(calls)
+        with self.agency_db.conn() as db:
+            row = db.execute("SELECT status FROM suggestions WHERE id = ?", (suggestion_id,)).fetchone()
+        self.assertEqual(row["status"], "failed")
+
     def _request(self, url: str, *, method: str = "GET", body: dict | None = None) -> dict:
         data = None if body is None else json.dumps(body).encode()
         req = urllib.request.Request(

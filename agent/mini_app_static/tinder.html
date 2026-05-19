@@ -3,21 +3,23 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>bux feed</title>
-    <link rel="stylesheet" href="/tinder.css?v=20260515x3" />
+    <title>Agency</title>
+    <link rel="stylesheet" href="/tinder.css?v=20260519king1" />
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body>
     <main class="app-shell">
       <aside class="goal-rail" id="goalRail" aria-label="Goals and recent activity">
         <div class="rail-brand">
-          <p class="eyebrow">bux mini app</p>
-          <h2>Swipe useful work, not noise.</h2>
-          <p class="rail-copy">Every card should be understandable in one second and useful in one tap.</p>
+          <p class="eyebrow">Agency kingdom</p>
+          <h2>Become King of Life.</h2>
+          <p class="rail-copy">Goals become quests. AI does the private work. You approve the visible moves.</p>
         </div>
 
+        <section id="kingPanel" class="king-panel" aria-label="Progression"></section>
+
         <div class="rail-actions">
-          <button id="newGoalButton" class="primary-pill" type="button">New goal</button>
+          <button id="newGoalButton" class="primary-pill" type="button">New quest</button>
           <button
             id="collapseRailButton"
             class="icon-pill"
@@ -28,7 +30,7 @@
 
         <section class="rail-section">
           <div class="section-head">
-            <span>Focus lanes</span>
+            <span>Goal realms</span>
             <small id="goalCountLabel">0</small>
           </div>
           <div id="goalTabs" class="goal-tabs"></div>
@@ -36,7 +38,7 @@
 
         <section class="rail-section">
           <div class="section-head">
-            <span>Recent sync</span>
+            <span>Wins and skips</span>
             <small>Telegram</small>
           </div>
           <div id="activityFeed" class="activity-feed"></div>
@@ -46,7 +48,7 @@
       <section class="main-stage">
         <header class="topbar">
           <div class="topline">
-            <span class="eyebrow">goal feed</span>
+            <span class="eyebrow">Agency</span>
             <span id="providerPill" class="provider-pill">Telegram sync live</span>
           </div>
 
@@ -61,20 +63,21 @@
               type="button"
               aria-label="Open goals"
             >
-              New
+              Quest
             </button>
           </div>
 
           <div class="top-actions">
-            <button id="moreButton" class="secondary-button" type="button">Scan now</button>
-            <button id="autopilotButton" class="primary-button" type="button">Work privately</button>
+            <button id="moreButton" class="secondary-button" type="button">Generate quests</button>
+            <button id="autopilotButton" class="primary-button" type="button">Run AI</button>
           </div>
         </header>
 
         <section class="rule-strip" aria-label="Mini app rules">
           <span>Private work first</span>
-          <span>Ask before visible actions</span>
-          <span>Synced with Telegram topics</span>
+          <span>Approval at the boundary</span>
+          <span>XP for useful decisions</span>
+          <span>Synced with Telegram</span>
         </section>
 
         <section class="mobile-goals" id="mobileGoals"></section>
@@ -90,22 +93,22 @@
             <button id="skipAction" class="round-action round-skip" type="button" aria-label="Skip card"></button>
             <span>Skip</span>
           </div>
-          <button id="contextButton" class="context-button" type="button">Add context</button>
+          <button id="contextButton" class="context-button" type="button">Comment</button>
           <div class="action-cluster">
             <button id="startAction" class="round-action round-start" type="button" aria-label="Start selected card"></button>
-            <span>Start</span>
+            <span>Do it</span>
           </div>
         </footer>
       </section>
 
       <dialog id="workSheet" class="sheet">
         <form id="workForm" method="dialog" class="sheet-card">
-          <p class="sheet-kicker">Private work</p>
-          <label for="workConfirmButton">Run the agent on this lane now.</label>
-          <p class="sheet-note">It can inspect, draft, test, and prepare work. Sending, posting, buying, deleting, or changing something visible still comes back as a card.</p>
+          <p class="sheet-kicker">Run AI</p>
+          <label for="workConfirmButton">Let the agent push this goal forward.</label>
+          <p class="sheet-note">It can inspect, draft, test, render, and prepare. Anything visible to other people still comes back as a tap.</p>
           <div class="sheet-actions">
             <button value="cancel" type="button" data-close-work>Cancel</button>
-            <button id="workConfirmButton" value="send" class="primary-button" type="submit">Start private work</button>
+            <button id="workConfirmButton" value="send" class="primary-button" type="submit">Run AI</button>
           </div>
         </form>
       </dialog>
@@ -123,8 +126,8 @@
 
       <dialog id="contextSheet" class="sheet">
         <form id="contextForm" method="dialog" class="sheet-card">
-          <p class="sheet-kicker">Improve this card</p>
-          <label for="contextInput">Add context, constraints, or a better angle.</label>
+          <p class="sheet-kicker">Comment</p>
+          <label for="contextInput">Tell the agent what to change.</label>
           <textarea
             id="contextInput"
             rows="5"
@@ -140,19 +143,19 @@
 
       <dialog id="goalSheet" class="sheet">
         <form id="goalForm" method="dialog" class="sheet-card">
-          <p class="sheet-kicker">New lane</p>
-          <label for="goalInput">What should the agent keep handling for you?</label>
+          <p class="sheet-kicker">New quest</p>
+          <label for="goalInput">What should Agency help you achieve?</label>
           <textarea
             id="goalInput"
             rows="5"
-            placeholder="Examples: keep my PR queue clear, watch Gmail every 30 minutes, or help grow bux."
+            placeholder="Example: reach 1000 users by finding warm distribution openings and preparing the next approval cards."
           ></textarea>
           <div class="goal-examples" aria-label="Examples">
             <button
               type="button"
               data-goal-example="Grow bux. Find distribution openings, fix friction, draft launch assets, and ask only before visible actions."
             >
-              Grow bux
+              Growth quest
             </button>
             <button
               type="button"
@@ -164,18 +167,18 @@
               type="button"
               data-goal-example="Ship with fewer bugs. Watch repos, PRs, incidents, and CI, then suggest the next exact fix."
             >
-              Fewer bugs
+              Ship cleaner
             </button>
           </div>
           <div class="sheet-actions">
             <button value="cancel" type="button" data-close-goal>Cancel</button>
-            <button value="send" class="primary-button" type="submit">Create goal</button>
+            <button value="send" class="primary-button" type="submit">Create quest</button>
           </div>
         </form>
       </dialog>
 
       <div id="toast" class="toast" role="status"></div>
     </main>
-    <script src="/tinder.js?v=20260515x3" type="module"></script>
+    <script src="/tinder.js?v=20260519king1" type="module"></script>
   </body>
 </html>
