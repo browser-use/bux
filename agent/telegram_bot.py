@@ -2609,9 +2609,10 @@ class ShellSession:
                     self.bot.send(
                         self.chat_id,
                         "🔑 *Sign in to Codex*\n"
-                        "Tap *Copy link* → open in your browser → enter "
-                        "the code, then come back here and paste the "
-                        "result. `/cancel` to abort.",
+                        f"Code: *{codex_code}*\n\n"
+                        "Tap *Open Link* or *Copy Link* → enter the code, "
+                        "then come back here and paste the result. "
+                        "`/cancel` to abort.",
                         thread_id=self.thread_id,
                         markdown=True,
                         reply_markup=_minimal_codex_login_markup(url, codex_code),
@@ -3177,8 +3178,9 @@ CODEX_AUTH_PROVIDER = _CodexProvider()
 def _codex_login_reply_markup(url: str, code: str) -> dict:
     return {
         "inline_keyboard": [
-            [{"text": "Open auth page", "url": url}],
-            [{"text": "Copy code", "copy_text": {"text": code}}],
+            [{"text": "Open Link", "url": url}],
+            [{"text": f"Copy Link {_short_button_url(url)}", "copy_text": {"text": url}}],
+            [{"text": f"Copy Code {code}", "copy_text": {"text": code}}],
             [{"text": "Retry after enabling", "callback_data": "codex_login_retry"}],
         ]
     }
@@ -3225,18 +3227,22 @@ def _minimal_oauth_url_markup(url: str) -> dict:
     }
 
 
-def _minimal_codex_login_markup(url: str, code: str) -> dict:
-    """Two-button minimal layout for Codex device-auth: Copy link + Copy code.
+def _short_button_url(url: str) -> str:
+    return (url or "")[:10]
 
-    Same reasoning as `_minimal_oauth_url_markup`: the user copies, opens
-    in their real browser, enters the code, comes back. No Open button
-    (avoid the in-app browser path), no Retry button (the picker
-    callback re-fires the flow if needed).
+
+def _minimal_codex_login_markup(url: str, code: str) -> dict:
+    """Minimal Codex device-auth actions.
+
+    Codex's device-auth page works in a normal browser, so expose Open as
+    well as copy actions. Include the payload hints in the labels so the
+    user can visually confirm they are copying the right link/code.
     """
     return {
         "inline_keyboard": [
-            [{"text": "📋 Copy link", "copy_text": {"text": url}}],
-            [{"text": "📋 Copy code", "copy_text": {"text": code}}],
+            [{"text": "Open Link", "url": url}],
+            [{"text": f"📋 Copy Link {_short_button_url(url)}", "copy_text": {"text": url}}],
+            [{"text": f"📋 Copy Code {code}", "copy_text": {"text": code}}],
         ]
     }
 
@@ -3250,10 +3256,46 @@ def _login_picker_reply_markup() -> dict:
     """
     return {
         "inline_keyboard": [
+            [{"text": "🟩 Sign in with Codex (recommended)", "callback_data": "login_pick:codex"}],
             [{"text": "🟪 Sign in with Claude", "callback_data": "login_pick:claude"}],
-            [{"text": "🟩 Sign in with Codex",  "callback_data": "login_pick:codex"}],
         ]
     }
+
+
+def _is_usage_limit_error(text: str) -> bool:
+    low = (text or "").lower()
+    return (
+        "usage limit" in low
+        or "out of extra usage" in low
+        or "purchase more credits" in low
+        or "try again at" in low
+    )
+
+
+def _codex_event_error_message(ev: dict) -> str:
+    err = ev.get("error")
+    if isinstance(err, dict):
+        for key in ("message", "text", "detail"):
+            value = err.get(key)
+            if value:
+                return str(value)
+        try:
+            return json.dumps(err, ensure_ascii=False)
+        except Exception:
+            return str(err)
+    if err:
+        return str(err)
+    msg = ev.get("message")
+    return str(msg) if msg else ""
+
+
+def _codex_no_output_message(stderr_text: str, stdout_diagnostics: list[str]) -> str:
+    parts: list[str] = []
+    if stderr_text:
+        parts.append(stderr_text)
+    parts.extend(line for line in stdout_diagnostics[-8:] if line)
+    text = _ANSI_RE.sub("", "\n".join(parts)).strip()
+    return text or "(codex returned no output)"
 
 
 def _is_codex_auth_error(text: str) -> bool:
@@ -4918,13 +4960,18 @@ class Bot:
         started_at = time.time()
         any_text = False
         auth_error_seen = False
+        usage_limit_error = ""
+        stdout_diagnostics: list[str] = []
         assert proc.stdout is not None
         try:
             try:
                 for line in proc.stdout:
+                    raw_line = _ANSI_RE.sub("", line or "").strip()
                     try:
-                        ev = json.loads(line.strip() or "{}")
+                        ev = json.loads(raw_line or "{}")
                     except Exception:
+                        if raw_line:
+                            stdout_diagnostics.append(raw_line)
                         continue
                     et = ev.get("type") or ""
                     # Codex JSONL events of interest:
@@ -4955,6 +5002,9 @@ class Bot:
                         if item.get("type") == "agent_message":
                             text = (item.get("text") or "").strip()
                             if text:
+                                if _is_usage_limit_error(text):
+                                    usage_limit_error = text
+                                    break
                                 if _is_codex_auth_error(text):
                                     auth_error_seen = True
                                     break
@@ -4967,6 +5017,10 @@ class Bot:
                         # ("Reconnecting... 1/5") and aren't fatal — see below.
                         usage = _normalize_codex_usage(ev.get("usage"))
                         duration_ms = int((time.time() - started_at) * 1000)
+                        if et == "turn.failed":
+                            err_msg = _codex_event_error_message(ev)
+                            if err_msg:
+                                stdout_diagnostics.append(err_msg)
                         stream_msg.finalize(usage=usage, duration_ms=duration_ms)
                         break
                     elif et == "error":
@@ -4975,7 +5029,29 @@ class Bot:
                         # backoff) as progress signals. Just log and keep
                         # streaming; if the failure is real, `turn.failed` will
                         # arrive next and break us out.
+                        err_msg = _codex_event_error_message(ev)
+                        if err_msg:
+                            stdout_diagnostics.append(err_msg)
                         LOG.warning("codex transient error: %s", ev.get("message") or ev)
+                if usage_limit_error:
+                    stream_msg.finalize()
+                    self.react(chat_id, reply_to, EMOJI_ERROR)
+                    self.send(
+                        chat_id,
+                        usage_limit_error,
+                        reply_to=reply_to,
+                        thread_id=thread_id,
+                    )
+                    self._send_login_picker(chat_id, reply_to, thread_id)
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            _kill_inflight_proc(slug, proc, "usage-limit")
+                            proc.wait(timeout=1)
+                        except Exception:
+                            pass
+                    return
                 if auth_error_seen:
                     _login_status_cache_invalidate("codex")
                     if _login_status_cached("claude"):
@@ -5054,8 +5130,18 @@ class Bot:
                     err = stderr_buf.read().strip()
                 except Exception:
                     pass
+                no_output_msg = _codex_no_output_message(err, stdout_diagnostics)
                 self.react(chat_id, reply_to, EMOJI_ERROR)
-                if _is_codex_auth_error(err):
+                if _is_usage_limit_error(no_output_msg):
+                    self.send(
+                        chat_id,
+                        no_output_msg,
+                        reply_to=reply_to,
+                        thread_id=thread_id,
+                    )
+                    self._send_login_picker(chat_id, reply_to, thread_id)
+                    return
+                if _is_codex_auth_error(no_output_msg):
                     _login_status_cache_invalidate("codex")
                     if _login_status_cached("claude"):
                         _set_agent_for(key, AGENT_CLAUDE, self.state)
@@ -5086,7 +5172,7 @@ class Bot:
                     return
                 self.send(
                     chat_id,
-                    err or "(codex returned no output)",
+                    no_output_msg,
                     reply_to=reply_to,
                     thread_id=thread_id,
                 )
@@ -7001,8 +7087,9 @@ class Bot:
                 self.send(
                     chat_id,
                     "🔑 *Sign in to Codex*\n"
-                    "Tap *Copy link* → open in your browser → enter the "
-                    "code, then come back here. `/cancel` to abort.",
+                    f"Code: *{code}*\n\n"
+                    "Tap *Open Link* or *Copy Link* → enter the code, "
+                    "then come back here. `/cancel` to abort.",
                     reply_to=reply_to,
                     thread_id=thread_id,
                     markdown=True,
@@ -7085,7 +7172,9 @@ class Bot:
         """
         self.send(
             chat_id,
-            "Not signed in yet. Pick an agent to connect:",
+            "Not signed in yet. Pick an agent to connect.\n\n"
+            "Recommended: Codex. Claude Code often locks out daily; Codex is "
+            "usually the better default.",
             reply_to=reply_to,
             thread_id=thread_id,
             reply_markup=_login_picker_reply_markup(),

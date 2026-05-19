@@ -299,6 +299,52 @@ class LoginRoutingTest(unittest.TestCase):
         )
         self.assertTrue(telegram_bot._is_claude_auth_error("You are out of extra usage."))
         self.assertTrue(telegram_bot._is_codex_auth_error("usage limit reached"))
+        self.assertTrue(
+            telegram_bot._is_usage_limit_error(
+                "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage "
+                "to purchase more credits or try again at May 23rd, 2026 2:25 PM."
+            )
+        )
+
+    def test_codex_no_output_message_uses_stdout_diagnostics(self) -> None:
+        msg = telegram_bot._codex_no_output_message(
+            "",
+            [
+                "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage "
+                "to purchase more credits or try again at May 23rd, 2026 2:25 PM."
+            ],
+        )
+
+        self.assertIn("You've hit your usage limit", msg)
+        self.assertNotIn("codex returned no output", msg)
+
+    def test_minimal_codex_login_markup_shows_link_and_code_hints(self) -> None:
+        markup = telegram_bot._minimal_codex_login_markup(
+            "https://auth.openai.com/codex/device?abc=123",
+            "ABCD-EFGH",
+        )
+
+        rows = markup["inline_keyboard"]
+        self.assertEqual(rows[0][0]["text"], "Open Link")
+        self.assertEqual(rows[0][0]["url"], "https://auth.openai.com/codex/device?abc=123")
+        self.assertIn("https://au", rows[1][0]["text"])
+        self.assertEqual(rows[1][0]["copy_text"]["text"], "https://auth.openai.com/codex/device?abc=123")
+        self.assertIn("ABCD-EFGH", rows[2][0]["text"])
+        self.assertEqual(rows[2][0]["copy_text"]["text"], "ABCD-EFGH")
+
+    def test_login_picker_recommends_codex(self) -> None:
+        sent: list[tuple[str, dict]] = []
+        bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
+        bot.send = lambda _chat, text, **kwargs: sent.append((text, kwargs))  # type: ignore[method-assign]
+
+        bot._send_login_picker(100, 55, 123)
+
+        text, kwargs = sent[0]
+        self.assertIn("Recommended: Codex", text)
+        buttons = kwargs["reply_markup"]["inline_keyboard"]
+        self.assertIn("Codex", buttons[0][0]["text"])
+        self.assertIn("recommended", buttons[0][0]["text"].lower())
+        self.assertIn("Claude", buttons[1][0]["text"])
 
     def test_login_picker_codex_does_not_force_relogin(self) -> None:
         bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
