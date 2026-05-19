@@ -256,6 +256,7 @@ AGENT_CODEX = "codex"
 AGENTS = (AGENT_CLAUDE, AGENT_CODEX)
 DEFAULT_AGENT = AGENT_CLAUDE
 CODEX_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
+CODEX_MODEL_CHOICES = ("gpt-5.5", "gpt-5.4", "gpt-5.4-mini")
 
 
 # Registered with Telegram via setMyCommands at boot. Order = order shown
@@ -1435,6 +1436,44 @@ def _format_codex_settings(settings: dict) -> str:
     model = settings.get("model") or "(Codex default)"
     effort = settings.get("reasoning_effort") or "(Codex default)"
     return f"model: `{model}`\nreasoning effort: `{effort}`"
+
+
+def _codex_model_picker_markup(settings: dict) -> dict:
+    current_model = settings.get("model") or ""
+    current_effort = settings.get("reasoning_effort") or ""
+
+    def label(text: str, active: bool) -> str:
+        return f"✓ {text}" if active else text
+
+    model_row = [
+        {
+            "text": label("Default", not current_model),
+            "callback_data": "codex_model:model:default",
+        }
+    ]
+    for model in CODEX_MODEL_CHOICES:
+        model_row.append({
+            "text": label(model.replace("gpt-", ""), current_model == model),
+            "callback_data": f"codex_model:model:{model}",
+        })
+    effort_row = [
+        {
+            "text": label(effort.title(), current_effort == effort),
+            "callback_data": f"codex_model:effort:{effort}",
+        }
+        for effort in CODEX_REASONING_EFFORTS
+    ]
+    return {
+        "inline_keyboard": [
+            model_row,
+            effort_row,
+            [{"text": "Reset Codex defaults", "callback_data": "codex_model:reset"}],
+        ]
+    }
+
+
+def _format_codex_model_picker_message(settings: dict) -> str:
+    return "Codex settings\n\n" + _format_codex_settings(settings)
 
 
 # ---------------------------------------------------------------------------
@@ -5992,13 +6031,11 @@ class Bot:
             settings = _set_codex_settings(key, self.state, reasoning_effort="low")
             self.send(
                 chat_id,
-                "Switched this topic to `codex` fast mode.\n\n"
-                + _format_codex_settings(settings)
-                + "\n\nUse `/model` to inspect, `/model <model> [low|medium|high|xhigh]` "
-                "to change it, or `/model reset` to return to Codex defaults.",
+                "Fast mode on.\n\n" + _format_codex_settings(settings),
                 reply_to=mid,
                 thread_id=thread_id,
                 markdown=True,
+                reply_markup=_codex_model_picker_markup(settings),
             )
             return
         if cmd == "/model":
@@ -6406,17 +6443,11 @@ class Bot:
             self.send(
                 chat_id,
                 f"This topic is using `{current_agent}`.\n\n"
-                "Codex settings for this topic:\n"
-                + _format_codex_settings(settings)
-                + "\n\nExamples:\n"
-                "`/fast`\n"
-                "`/model gpt-5.4 low`\n"
-                "`/model gpt-5.4-mini low`\n"
-                "`/model high`\n"
-                "`/model reset`",
+                + _format_codex_model_picker_message(settings),
                 reply_to=reply_to,
                 thread_id=thread_id,
                 markdown=True,
+                reply_markup=_codex_model_picker_markup(settings),
             )
             return
 
@@ -6427,11 +6458,11 @@ class Bot:
             settings = _set_codex_settings(key, self.state, clear=True)
             self.send(
                 chat_id,
-                "Switched this topic to `codex` and reset Codex model settings.\n\n"
-                + _format_codex_settings(settings),
+                "Codex defaults restored.\n\n" + _format_codex_settings(settings),
                 reply_to=reply_to,
                 thread_id=thread_id,
                 markdown=True,
+                reply_markup=_codex_model_picker_markup(settings),
             )
             return
 
@@ -6440,11 +6471,11 @@ class Bot:
             settings = _set_codex_settings(key, self.state, reasoning_effort="low")
             self.send(
                 chat_id,
-                "Switched this topic to `codex` fast mode.\n\n"
-                + _format_codex_settings(settings),
+                "Fast mode on.\n\n" + _format_codex_settings(settings),
                 reply_to=reply_to,
                 thread_id=thread_id,
                 markdown=True,
+                reply_markup=_codex_model_picker_markup(settings),
             )
             return
 
@@ -6493,11 +6524,11 @@ class Bot:
         )
         self.send(
             chat_id,
-            "Switched this topic to `codex` and updated Codex settings.\n\n"
-            + _format_codex_settings(settings),
+            "Codex settings updated.\n\n" + _format_codex_settings(settings),
             reply_to=reply_to,
             thread_id=thread_id,
             markdown=True,
+            reply_markup=_codex_model_picker_markup(settings),
         )
 
     # ----- Lane worker -----
@@ -7323,6 +7354,9 @@ class Bot:
             if data.startswith("login_pick:"):
                 self._handle_login_picker_callback(cb, data)
                 return
+            if data.startswith("codex_model:"):
+                self._handle_codex_model_callback(cb, data)
+                return
             if data == "codex_login_retry":
                 msg = cb.get("message") or {}
                 chat = msg.get("chat") or {}
@@ -7392,6 +7426,70 @@ class Bot:
                           reply_to_message_id=mid)
         except Exception:
             LOG.exception("callback_query handler failed")
+
+    def _handle_codex_model_callback(self, cb: dict, data: str) -> None:
+        """Process the inline Codex model/effort picker."""
+        msg = cb.get("message") or {}
+        chat = msg.get("chat") or {}
+        chat_id = chat.get("id")
+        mid = msg.get("message_id")
+        thread_id = int(msg.get("message_thread_id") or 0)
+        sender = cb.get("from") or {}
+        owner = _owner_for(chat_id, self.state) if chat_id else None
+        if owner and not _is_owner({"user_id": sender.get("id")}, owner):
+            self.call(
+                "answerCallbackQuery",
+                callback_query_id=cb["id"],
+                text="Only the box owner can change Codex settings.",
+                show_alert=True,
+            )
+            return
+        if not chat_id:
+            return
+
+        parts = data.split(":", 2)
+        action = parts[1] if len(parts) > 1 else ""
+        value = parts[2] if len(parts) > 2 else ""
+        key = (int(chat_id), thread_id)
+        _set_agent_for(key, AGENT_CODEX, self.state)
+        if action == "reset":
+            settings = _set_codex_settings(key, self.state, clear=True)
+            toast = "Codex defaults restored"
+        elif action == "model":
+            model = "" if value == "default" else value
+            settings = _set_codex_settings(key, self.state, model=model)
+            toast = "Model updated"
+        elif action == "effort" and value in CODEX_REASONING_EFFORTS:
+            settings = _set_codex_settings(key, self.state, reasoning_effort=value)
+            toast = f"Effort: {value}"
+        else:
+            self.call(
+                "answerCallbackQuery",
+                callback_query_id=cb["id"],
+                text="Unknown Codex setting.",
+                show_alert=True,
+            )
+            return
+
+        self.call("answerCallbackQuery", callback_query_id=cb["id"], text=toast)
+        if mid:
+            rendered = _to_tg_markdown_v2(_format_codex_model_picker_message(settings))
+            resp = self.call(
+                "editMessageText",
+                chat_id=chat_id,
+                message_id=mid,
+                text=rendered,
+                parse_mode="MarkdownV2",
+                reply_markup=_codex_model_picker_markup(settings),
+            )
+            if resp.get("ok") is False:
+                self.send(
+                    int(chat_id),
+                    _format_codex_model_picker_message(settings),
+                    thread_id=thread_id,
+                    markdown=True,
+                    reply_markup=_codex_model_picker_markup(settings),
+                )
 
     def _handle_login_picker_callback(self, cb: dict, data: str) -> None:
         """Process a Sign-in picker tap. callback_data: `login_pick:<provider>`.
