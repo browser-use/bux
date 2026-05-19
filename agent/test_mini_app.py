@@ -623,6 +623,9 @@ class MiniAppTest(unittest.TestCase):
         self.assertEqual(state["stats"]["done"], 1)
         self.assertEqual(state["stats"]["comments"], 1)
         self.assertIn("name", state["rank"])
+        self.assertIn("daily", state)
+        self.assertIn("boss", state)
+        self.assertIn("domains", state)
 
     def test_game_state_prefers_quest_event_ledger(self) -> None:
         with self.agency_db.conn() as db:
@@ -646,6 +649,9 @@ class MiniAppTest(unittest.TestCase):
 
         self.assertEqual(state["points"], 220)
         self.assertEqual(state["recent_events"][0]["points"], 220)
+        self.assertEqual(state["daily"]["accepted"], 1)
+        self.assertGreaterEqual(state["streak"], 1)
+        self.assertTrue(state["domains"])
 
     def test_start_dispatch_is_idempotent_after_acceptance(self) -> None:
         calls: list[tuple[str, dict]] = []

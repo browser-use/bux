@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Agency</title>
-    <link rel="stylesheet" href="/tinder.css?v=20260519king1" />
+    <link rel="stylesheet" href="/tinder.css?v=20260519king8" />
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
   </head>
   <body>
@@ -46,6 +46,7 @@
       </aside>
 
       <section class="main-stage">
+        <canvas id="kingScene" class="king-scene" aria-hidden="true"></canvas>
         <header class="topbar">
           <div class="topline">
             <span class="eyebrow">Agency</span>
@@ -85,18 +86,18 @@
         <section class="deck-stage">
           <div class="swipe-legend swipe-legend-left">Skip</div>
           <section id="deck" class="deck" aria-live="polite"></section>
-          <div class="swipe-legend swipe-legend-right">Start</div>
+          <div class="swipe-legend swipe-legend-right">Review</div>
         </section>
 
         <footer class="bottom-bar">
           <div class="action-cluster">
             <button id="skipAction" class="round-action round-skip" type="button" aria-label="Skip card"></button>
-            <span>Skip</span>
+            <span id="skipActionLabel">Skip</span>
           </div>
           <button id="contextButton" class="context-button" type="button">Comment</button>
           <div class="action-cluster">
             <button id="startAction" class="round-action round-start" type="button" aria-label="Start selected card"></button>
-            <span>Do it</span>
+            <span id="startActionLabel">Do it</span>
           </div>
         </footer>
       </section>
@@ -109,6 +110,19 @@
           <div class="sheet-actions">
             <button value="cancel" type="button" data-close-work>Cancel</button>
             <button id="workConfirmButton" value="send" class="primary-button" type="submit">Run AI</button>
+          </div>
+        </form>
+      </dialog>
+
+      <dialog id="confirmSheet" class="sheet">
+        <form id="confirmForm" method="dialog" class="sheet-card">
+          <p class="sheet-kicker">Approval boundary</p>
+          <label id="confirmTitle" for="confirmButton">Start this card?</label>
+          <p id="confirmNote" class="sheet-note">Agency will continue from this exact card and ask again before anything visible to other people.</p>
+          <div class="confirm-summary" id="confirmSummary"></div>
+          <div class="sheet-actions">
+            <button value="cancel" type="button" data-close-confirm>Cancel</button>
+            <button id="confirmButton" value="send" class="primary-button" type="submit">Start</button>
           </div>
         </form>
       </dialog>
@@ -179,6 +193,6 @@
 
       <div id="toast" class="toast" role="status"></div>
     </main>
-    <script src="/tinder.js?v=20260519king1" type="module"></script>
+    <script src="/tinder.js?v=20260519king8" type="module"></script>
   </body>
 </html>
