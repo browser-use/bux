@@ -1987,6 +1987,7 @@ class GoalTmuxRelay:
         self._busy = True
         self._pending_inputs: list[str] = []
         self._turn_started_at = time.monotonic()
+        self._next_heartbeat_at = self._turn_started_at + 8.0
 
     def start(self) -> None:
         with _goal_relays_lock:
@@ -2016,6 +2017,7 @@ class GoalTmuxRelay:
             if not _goal_tmux_alive(self.name):
                 break
             self._relay_rollout_events()
+            self._maybe_relay_heartbeat()
             time.sleep(1.0)
         with _goal_relays_lock:
             if _goal_relays.get(self.slug) is self:
@@ -2088,6 +2090,7 @@ class GoalTmuxRelay:
             self._stream_msg = None
             self._busy = True
             self._turn_started_at = time.monotonic()
+            self._next_heartbeat_at = self._turn_started_at + 8.0
 
     def _relay_message(self, message: str, final: bool = False) -> None:
         with self._stream_lock:
@@ -2100,8 +2103,22 @@ class GoalTmuxRelay:
                     thinking_emoji="...",
                 )
             self._stream_msg.append(message)
+            self._next_heartbeat_at = time.monotonic() + 30.0
             if final:
                 self._stream_msg.finalize()
+
+    def _maybe_relay_heartbeat(self) -> None:
+        with self._stream_lock:
+            if not self._busy or time.monotonic() < self._next_heartbeat_at:
+                return
+            elapsed = max(1, int(time.monotonic() - self._turn_started_at))
+            queued = len(self._pending_inputs)
+            unit = "second" if elapsed == 1 else "seconds"
+            text = f"Codex goal is still working in the live terminal.\n\nElapsed: {elapsed} {unit}."
+            if queued:
+                text += f"\nQueued follow-ups: {queued}."
+            self._next_heartbeat_at = time.monotonic() + 30.0
+        self._relay_message(text)
 
     def _after_final_message(self) -> None:
         next_input: str | None = None

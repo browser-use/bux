@@ -393,6 +393,39 @@ class GoalCommandRoutingTest(unittest.TestCase):
 
         self.assertEqual(edits[-1][2].count("Time used:"), 1)
 
+    def test_goal_relay_sends_heartbeat_while_waiting_for_output(self) -> None:
+        sent: list[tuple[int, str, dict]] = []
+        edits: list[tuple[int, int, str, dict]] = []
+
+        class FakeBot:
+            def __init__(self) -> None:
+                self.state = {"goal_tmux": {"slug": {"name": "tmux-name"}}}
+
+            def send(self, chat_id: int, text: str, **kwargs) -> None:
+                sent.append((chat_id, text, kwargs))
+
+            def send_returning_id(self, chat_id: int, text: str, **kwargs) -> int:
+                sent.append((chat_id, text, kwargs))
+                return 777
+
+            def edit(self, chat_id: int, message_id: int, text: str, **kwargs) -> bool:
+                edits.append((chat_id, message_id, text, kwargs))
+                return True
+
+        relay = telegram_bot.GoalTmuxRelay(FakeBot(), "slug", 100, 123, "tmux-name")
+        relay._turn_started_at = time.monotonic() - 12
+        relay._next_heartbeat_at = 0
+        relay._pending_inputs.append("what's the time?")
+
+        relay._maybe_relay_heartbeat()
+
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][0], 100)
+        rendered = edits[-1][2] if edits else sent[-1][1]
+        self.assertIn("Codex goal is still working", rendered)
+        self.assertIn("Queued follow", rendered)
+        self.assertIn("1", rendered)
+
     def test_goal_tmux_input_confirms_nested_goal_prompt(self) -> None:
         calls: list[list[str]] = []
 
