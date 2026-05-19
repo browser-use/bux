@@ -76,6 +76,7 @@ class CodexSettingsTest(unittest.TestCase):
         ]
         self.assertIn("✓ 5.4", labels)
         self.assertIn("✓ High", labels)
+        self.assertIn("Fast", labels)
         self.assertIn("Reset Codex defaults", labels)
 
     def test_model_picker_callback_updates_effort_in_place(self) -> None:
@@ -115,6 +116,39 @@ class CodexSettingsTest(unittest.TestCase):
         )
         self.assertEqual(bot.state["agents"]["100_123"], "codex")
         self.assertTrue(any(method == "editMessageText" for method, _ in calls))
+
+    def test_plain_fast_switches_codex_effort(self) -> None:
+        sent: list[tuple[str, dict]] = []
+        bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
+        bot.state = {"offset": 0, "agents": {}, "codex_settings": {}, "owners": {}}
+        bot.setup_token = None
+        bot._username = "bux_bot"
+        bot.react = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+        bot.typing = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+        bot.send = lambda _chat, text, **kwargs: sent.append((text, kwargs))  # type: ignore[method-assign]
+
+        with (
+            mock.patch.object(telegram_bot, "load_allow", return_value={100}),
+            mock.patch.object(telegram_bot, "save_state"),
+            mock.patch.object(telegram_bot, "_get_shell_session", return_value=None),
+            mock.patch.object(telegram_bot, "_goal_state_for", return_value=None),
+        ):
+            bot.handle(
+                {
+                    "chat": {"id": 100, "type": "private"},
+                    "from": {"id": 55, "username": "Magnus_Mueller"},
+                    "message_id": 123,
+                    "text": "fast",
+                }
+            )
+
+        self.assertEqual(bot.state["agents"]["100_main"], "codex")
+        self.assertEqual(
+            bot.state["codex_settings"]["100_main"],
+            {"reasoning_effort": "low"},
+        )
+        self.assertIn("Fast mode on.", sent[-1][0])
+        self.assertNotIn("reply_markup", sent[-1][1])
 
     def test_codex_goal_feature_enablement_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

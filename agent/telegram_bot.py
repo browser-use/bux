@@ -1456,9 +1456,20 @@ def _codex_model_picker_markup(settings: dict) -> dict:
             "text": label(model.replace("gpt-", ""), current_model == model),
             "callback_data": f"codex_model:model:{model}",
         })
+    effort_labels = {
+        "low": "Fast",
+        "medium": "Medium",
+        "high": "High",
+        "xhigh": "XHigh",
+    }
     effort_row = [
         {
-            "text": label(effort.title(), current_effort == effort),
+            "text": label("Default", not current_effort),
+            "callback_data": "codex_model:effort:default",
+        }
+    ] + [
+        {
+            "text": label(effort_labels[effort], current_effort == effort),
             "callback_data": f"codex_model:effort:{effort}",
         }
         for effort in CODEX_REASONING_EFFORTS
@@ -5524,6 +5535,8 @@ class Bot:
                 thread_id,
             )
         cmd, arg = _parse_command(text)
+        if not cmd and text.strip().lower() == "fast":
+            cmd = "/fast"
 
         # `/terminal` — owner-only mode switch. Spawns a persistent bash
         # in this lane; from this point on plain-text messages route to
@@ -5708,7 +5721,7 @@ class Bot:
         # are stdin for it (codex login codes, gh auth login codes, `read`
         # answers, `y/n` prompts, …). Slash commands fall through below
         # so the user can still `/cancel`, `/queue`, etc.
-        if not text.startswith("/"):
+        if not text.startswith("/") and cmd not in {"/fast"}:
             goal_entry = _goal_state_for(self.state, slug)
             if goal_entry is None and _is_owner(sender, owner) and _wait_for_goal_start(slug):
                 goal_entry = _goal_state_for(self.state, slug)
@@ -6035,7 +6048,6 @@ class Bot:
                 reply_to=mid,
                 thread_id=thread_id,
                 markdown=True,
-                reply_markup=_codex_model_picker_markup(settings),
             )
             return
         if cmd == "/model":
@@ -6475,7 +6487,6 @@ class Bot:
                 reply_to=reply_to,
                 thread_id=thread_id,
                 markdown=True,
-                reply_markup=_codex_model_picker_markup(settings),
             )
             return
 
@@ -7459,9 +7470,10 @@ class Bot:
             model = "" if value == "default" else value
             settings = _set_codex_settings(key, self.state, model=model)
             toast = "Model updated"
-        elif action == "effort" and value in CODEX_REASONING_EFFORTS:
-            settings = _set_codex_settings(key, self.state, reasoning_effort=value)
-            toast = f"Effort: {value}"
+        elif action == "effort" and (value == "default" or value in CODEX_REASONING_EFFORTS):
+            effort = "" if value == "default" else value
+            settings = _set_codex_settings(key, self.state, reasoning_effort=effort)
+            toast = "Effort default" if value == "default" else f"Effort: {value}"
         else:
             self.call(
                 "answerCallbackQuery",
