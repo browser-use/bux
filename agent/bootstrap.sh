@@ -108,6 +108,75 @@ else
   echo "bootstrap: BUX_BOX_TOKEN not set; skipping Hermes Composio MCP registration" >&2
 fi
 
+# --- Hermes LLM credentials (cloud-injected) ------------------------------
+# When cloud provisions a box, it stamps HERMES_LLM_PROVIDER / HERMES_LLM_MODEL /
+# HERMES_LLM_API_KEY into /etc/bux/env. We write them into the per-user
+# Hermes config so the agent is usable the moment it boots — no `hermes
+# setup` / `claude login` for the visitor.
+#
+# Idempotent: existing `model:` and key entries are preserved (a re-run on
+# an already-configured box is a no-op). To rotate creds, edit
+# ~/.hermes/.env and ~/.hermes/config.yaml directly or wipe both and
+# re-run bootstrap.sh.
+if [ -n "${HERMES_LLM_API_KEY:-}" ] && [ -n "${HERMES_LLM_PROVIDER:-}" ] && [ -n "${HERMES_LLM_MODEL:-}" ]; then
+  case "$HERMES_LLM_PROVIDER" in
+    openai)   _env_key='OPENAI_API_KEY';     _base_url='https://api.openai.com/v1' ;;
+    anthropic)_env_key='ANTHROPIC_API_KEY';  _base_url='' ;;
+    openrouter)_env_key='OPENROUTER_API_KEY';_base_url='' ;;
+    *)
+      echo "bootstrap: HERMES_LLM_PROVIDER=$HERMES_LLM_PROVIDER not recognized; skipping Hermes credential write" >&2
+      _env_key=''; _base_url=''
+      ;;
+  esac
+  if [ -n "$_env_key" ]; then
+    sudo -u bux -H \
+      HERMES_LLM_API_KEY="$HERMES_LLM_API_KEY" \
+      HERMES_LLM_MODEL="$HERMES_LLM_MODEL" \
+      HERMES_LLM_PROVIDER="$HERMES_LLM_PROVIDER" \
+      ENV_KEY="$_env_key" \
+      BASE_URL="$_base_url" \
+      bash -c '
+set -e
+mkdir -p "$HOME/.hermes"
+env_file="$HOME/.hermes/.env"
+cfg="$HOME/.hermes/config.yaml"
+touch "$env_file" "$cfg"
+chmod 0600 "$env_file" "$cfg"
+
+# Write/overwrite the API key in .env (Hermes loads this at start).
+if grep -q "^${ENV_KEY}=" "$env_file" 2>/dev/null; then
+  # Use a temp file + mv so a partial write cannot leave a corrupt .env.
+  awk -v k="${ENV_KEY}" -v v="${HERMES_LLM_API_KEY}" "
+    BEGIN{set=0}
+    \$0 ~ \"^\" k \"=\" {print k \"=\" v; set=1; next}
+    {print}
+    END{if(!set) print k \"=\" v}
+  " "$env_file" > "$env_file.tmp" && mv "$env_file.tmp" "$env_file"
+else
+  printf "%s=%s\n" "$ENV_KEY" "$HERMES_LLM_API_KEY" >> "$env_file"
+fi
+chmod 0600 "$env_file"
+
+# Append the model block once. Hermes accepts a custom OpenAI-compatible
+# endpoint with just base_url + default + the matching .env key — no
+# need to declare provider id explicitly.
+if ! grep -q "^[[:space:]]*default:[[:space:]]*${HERMES_LLM_MODEL}" "$cfg"; then
+  {
+    echo ""
+    echo "model:"
+    echo "  default: ${HERMES_LLM_MODEL}"
+    if [ -n "${BASE_URL}" ]; then
+      echo "  base_url: ${BASE_URL}"
+    fi
+  } >> "$cfg"
+fi
+chmod 0600 "$cfg"
+' || echo "bootstrap: hermes LLM credential write failed (non-fatal)" >&2
+  fi
+else
+  echo "bootstrap: HERMES_LLM_* not set in /etc/bux/env; skipping Hermes credential injection (manual hermes setup required)" >&2
+fi
+
 # --- Claude Code + Codex CLI (additional legacy providers) ----------------
 # install.sh installs codex on first boot, but boxes provisioned before
 # that block existed (or where the npm install hit a transient failure
