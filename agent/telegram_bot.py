@@ -1986,6 +1986,7 @@ class GoalTmuxRelay:
         self._stream_lock = threading.Lock()
         self._busy = True
         self._pending_inputs: list[str] = []
+        self._turn_started_at = time.monotonic()
 
     def start(self) -> None:
         with _goal_relays_lock:
@@ -2061,6 +2062,8 @@ class GoalTmuxRelay:
             if phase and phase not in {"commentary", "final", "final_answer"}:
                 continue
             final = phase in {"final", "final_answer"}
+            if final:
+                message = self._with_elapsed_footer(message)
             self._relay_message(message, final=final)
             if final:
                 self._after_final_message()
@@ -2084,6 +2087,7 @@ class GoalTmuxRelay:
         with self._stream_lock:
             self._stream_msg = None
             self._busy = True
+            self._turn_started_at = time.monotonic()
 
     def _relay_message(self, message: str, final: bool = False) -> None:
         with self._stream_lock:
@@ -2109,7 +2113,13 @@ class GoalTmuxRelay:
         if next_input is not None:
             _send_goal_tmux_input(self.name, next_input, slug=self.slug, queue_if_busy=False)
             return
-        self._finish_goal_session()
+
+    def _with_elapsed_footer(self, message: str) -> str:
+        if re.search(r"\btime used\b", message, flags=re.IGNORECASE):
+            return message
+        elapsed = max(1, int(time.monotonic() - self._turn_started_at))
+        unit = "second" if elapsed == 1 else "seconds"
+        return f"{message}\n\nTime used: {elapsed} {unit}."
 
     def _finish_goal_session(self) -> None:
         try:
