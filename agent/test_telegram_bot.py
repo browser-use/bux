@@ -29,12 +29,12 @@ class CodexSettingsTest(unittest.TestCase):
                 state,
                 model="gpt-5.4-mini",
                 reasoning_effort="low",
-                service_tier="priority",
+                service_tier="fast",
             )
 
         self.assertEqual(
             telegram_bot._codex_settings_for(first, state),
-            {"model": "gpt-5.4-mini", "reasoning_effort": "low", "service_tier": "priority"},
+            {"model": "gpt-5.4-mini", "reasoning_effort": "low", "service_tier": "fast"},
         )
         self.assertEqual(telegram_bot._codex_settings_for(second, state), telegram_bot.CODEX_DEFAULT_SETTINGS)
 
@@ -68,7 +68,7 @@ class CodexSettingsTest(unittest.TestCase):
 
         self.assertEqual(
             settings,
-            {"model": "gpt-5.4", "reasoning_effort": "xhigh", "service_tier": "priority"},
+            {"model": "gpt-5.4", "reasoning_effort": "xhigh", "service_tier": "fast"},
         )
 
     def test_invalid_service_tier_is_ignored(self) -> None:
@@ -83,9 +83,22 @@ class CodexSettingsTest(unittest.TestCase):
 
         self.assertEqual(settings, telegram_bot.CODEX_DEFAULT_SETTINGS)
 
+    def test_legacy_priority_service_tier_is_normalized(self) -> None:
+        state = {
+            "offset": 0,
+            "agents": {},
+            "codex_settings": {"1_10": {"service_tier": "priority"}},
+            "owners": {},
+        }
+
+        self.assertEqual(
+            telegram_bot._codex_settings_for((1, 10), state),
+            {"model": "gpt-5.5", "reasoning_effort": "xhigh", "service_tier": "fast"},
+        )
+
     def test_model_picker_marks_current_choices(self) -> None:
         markup = telegram_bot._codex_model_picker_markup(
-            {"model": "gpt-5.4", "reasoning_effort": "high", "service_tier": "priority"}
+            {"model": "gpt-5.4", "reasoning_effort": "high", "service_tier": "fast"}
         )
 
         labels = [
@@ -238,7 +251,7 @@ class CodexSettingsTest(unittest.TestCase):
 
         self.assertEqual(
             bot.state["codex_settings"]["100_main"],
-            {"service_tier": "priority", "reasoning_effort": "xhigh"},
+            {"service_tier": "fast", "reasoning_effort": "xhigh"},
         )
         self.assertIn("Fast mode on.", sent[-1][0])
 

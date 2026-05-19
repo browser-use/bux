@@ -257,7 +257,8 @@ AGENTS = (AGENT_CLAUDE, AGENT_CODEX)
 DEFAULT_AGENT = AGENT_CLAUDE
 CODEX_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
 CODEX_MODEL_CHOICES = ("gpt-5.5", "gpt-5.4", "gpt-5.4-mini")
-CODEX_FAST_SERVICE_TIER = "priority"
+CODEX_FAST_SERVICE_TIER = "fast"
+CODEX_LEGACY_FAST_SERVICE_TIERS = {"priority"}
 CODEX_DEFAULT_SETTINGS = {
     "model": "gpt-5.5",
     "reasoning_effort": "xhigh",
@@ -1403,8 +1404,8 @@ def _codex_settings_for(key: LaneKey, state: dict) -> dict:
     if effort in CODEX_REASONING_EFFORTS:
         out["reasoning_effort"] = effort
     service_tier = str(raw.get("service_tier") or "").strip().lower()
-    if service_tier == CODEX_FAST_SERVICE_TIER:
-        out["service_tier"] = service_tier
+    if service_tier == CODEX_FAST_SERVICE_TIER or service_tier in CODEX_LEGACY_FAST_SERVICE_TIERS:
+        out["service_tier"] = CODEX_FAST_SERVICE_TIER
     elif "service_tier" in raw:
         out.pop("service_tier", None)
     return out
@@ -1441,8 +1442,8 @@ def _set_codex_settings(
             current.pop("reasoning_effort", None)
     if service_tier is not None:
         service_tier = service_tier.strip().lower()
-        if service_tier == CODEX_FAST_SERVICE_TIER:
-            current["service_tier"] = service_tier
+        if service_tier == CODEX_FAST_SERVICE_TIER or service_tier in CODEX_LEGACY_FAST_SERVICE_TIERS:
+            current["service_tier"] = CODEX_FAST_SERVICE_TIER
         elif not service_tier:
             current["service_tier"] = "off"
     if current:
