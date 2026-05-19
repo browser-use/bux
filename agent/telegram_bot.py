@@ -257,6 +257,7 @@ AGENTS = (AGENT_CLAUDE, AGENT_CODEX)
 DEFAULT_AGENT = AGENT_CLAUDE
 CODEX_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
 CODEX_MODEL_CHOICES = ("gpt-5.5", "gpt-5.4", "gpt-5.4-mini")
+CODEX_FAST_SERVICE_TIER = "priority"
 
 
 # Registered with Telegram via setMyCommands at boot. Order = order shown
@@ -1042,7 +1043,7 @@ def burn_setup_token() -> None:
 # {
 #   "offset": <int>,
 #   "agents": {"<lane_slug>": "claude"|"codex"},
-#   "codex_settings": {"<lane_slug>": {"model": "...", "reasoning_effort": "..."}}
+#   "codex_settings": {"<lane_slug>": {"model": "...", "reasoning_effort": "...", "service_tier": "..."}}
 # }
 # ---------------------------------------------------------------------------
 
@@ -1190,6 +1191,8 @@ def _codex_interactive_command_for(key: LaneKey, state: dict, prompt: str | None
         args += ["-m", settings["model"]]
     if settings.get("reasoning_effort"):
         args += ["-c", f'model_reasoning_effort="{settings["reasoning_effort"]}"']
+    if settings.get("service_tier"):
+        args += ["-c", f'service_tier="{settings["service_tier"]}"']
     thread_id = _codex_thread_id_for(key)
     if thread_id:
         args += ["resume", "--include-non-interactive", thread_id]
@@ -1394,6 +1397,9 @@ def _codex_settings_for(key: LaneKey, state: dict) -> dict:
     effort = str(raw.get("reasoning_effort") or "").strip().lower()
     if effort in CODEX_REASONING_EFFORTS:
         out["reasoning_effort"] = effort
+    service_tier = str(raw.get("service_tier") or "").strip().lower()
+    if service_tier == CODEX_FAST_SERVICE_TIER:
+        out["service_tier"] = service_tier
     return out
 
 
@@ -1403,6 +1409,7 @@ def _set_codex_settings(
     *,
     model: str | None = None,
     reasoning_effort: str | None = None,
+    service_tier: str | None = None,
     clear: bool = False,
 ) -> dict:
     slug = _lane_slug(key)
@@ -1424,6 +1431,12 @@ def _set_codex_settings(
             current["reasoning_effort"] = reasoning_effort
         elif not reasoning_effort:
             current.pop("reasoning_effort", None)
+    if service_tier is not None:
+        service_tier = service_tier.strip().lower()
+        if service_tier == CODEX_FAST_SERVICE_TIER:
+            current["service_tier"] = service_tier
+        elif not service_tier:
+            current.pop("service_tier", None)
     if current:
         settings_by_lane[slug] = current
     else:
@@ -1435,12 +1448,14 @@ def _set_codex_settings(
 def _format_codex_settings(settings: dict) -> str:
     model = settings.get("model") or "(Codex default)"
     effort = settings.get("reasoning_effort") or "(Codex default)"
-    return f"model: `{model}`\nreasoning effort: `{effort}`"
+    fast = "on" if settings.get("service_tier") == CODEX_FAST_SERVICE_TIER else "off"
+    return f"model: `{model}`\nreasoning effort: `{effort}`\nfast mode: `{fast}`"
 
 
 def _codex_model_picker_markup(settings: dict) -> dict:
     current_model = settings.get("model") or ""
     current_effort = settings.get("reasoning_effort") or ""
+    fast_enabled = settings.get("service_tier") == CODEX_FAST_SERVICE_TIER
 
     def label(text: str, active: bool) -> str:
         return f"✓ {text}" if active else text
@@ -1456,12 +1471,6 @@ def _codex_model_picker_markup(settings: dict) -> dict:
             "text": label(model.replace("gpt-", ""), current_model == model),
             "callback_data": f"codex_model:model:{model}",
         })
-    effort_labels = {
-        "low": "Fast",
-        "medium": "Medium",
-        "high": "High",
-        "xhigh": "XHigh",
-    }
     effort_row = [
         {
             "text": label("Default", not current_effort),
@@ -1469,13 +1478,15 @@ def _codex_model_picker_markup(settings: dict) -> dict:
         }
     ] + [
         {
-            "text": label(effort_labels[effort], current_effort == effort),
+            "text": label(effort.title(), current_effort == effort),
             "callback_data": f"codex_model:effort:{effort}",
         }
         for effort in CODEX_REASONING_EFFORTS
     ]
     return {
         "inline_keyboard": [
+            [{"text": "Fast mode: on" if fast_enabled else "Fast mode: off",
+              "callback_data": "codex_model:fast:toggle"}],
             model_row,
             effort_row,
             [{"text": "Reset Codex defaults", "callback_data": "codex_model:reset"}],
@@ -4775,6 +4786,11 @@ class Bot:
                 "-c",
                 f'model_reasoning_effort="{codex_settings["reasoning_effort"]}"',
             ]
+        if codex_settings.get("service_tier"):
+            codex_bypass_flags += [
+                "-c",
+                f'service_tier="{codex_settings["service_tier"]}"',
+            ]
         if existing_thread:
             # Resume the lane's existing codex thread so conversation context
             # carries across messages. `codex exec resume <id>` is the
@@ -6041,10 +6057,17 @@ class Bot:
             return
         if cmd == "/fast":
             _set_agent_for(key, AGENT_CODEX, self.state)
-            settings = _set_codex_settings(key, self.state, reasoning_effort="low")
+            current = _codex_settings_for(key, self.state)
+            turning_on = current.get("service_tier") != CODEX_FAST_SERVICE_TIER
+            settings = _set_codex_settings(
+                key,
+                self.state,
+                service_tier=CODEX_FAST_SERVICE_TIER if turning_on else "",
+            )
             self.send(
                 chat_id,
-                "Fast mode on.\n\n" + _format_codex_settings(settings),
+                ("Fast mode on.\n\n" if turning_on else "Fast mode off.\n\n")
+                + _format_codex_settings(settings),
                 reply_to=mid,
                 thread_id=thread_id,
                 markdown=True,
@@ -6480,10 +6503,17 @@ class Bot:
 
         if first == "fast":
             _set_agent_for(key, AGENT_CODEX, self.state)
-            settings = _set_codex_settings(key, self.state, reasoning_effort="low")
+            current = _codex_settings_for(key, self.state)
+            turning_on = current.get("service_tier") != CODEX_FAST_SERVICE_TIER
+            settings = _set_codex_settings(
+                key,
+                self.state,
+                service_tier=CODEX_FAST_SERVICE_TIER if turning_on else "",
+            )
             self.send(
                 chat_id,
-                "Fast mode on.\n\n" + _format_codex_settings(settings),
+                ("Fast mode on.\n\n" if turning_on else "Fast mode off.\n\n")
+                + _format_codex_settings(settings),
                 reply_to=reply_to,
                 thread_id=thread_id,
                 markdown=True,
@@ -7466,6 +7496,15 @@ class Bot:
         if action == "reset":
             settings = _set_codex_settings(key, self.state, clear=True)
             toast = "Codex defaults restored"
+        elif action == "fast" and value == "toggle":
+            current = _codex_settings_for(key, self.state)
+            turning_on = current.get("service_tier") != CODEX_FAST_SERVICE_TIER
+            settings = _set_codex_settings(
+                key,
+                self.state,
+                service_tier=CODEX_FAST_SERVICE_TIER if turning_on else "",
+            )
+            toast = "Fast mode on" if turning_on else "Fast mode off"
         elif action == "model":
             model = "" if value == "default" else value
             settings = _set_codex_settings(key, self.state, model=model)

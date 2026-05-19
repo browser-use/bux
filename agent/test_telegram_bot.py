@@ -29,11 +29,12 @@ class CodexSettingsTest(unittest.TestCase):
                 state,
                 model="gpt-5.4-mini",
                 reasoning_effort="low",
+                service_tier="priority",
             )
 
         self.assertEqual(
             telegram_bot._codex_settings_for(first, state),
-            {"model": "gpt-5.4-mini", "reasoning_effort": "low"},
+            {"model": "gpt-5.4-mini", "reasoning_effort": "low", "service_tier": "priority"},
         )
         self.assertEqual(telegram_bot._codex_settings_for(second, state), {})
 
@@ -64,9 +65,21 @@ class CodexSettingsTest(unittest.TestCase):
 
         self.assertEqual(settings, {"model": "gpt-5.4"})
 
+    def test_invalid_service_tier_is_ignored(self) -> None:
+        state = {"offset": 0, "agents": {}, "codex_settings": {}, "owners": {}}
+
+        with mock.patch.object(telegram_bot, "save_state"):
+            settings = telegram_bot._set_codex_settings(
+                (1, 10),
+                state,
+                service_tier="turbo",
+            )
+
+        self.assertEqual(settings, {})
+
     def test_model_picker_marks_current_choices(self) -> None:
         markup = telegram_bot._codex_model_picker_markup(
-            {"model": "gpt-5.4", "reasoning_effort": "high"}
+            {"model": "gpt-5.4", "reasoning_effort": "high", "service_tier": "priority"}
         )
 
         labels = [
@@ -76,7 +89,7 @@ class CodexSettingsTest(unittest.TestCase):
         ]
         self.assertIn("✓ 5.4", labels)
         self.assertIn("✓ High", labels)
-        self.assertIn("Fast", labels)
+        self.assertIn("Fast mode: on", labels)
         self.assertIn("Reset Codex defaults", labels)
 
     def test_model_picker_callback_updates_effort_in_place(self) -> None:
@@ -117,7 +130,44 @@ class CodexSettingsTest(unittest.TestCase):
         self.assertEqual(bot.state["agents"]["100_123"], "codex")
         self.assertTrue(any(method == "editMessageText" for method, _ in calls))
 
-    def test_plain_fast_switches_codex_effort(self) -> None:
+    def test_fast_callback_toggles_service_tier(self) -> None:
+        bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
+        bot.state = {
+            "offset": 0,
+            "agents": {},
+            "codex_settings": {},
+            "owners": {"100": {"user_id": "55", "name": "Magnus"}},
+        }
+        calls: list[tuple[str, dict]] = []
+
+        def fake_call(method: str, **kwargs):
+            calls.append((method, kwargs))
+            return {"ok": True}
+
+        bot.call = fake_call  # type: ignore[method-assign]
+        bot.send = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+
+        with mock.patch.object(telegram_bot, "save_state"):
+            bot._handle_codex_model_callback(
+                {
+                    "id": "cb1",
+                    "from": {"id": 55, "username": "Magnus_Mueller"},
+                    "message": {
+                        "chat": {"id": 100},
+                        "message_id": 99,
+                        "message_thread_id": 123,
+                    },
+                },
+                "codex_model:fast:toggle",
+            )
+
+        self.assertEqual(
+            bot.state["codex_settings"]["100_123"],
+            {"service_tier": "priority"},
+        )
+        self.assertTrue(any(method == "editMessageText" for method, _ in calls))
+
+    def test_plain_fast_switches_codex_fast_service_tier(self) -> None:
         sent: list[tuple[str, dict]] = []
         bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
         bot.state = {"offset": 0, "agents": {}, "codex_settings": {}, "owners": {}}
@@ -145,10 +195,46 @@ class CodexSettingsTest(unittest.TestCase):
         self.assertEqual(bot.state["agents"]["100_main"], "codex")
         self.assertEqual(
             bot.state["codex_settings"]["100_main"],
-            {"reasoning_effort": "low"},
+            {"service_tier": "priority"},
         )
         self.assertIn("Fast mode on.", sent[-1][0])
         self.assertNotIn("reply_markup", sent[-1][1])
+
+    def test_plain_fast_toggles_fast_service_tier_off(self) -> None:
+        sent: list[tuple[str, dict]] = []
+        bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
+        bot.state = {
+            "offset": 0,
+            "agents": {},
+            "codex_settings": {"100_main": {"service_tier": "priority", "reasoning_effort": "xhigh"}},
+            "owners": {},
+        }
+        bot.setup_token = None
+        bot._username = "bux_bot"
+        bot.react = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+        bot.typing = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+        bot.send = lambda _chat, text, **kwargs: sent.append((text, kwargs))  # type: ignore[method-assign]
+
+        with (
+            mock.patch.object(telegram_bot, "load_allow", return_value={100}),
+            mock.patch.object(telegram_bot, "save_state"),
+            mock.patch.object(telegram_bot, "_get_shell_session", return_value=None),
+            mock.patch.object(telegram_bot, "_goal_state_for", return_value=None),
+        ):
+            bot.handle(
+                {
+                    "chat": {"id": 100, "type": "private"},
+                    "from": {"id": 55, "username": "Magnus_Mueller"},
+                    "message_id": 123,
+                    "text": "fast",
+                }
+            )
+
+        self.assertEqual(
+            bot.state["codex_settings"]["100_main"],
+            {"reasoning_effort": "xhigh"},
+        )
+        self.assertIn("Fast mode off.", sent[-1][0])
 
     def test_codex_goal_feature_enablement_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
