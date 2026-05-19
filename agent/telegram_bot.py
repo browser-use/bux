@@ -4482,7 +4482,32 @@ class Bot:
                 if auth_error_seen:
                     _login_status_cache_invalidate("claude")
                     _AGENT_AUTH_CACHE.pop(AGENT_CLAUDE, None)
-                    stream_msg.append("Login needed. Pick Claude or Codex to reconnect.")
+                    if _login_status_cached("codex"):
+                        _set_agent_for(key, AGENT_CODEX, self.state)
+                        stream_msg.append(
+                            "Claude Code login is stale, but Codex is logged in. "
+                            "Switching this topic to Codex and retrying there."
+                        )
+                        stream_msg.finalize()
+                        try:
+                            proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            try:
+                                _kill_inflight_proc(slug, proc, "auth-error")
+                                proc.wait(timeout=1)
+                            except Exception:
+                                pass
+                        self._run_codex(
+                            key,
+                            prompt,
+                            reply_to,
+                            sender=sender,
+                            thinking_emoji=thinking_emoji,
+                        )
+                        return
+                    stream_msg.append(
+                        "Login needed. Neither Claude Code nor Codex is logged in."
+                    )
                     stream_msg.finalize()
                     self._send_login_picker(chat_id, reply_to, thread_id)
                     try:
@@ -4560,13 +4585,33 @@ class Bot:
                     if not out:
                         out = (fb.stderr or "").strip() or f"(no output; rc={fb.returncode})"
                     if _is_claude_auth_error(out):
-                        # Auth/quota failures mean the selected provider
-                        # cannot currently run. Do not silently reroute to a
-                        # different LLM: show the same two-button picker so
-                        # the user chooses whether to reconnect Claude or
-                        # switch to Codex.
                         _login_status_cache_invalidate("claude")
                         _AGENT_AUTH_CACHE.pop(AGENT_CLAUDE, None)
+                        if _login_status_cached("codex"):
+                            _set_agent_for(key, AGENT_CODEX, self.state)
+                            self.send(
+                                chat_id,
+                                "Claude Code login is stale, but Codex is logged in. "
+                                "Switching this topic to Codex and retrying there.",
+                                reply_to=reply_to,
+                                thread_id=thread_id,
+                                markdown=True,
+                            )
+                            self._run_codex(
+                                key,
+                                prompt,
+                                reply_to,
+                                sender=sender,
+                                thinking_emoji=thinking_emoji,
+                            )
+                            return
+                        self.send(
+                            chat_id,
+                            "Login needed. Neither Claude Code nor Codex is logged in.",
+                            reply_to=reply_to,
+                            thread_id=thread_id,
+                            markdown=True,
+                        )
                         self._send_login_picker(chat_id, reply_to, thread_id)
                         return
                     self.send(
@@ -4807,7 +4852,32 @@ class Bot:
                         LOG.warning("codex transient error: %s", ev.get("message") or ev)
                 if auth_error_seen:
                     _login_status_cache_invalidate("codex")
-                    stream_msg.append("Login needed. Pick Claude or Codex to reconnect.")
+                    if _login_status_cached("claude"):
+                        _set_agent_for(key, AGENT_CLAUDE, self.state)
+                        stream_msg.append(
+                            "Codex login is stale, but Claude Code is logged in. "
+                            "Switching this topic to Claude Code and retrying there."
+                        )
+                        stream_msg.finalize()
+                        try:
+                            proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            try:
+                                _kill_inflight_proc(slug, proc, "auth-error")
+                                proc.wait(timeout=1)
+                            except Exception:
+                                pass
+                        self._run_claude(
+                            key,
+                            prompt,
+                            reply_to,
+                            sender=sender,
+                            thinking_emoji=thinking_emoji,
+                        )
+                        return
+                    stream_msg.append(
+                        "Login needed. Neither Claude Code nor Codex is logged in."
+                    )
                     stream_msg.finalize()
                     self._send_login_picker(chat_id, reply_to, thread_id)
                     try:
@@ -4861,6 +4931,31 @@ class Bot:
                 self.react(chat_id, reply_to, EMOJI_ERROR)
                 if _is_codex_auth_error(err):
                     _login_status_cache_invalidate("codex")
+                    if _login_status_cached("claude"):
+                        _set_agent_for(key, AGENT_CLAUDE, self.state)
+                        self.send(
+                            chat_id,
+                            "Codex login is stale, but Claude Code is logged in. "
+                            "Switching this topic to Claude Code and retrying there.",
+                            reply_to=reply_to,
+                            thread_id=thread_id,
+                            markdown=True,
+                        )
+                        self._run_claude(
+                            key,
+                            prompt,
+                            reply_to,
+                            sender=sender,
+                            thinking_emoji=thinking_emoji,
+                        )
+                        return
+                    self.send(
+                        chat_id,
+                        "Login needed. Neither Claude Code nor Codex is logged in.",
+                        reply_to=reply_to,
+                        thread_id=thread_id,
+                        markdown=True,
+                    )
                     self._send_login_picker(chat_id, reply_to, thread_id)
                     return
                 self.send(
