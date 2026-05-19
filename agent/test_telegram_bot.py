@@ -265,7 +265,7 @@ class GoalCommandRoutingTest(unittest.TestCase):
         self.assertEqual(edits[0][1], 777)
         self.assertIn("1 2 3 4 5 6 7 8 9 10", edits[0][2])
 
-    def test_goal_relay_clears_goal_mode_after_final_answer(self) -> None:
+    def test_goal_relay_keeps_goal_mode_after_final_answer_without_queued_input(self) -> None:
         sent: list[tuple[int, str, dict]] = []
         edits: list[tuple[int, int, str, dict]] = []
 
@@ -307,17 +307,13 @@ class GoalCommandRoutingTest(unittest.TestCase):
             relay._rollout_path = rollout
             relay._rollout_pos = 0
 
-            with (
-                mock.patch.object(telegram_bot, "_goal_tmux_alive", return_value=True),
-                mock.patch.object(telegram_bot, "_run_tmux") as run_tmux,
-                mock.patch.object(telegram_bot, "save_state"),
-            ):
-                run_tmux.return_value.returncode = 0
+            with mock.patch.object(telegram_bot, "_run_tmux") as run_tmux:
                 relay._relay_rollout_events()
 
-        self.assertEqual(bot.state["goal_tmux"], {})
-        run_tmux.assert_called_once_with(["kill-session", "-t", "tmux-name"], timeout=3.0)
+        self.assertIn("slug", bot.state["goal_tmux"])
+        run_tmux.assert_not_called()
         self.assertIn("1 2 3", edits[-1][2])
+        self.assertIn("Time used:", edits[-1][2])
 
     def test_goal_relay_sends_queued_followup_after_current_final_answer(self) -> None:
         sent: list[tuple[int, str, dict]] = []
@@ -371,6 +367,31 @@ class GoalCommandRoutingTest(unittest.TestCase):
             queue_if_busy=False,
         )
         self.assertIn("1 2 3 4 5", edits[-1][2])
+        self.assertIn("Time used:", edits[-1][2])
+
+    def test_goal_relay_does_not_duplicate_existing_time_used_footer(self) -> None:
+        sent: list[tuple[int, str, dict]] = []
+        edits: list[tuple[int, int, str, dict]] = []
+
+        class FakeBot:
+            def __init__(self) -> None:
+                self.state = {"goal_tmux": {}}
+
+            def send(self, chat_id: int, text: str, **kwargs) -> None:
+                sent.append((chat_id, text, kwargs))
+
+            def send_returning_id(self, chat_id: int, text: str, **kwargs) -> int:
+                sent.append((chat_id, text, kwargs))
+                return 777
+
+            def edit(self, chat_id: int, message_id: int, text: str, **kwargs) -> bool:
+                edits.append((chat_id, message_id, text, kwargs))
+                return True
+
+        relay = telegram_bot.GoalTmuxRelay(FakeBot(), "slug", 100, 123, "tmux-name")
+        relay._relay_message(relay._with_elapsed_footer("Done.\n\nTime used: 7 seconds."), final=True)
+
+        self.assertEqual(edits[-1][2].count("Time used:"), 1)
 
     def test_goal_tmux_input_confirms_nested_goal_prompt(self) -> None:
         calls: list[list[str]] = []
