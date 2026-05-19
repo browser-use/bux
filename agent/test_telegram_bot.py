@@ -407,6 +407,54 @@ class GoalCommandRoutingTest(unittest.TestCase):
         self.assertEqual(send_input.call_args.args[1], "/goal count to 12")
         self.assertIn("sent goal to the live Codex goal session", sent[-1])
 
+    def test_goal_state_recovers_orphan_tmux_session(self) -> None:
+        state = {
+            "offset": 0,
+            "agents": {"100_123": "codex"},
+            "codex_settings": {},
+            "owners": {},
+            "goal_tmux": {},
+        }
+
+        with (
+            mock.patch.object(telegram_bot, "_goal_tmux_alive", return_value=True),
+            mock.patch.object(telegram_bot, "_codex_thread_id_for", return_value="codex-thread"),
+            mock.patch.object(telegram_bot, "save_state") as save_state,
+        ):
+            entry = telegram_bot._goal_state_for(state, "100_123")
+
+        self.assertIsNotNone(entry)
+        assert entry is not None
+        self.assertEqual(entry["chat_id"], 100)
+        self.assertEqual(entry["thread_id"], 123)
+        self.assertEqual(entry["name"], telegram_bot._goal_tmux_name("100_123"))
+        self.assertEqual(entry["codex_thread_id"], "codex-thread")
+        self.assertEqual(state["goal_tmux"]["100_123"], entry)
+        save_state.assert_called_once_with(state)
+
+    def test_restore_goal_relays_recovers_known_orphan_tmux_sessions(self) -> None:
+        bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
+        bot.state = {
+            "offset": 0,
+            "agents": {"100_123": "codex"},
+            "codex_settings": {},
+            "owners": {},
+            "goal_tmux": {},
+        }
+
+        with (
+            mock.patch.object(telegram_bot, "SESSIONS_DIR", Path("/missing/sessions")),
+            mock.patch.object(telegram_bot, "_goal_tmux_alive", return_value=True),
+            mock.patch.object(telegram_bot, "_codex_thread_id_for", return_value="codex-thread"),
+            mock.patch.object(telegram_bot, "save_state"),
+            mock.patch.object(telegram_bot.GoalTmuxRelay, "start") as start_relay,
+        ):
+            bot._restore_goal_relays()
+
+        self.assertIn("100_123", bot.state["goal_tmux"])
+        self.assertEqual(bot.state["goal_tmux"]["100_123"]["name"], telegram_bot._goal_tmux_name("100_123"))
+        start_relay.assert_called_once()
+
     def test_goal_relay_sends_codex_final_answer_events(self) -> None:
         sent: list[tuple[int, str, dict]] = []
         edits: list[tuple[int, int, str, dict]] = []
@@ -822,6 +870,7 @@ class GoalCommandRoutingTest(unittest.TestCase):
             with (
                 mock.patch.object(telegram_bot, "load_allow", return_value={100}),
                 mock.patch.object(telegram_bot, "_goal_tmux_alive", return_value=True),
+                mock.patch.object(telegram_bot, "_recover_goal_tmux_state", return_value=None),
                 mock.patch.object(telegram_bot, "_ensure_goal_relay", return_value=True),
                 mock.patch.object(telegram_bot, "_send_goal_tmux_input", return_value=True) as send_input,
                 mock.patch.object(telegram_bot, "_enqueue") as enqueue,

@@ -1893,7 +1893,39 @@ def _goal_tmux_alive(name: str) -> bool:
 
 def _goal_state_for(state: dict, slug: str) -> dict | None:
     entry = state.get("goal_tmux", {}).get(slug)
-    return entry if isinstance(entry, dict) else None
+    if isinstance(entry, dict):
+        return entry
+    return _recover_goal_tmux_state(state, slug)
+
+
+def _recover_goal_tmux_state(state: dict, slug: str) -> dict | None:
+    """Recover a live goal tmux session whose persisted registry was lost.
+
+    The tmux session name is deterministic from the lane slug. Older goal
+    relay builds could clear `goal_tmux` after a final answer while leaving
+    the interactive Codex terminal alive. Without this recovery path, follow-up
+    Telegram messages go through normal turns even though the live `/goal`
+    terminal still exists.
+    """
+    key = _parse_lane_slug(slug)
+    if key is None:
+        return None
+    name = _goal_tmux_name(slug)
+    if not _goal_tmux_alive(name):
+        return None
+    chat_id, thread_id = key
+    entry = {
+        "chat_id": chat_id,
+        "thread_id": thread_id or 0,
+        "name": name,
+        "updated_at": int(time.time()),
+    }
+    codex_thread_id = _codex_thread_id_for(key)
+    if codex_thread_id:
+        entry["codex_thread_id"] = codex_thread_id
+    state.setdefault("goal_tmux", {})[slug] = entry
+    save_state(state)
+    return entry
 
 
 def _begin_goal_start(slug: str) -> threading.Event:
@@ -3915,7 +3947,20 @@ class Bot:
         self._restore_goal_relays()
 
     def _restore_goal_relays(self) -> None:
-        for slug, entry in list(self.state.get("goal_tmux", {}).items()):
+        known_slugs = set(self.state.get("goal_tmux", {}))
+        known_slugs.update(self.state.get("agents", {}))
+        try:
+            known_slugs.update(
+                path.name.removesuffix(".codex")
+                for path in SESSIONS_DIR.iterdir()
+                if _parse_lane_slug(path.name.removesuffix(".codex")) is not None
+            )
+        except OSError:
+            pass
+        for slug in sorted(known_slugs):
+            if _parse_lane_slug(str(slug)) is None:
+                continue
+            entry = _goal_state_for(self.state, str(slug))
             if not isinstance(entry, dict):
                 continue
             name = str(entry.get("name") or "")
