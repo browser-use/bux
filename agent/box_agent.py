@@ -1642,6 +1642,19 @@ class Agent:
 					)
 				except OSError:
 					LOG.info('claude_login: pty closed (pid=%s)', pid)
+					# The pty closed: claude either wrote ~/.claude.json and
+					# exited cleanly, or bailed without writing credentials.
+					# The general auth-poll loop runs on a 15s cadence once
+					# the box is past its first minute — too coarse to
+					# confirm success inside the cloud's exit watchdog, which
+					# is what makes a fast-successful sign-in surface a
+					# spurious "Try again". Check directly here at a tight
+					# cadence: on success emit `claude_authed` and skip the
+					# exited event; on timeout emit `claude_login_exited` so
+					# the cloud fails fast. Exactly one terminal event per
+					# attempt — no cloud-side race left to lose.
+					if await self._claude_login_await_success():
+						return
 					await self._send({'type': 'claude_login_exited'})
 					return
 				if data is None:
@@ -1672,6 +1685,36 @@ class Agent:
 			raise
 		except Exception:
 			LOG.exception('claude_login: read loop crashed')
+
+	async def _claude_login_await_success(self, deadline_s: float = 15.0) -> bool:
+		"""After the login pty closes, watch for credentials to land.
+
+		`claude auth login` writes ~/.claude.json a beat after the user
+		pastes a valid code, then exits. The general `_auth_poll_loop`
+		runs on a 15s cadence once the box is past its first minute —
+		too coarse to confirm success inside the cloud's exit watchdog.
+		Poll `claude auth status` directly here every 0.5s for up to
+		`deadline_s`.
+
+		Returns True (and emits `claude_authed`) the moment creds appear;
+		False on timeout, leaving the caller to emit `claude_login_exited`.
+		Keeps `self._authed` in sync so `_auth_poll_loop` doesn't re-emit
+		a duplicate `claude_authed` on its next tick.
+		"""
+		loop = asyncio.get_running_loop()
+		deadline = loop.time() + deadline_s
+		while loop.time() < deadline:
+			if await check_claude_authed():
+				self._authed = True
+				try:
+					await self._send({'type': 'claude_authed'})
+					LOG.info('claude_login: success confirmed on pty-exit path')
+				except Exception:
+					LOG.exception('claude_login: claude_authed emit failed')
+				return True
+			await asyncio.sleep(0.5)
+		LOG.info('claude_login: no credentials within %.0fs of pty exit', deadline_s)
+		return False
 
 	async def _claude_login_code(self, *, code: str) -> None:
 		"""Pump the OAuth callback code into the pty's stdin."""
@@ -1910,10 +1953,15 @@ class Agent:
 					)
 				except OSError:
 					LOG.info('codex_login: pty closed (pid=%s)', pid)
+					# Mirror of the claude_login pty-exit path: confirm
+					# success directly here at a tight cadence rather than
+					# leaving the cloud to race a 15s auth poll. On success
+					# emit `codex_authed` and skip the exited event; on
+					# timeout emit `codex_login_exited` so the cloud fails
+					# fast. Exactly one terminal event per attempt.
+					if await self._codex_login_await_success():
+						return
 					await self._send({'type': 'codex_login_exited'})
-					# Wake the auth poll so codex_authed flips quickly
-					# rather than waiting for the next 1s tick.
-					self._codex_auth_wakeup.set()
 					return
 				if data is None:
 					if self._codex_login_pid != pid:
@@ -1986,6 +2034,34 @@ class Agent:
 				await self._send({'type': 'codex_login_failed', 'error': tail})
 			except Exception:
 				pass
+
+	async def _codex_login_await_success(self, deadline_s: float = 15.0) -> bool:
+		"""After the codex device-auth pty closes, watch for the token.
+
+		Mirror of `_claude_login_await_success`. `codex login --device-auth`
+		writes its credentials and exits 0 once OpenAI signals the device
+		approved. Poll `codex login status` directly here every 0.5s for
+		up to `deadline_s` so success is confirmed without racing the
+		general `_codex_auth_poll_loop` cadence.
+
+		Returns True (and emits `codex_authed`) on success; False on
+		timeout. Keeps `self._codex_authed` in sync so the poll loop
+		doesn't re-emit a duplicate.
+		"""
+		loop = asyncio.get_running_loop()
+		deadline = loop.time() + deadline_s
+		while loop.time() < deadline:
+			if await check_codex_authed():
+				self._codex_authed = True
+				try:
+					await self._send({'type': 'codex_authed'})
+					LOG.info('codex_login: success confirmed on pty-exit path')
+				except Exception:
+					LOG.exception('codex_login: codex_authed emit failed')
+				return True
+			await asyncio.sleep(0.5)
+		LOG.info('codex_login: no credentials within %.0fs of pty exit', deadline_s)
+		return False
 
 	async def _codex_login_cancel(self) -> None:
 		await self._codex_login_cleanup()
