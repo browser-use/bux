@@ -1937,8 +1937,9 @@ h2 {
 
 .concept-2 {
   background:
-    radial-gradient(circle at 20% 0%, rgba(255, 216, 77, 0.16), transparent 28%),
-    linear-gradient(180deg, #101014, #050507);
+    radial-gradient(circle at 50% -10%, rgba(251, 191, 36, 0.18), transparent 24%),
+    radial-gradient(circle at 12% 18%, rgba(34, 197, 94, 0.12), transparent 22%),
+    linear-gradient(180deg, #111114 0%, #070709 58%, #020203 100%);
   color: #f8fafc;
 }
 
@@ -1957,14 +1958,40 @@ h2 {
 
 .concept-2 .boss-meter {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(110px, 0.7fr) auto;
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) 104px;
+  gap: 12px;
   align-items: center;
-  margin: 0 0 14px;
-  padding: 12px;
-  border-radius: 26px;
-  background: rgba(255, 255, 255, 0.08);
+  margin: 0 auto 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.07);
   color: #fff;
+  backdrop-filter: blur(18px);
+}
+
+.concept-2 .boss-meter div {
+  min-width: 0;
+}
+
+.concept-2 .boss-meter span {
+  display: block;
+  color: rgba(255, 255, 255, 0.52);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.concept-2 .boss-meter strong {
+  display: block;
+  overflow: hidden;
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.1;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .boss-meter p {
@@ -1983,18 +2010,19 @@ h2 {
 }
 
 .boss-meter em {
+  grid-column: 1 / -1;
   color: rgba(255, 255, 255, 0.72);
   font-style: normal;
-  font-weight: 900;
+  font-size: 12px;
+  font-weight: 850;
+  white-space: nowrap;
 }
 
 .concept-2 .swipe-card {
-  border: 1px solid rgba(255, 255, 255, 0.42);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(229, 237, 245, 0.92)),
-    #f8fafc;
-  color: #111827;
-  box-shadow: 0 34px 90px rgba(0, 0, 0, 0.34);
+  border: 1px solid rgba(255, 255, 255, 0.20);
+  background: #fbfbfb;
+  color: #101114;
+  box-shadow: 0 34px 90px rgba(0, 0, 0, 0.38);
 }
 
 .concept-2 .swipe-card p,
@@ -2003,7 +2031,7 @@ h2 {
 }
 
 .concept-2 .deck-visual {
-  opacity: 0.72;
+  opacity: 1;
 }
 
 .concept-2 .agent-buttons button:not(.primary-action) {
@@ -2025,6 +2053,351 @@ h2 {
   color: #fff;
   background: rgba(255, 255, 255, 0.12);
   border-color: rgba(255, 255, 255, 0.14);
+}
+
+.concept-2 .concept-title {
+  display: none;
+}
+
+.boss-lab-nav {
+  opacity: 0;
+  transform: translate(-50%, -72px);
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.boss-lab-nav:focus-within,
+.boss-lab-nav:hover {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.concept-2 .deck-shell {
+  width: min(430px, calc(100vw - 24px));
+  height: min(790px, calc(100dvh - 20px));
+  min-height: 600px;
+  padding: max(10px, env(safe-area-inset-top)) 0 max(10px, env(safe-area-inset-bottom));
+}
+
+.concept-2 .deck-swipe-cues {
+  width: 100%;
+  margin: 0 auto 10px;
+  grid-template-columns: 1fr auto 1fr;
+}
+
+.concept-2 .deck-swipe-cues span,
+.concept-2 .deck-swipe-cues strong {
+  min-height: 34px;
+  display: grid;
+  align-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 999px;
+  padding: 0 12px;
+  background: rgba(255, 255, 255, 0.07);
+  font-size: 11px;
+  line-height: 1.05;
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.concept-2 .deck-swipe-cues strong {
+  color: rgba(255, 255, 255, 0.68);
+  font-weight: 780;
+}
+
+.concept-2 .swipe-card {
+  inset: 76px 0 156px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 32px;
+}
+
+.concept-2 .swipe-card:not([data-swipe-card="1"]) {
+  opacity: 0.16;
+  filter: blur(0.4px);
+}
+
+.concept-2 .swipe-card:not([data-swipe-card="1"]) .boss-card-head,
+.concept-2 .swipe-card:not([data-swipe-card="1"]) .boss-card-copy,
+.concept-2 .swipe-card:not([data-swipe-card="1"]) .deck-visual,
+.concept-2 .swipe-card:not([data-swipe-card="1"]) .swipe-intent {
+  opacity: 0;
+}
+
+.boss-card-head {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.boss-card-head div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.boss-card-head small {
+  color: #71717a;
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.boss-card-head strong {
+  overflow: hidden;
+  color: #18181b;
+  font-size: 14px;
+  font-weight: 900;
+  line-height: 1.12;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.boss-card-head b {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  border-radius: 999px;
+  background: #111;
+  color: #fff;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.concept-2 .deck-visual {
+  flex: 0 0 auto;
+  height: clamp(150px, 28dvh, 238px);
+  min-height: 0;
+  border-radius: 24px;
+  background: #111;
+}
+
+.concept-2 .swipe-card.no-media-card .boss-card-copy {
+  margin-top: auto;
+  margin-bottom: auto;
+}
+
+.boss-card-copy {
+  display: grid;
+  gap: 10px;
+  min-height: 0;
+}
+
+.boss-card-copy h2 {
+  color: #09090b;
+  font-family: var(--font-ui);
+  font-size: clamp(22px, 5vw, 28px);
+  line-height: 1.02;
+  letter-spacing: -0.03em;
+}
+
+.boss-card-copy p {
+  display: block;
+  color: #52525b;
+  font-size: 14px;
+  line-height: 1.32;
+  overflow: visible;
+}
+
+.concept-2 .swipe-card.no-media-card .boss-card-copy p {
+  font-size: 15px;
+}
+
+.lane-note {
+  max-width: 44ch;
+  padding: 9px 11px;
+  border-radius: 16px;
+  background: #ecfdf5;
+  color: #166534 !important;
+  font-size: 12px !important;
+  font-weight: 750;
+  line-height: 1.25 !important;
+}
+
+.boss-proof {
+  display: grid;
+  gap: 7px;
+  margin-top: 2px;
+}
+
+.boss-proof details {
+  border: 1px solid rgba(9, 9, 11, 0.08);
+  border-radius: 15px;
+  background: #f4f4f5;
+}
+
+.boss-proof summary {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  color: #27272a;
+  font-size: 13px;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.boss-proof p {
+  padding: 0 12px 12px;
+  font-size: 13px;
+}
+
+.swipe-intent {
+  position: absolute;
+  z-index: 2;
+  top: 76px;
+  display: block;
+  opacity: 0.38;
+  padding: 7px 10px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  transform: rotate(var(--intent-rot));
+}
+
+.swipe-intent.left {
+  left: 18px;
+  color: #ef4444;
+  --intent-rot: -10deg;
+}
+
+.swipe-intent.right {
+  right: 18px;
+  color: #16a34a;
+  --intent-rot: 10deg;
+}
+
+.swipe-card[data-intent="skip"] .swipe-intent.left,
+.swipe-card[data-intent="start"] .swipe-intent.right {
+  opacity: 1;
+  background: #fff;
+}
+
+.boss-reward {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 92px;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 3px 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.boss-reward span,
+.boss-reward em {
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 820;
+}
+
+.boss-reward strong {
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 1.12;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.boss-reward em {
+  text-align: right;
+}
+
+.concept-2 .deck-actions {
+  bottom: 0;
+  display: grid;
+  gap: 7px;
+}
+
+.boss-action-label {
+  color: rgba(255, 255, 255, 0.56);
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.boss-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.boss-choice-grid button,
+.boss-utility-grid button {
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 18px;
+  font-weight: 880;
+  line-height: 1.08;
+}
+
+.boss-choice-grid button {
+  min-height: 40px;
+  display: flex;
+  gap: 0;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 10px;
+  background: rgba(255, 255, 255, 0.13);
+  color: #fff;
+  font-size: 13px;
+}
+
+.boss-choice-grid button:only-child {
+  grid-column: 1 / -1;
+}
+
+.boss-choice-grid button span {
+  display: none;
+}
+
+.boss-choice-grid button.selected {
+  border-color: rgba(250, 204, 21, 0.72);
+  background: linear-gradient(135deg, #facc15, #fb923c);
+  color: #14110a;
+}
+
+.boss-utility-grid {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) 62px minmax(86px, 0.8fr);
+  gap: 8px;
+}
+
+.boss-utility-grid button {
+  min-height: 42px;
+  background: rgba(255, 255, 255, 0.09);
+  color: #fff;
+}
+
+.boss-utility-grid .skip-move {
+  border-color: rgba(248, 113, 113, 0.28);
+  color: #fecaca;
+  font-size: 24px;
+}
+
+.boss-utility-grid .context-move {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.boss-utility-grid .voice-move {
+  color: #bbf7d0;
+}
+
+.boss-utility-grid .launch-move {
+  border-color: rgba(250, 204, 21, 0.66);
+  background: linear-gradient(135deg, #facc15, #fb923c);
+  color: #14110a;
 }
 
 .concept-3 {
@@ -2750,5 +3123,61 @@ h2 {
     min-height: 40px;
     padding: 7px 11px;
     font-size: 12px;
+  }
+}
+
+@media (max-width: 560px) {
+  .concept-2 .deck-shell {
+    height: calc(100dvh - 76px);
+    min-height: 590px;
+  }
+
+  .concept-2 .swipe-card {
+    inset: 74px 0 174px;
+    display: flex;
+    grid-template-rows: none;
+    gap: 11px;
+    padding: 15px;
+  }
+
+  .concept-2 .swipe-card h2 {
+    font-size: clamp(25px, 7vw, 32px);
+  }
+
+  .concept-2 .swipe-card p {
+    display: block;
+    -webkit-line-clamp: unset;
+    overflow: visible;
+  }
+
+  .concept-2 .deck-actions {
+    gap: 8px;
+  }
+}
+
+@media (max-height: 720px) {
+  .concept-2 .deck-shell {
+    height: calc(100dvh - 62px);
+    min-height: 510px;
+  }
+
+  .concept-2 .deck-swipe-cues {
+    display: none;
+  }
+
+  .concept-2 .swipe-card {
+    inset: 62px 0 168px;
+  }
+
+  .concept-2 .deck-visual {
+    height: 130px;
+  }
+
+  .boss-card-copy h2 {
+    font-size: 24px;
+  }
+
+  .boss-proof {
+    display: none;
   }
 }

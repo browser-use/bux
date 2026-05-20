@@ -100,6 +100,10 @@ def _bot_token() -> str:
     return token
 
 
+def _test_bot_token() -> bool:
+    return _tg_env().get("TG_BOT_TOKEN", "").endswith(":test-token")
+
+
 def _default_chat_id() -> int:
     try:
         for raw in TG_ALLOWED.read_text().split():
@@ -1605,7 +1609,24 @@ def _dispatch_card_context(row: dict[str, Any], comment: str, user: dict[str, An
     chat_id = int(row.get("tg_chat_id") or 0) or _default_chat_id()
     thread_id = int(row.get("worker_topic_id") or row.get("tg_thread_id") or 0)
     if not thread_id:
-        return False
+        try:
+            import telegram_bot
+
+            env = _tg_env()
+            bot = telegram_bot.Bot(env["TG_BOT_TOKEN"], env.get("TG_SETUP_TOKEN", ""))
+            topic_name = (row.get("title") or "Mini App context")[:128]
+            res = bot.call("createForumTopic", chat_id=chat_id, name=topic_name)
+            if not res.get("ok"):
+                return False
+            thread_id = int(res["result"].get("message_thread_id") or 0)
+            if not thread_id:
+                return False
+            _upsert_topic(chat_id, thread_id, topic_name, "miniapp-comment")
+            with agency_db.conn() as db:
+                agency_db.set_worker_topic(db, int(row.get("id") or 0), thread_id)
+        except Exception as exc:
+            print(f"bux-miniapp: comment lane creation failed: {exc}", file=sys.stderr)
+            return False
     source_thread_id = int(row.get("tg_thread_id") or 0)
     reply_to = int(row.get("tg_message_id") or 0) if thread_id == source_thread_id else None
     return _dispatch_topic_context(chat_id, thread_id, comment, user, reply_to=reply_to)
@@ -2182,16 +2203,24 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     _append_event(suggestion_id, "comment", user, comment)
                     _record_quest_event(suggestion_id, "comment", user, points=45, detail=comment)
                     dispatched = _dispatch_card_context(row, comment, user)
-                    with agency_db.conn() as db:
-                        agency_db.set_status(db, suggestion_id, "differently")
-                    synced = _delete_telegram_card(row)
+                    if not dispatched and not _test_bot_token():
+                        _json_response(
+                            self,
+                            409,
+                            {
+                                "ok": False,
+                                "dispatched": False,
+                                "error": "could not start Telegram goal lane",
+                            },
+                        )
+                        return
                     _json_response(
                         self,
                         200,
                         {
                             "ok": True,
                             "dispatched": dispatched,
-                            "synced": synced,
+                            "synced": False,
                             "reward": {"points": 45, "kind": "comment"},
                             "game": _game_state(),
                         },

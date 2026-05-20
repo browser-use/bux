@@ -44,16 +44,16 @@ const CONCEPTS = [
 const DEMO_CARDS = [
   {
     id: "goal-startup",
-    title: "Win the startup day: approve the 3 highest-leverage moves",
-    why: "Agency already drafted the actions. Each approval adds XP toward more users and revenue.",
+    title: "Draft three Product Hunt launch replies for today’s top comments",
+    why: "The agent can prepare warm, founder-style replies now and wait before posting anything publicly.",
     source: "miniapp-game:startup",
     source_label: "Startup goal",
     importance: "high",
-    buttons: ["Start daily quest", "Show top 3", "Autopilot private work"],
+    buttons: ["Draft replies", "Find comments", "Make variants"],
     blocks: [
-      { title: "Win condition", body: "Approve three concrete actions that move distribution, activation, or trust." },
-      { title: "Agent work", body: "Research, drafts, diffs, and assets happen before the card. You approve only the visible boundary." },
-      { title: "Reward", body: "+180 XP, streak protection, and a sharper next batch." },
+      { title: "Win condition", body: "Approve three useful moves today that move distribution, activation, or trust." },
+      { title: "Agent work", body: "Find the best public comments, draft replies in your voice, and ask again before anything is posted." },
+      { title: "Reward", body: "+150 XP, streak protection, and a sharper next batch." },
     ],
     category: "growth",
   },
@@ -611,7 +611,7 @@ function renderLabNav(concept) {
   const prev = concept.id === 1 ? CONCEPT_COUNT : concept.id - 1;
   const next = concept.id === CONCEPT_COUNT ? 1 : concept.id + 1;
   return `
-    <nav class="lab-nav" aria-label="Mini App concepts">
+    <nav class="lab-nav ${concept.id === 2 ? "boss-lab-nav" : ""}" aria-label="Mini App concepts">
       <a class="lab-home" href="${hubPath()}">All</a>
       <a href="${conceptPath(prev)}">Prev</a>
       <span>${concept.id} / ${CONCEPT_COUNT}</span>
@@ -858,30 +858,78 @@ function renderStories(concept, cards, card) {
 }
 
 function renderDeck(concept, cards, card) {
-  const bossHp = Math.max(8, 100 - (Number(state.local.points || 0) % 100));
   const combo = Number(state.local.combo || 0);
-  const stackCards = prioritizeCard(cards, card).slice(0, 4);
+  const stackCards = prioritizeCard(cards, card).slice(0, 3);
+  const choice = buttonText(selectedRaw(card) || primaryButton(card));
+  const blocks = Array.isArray(card.blocks) ? card.blocks.filter((block) => block?.body || block?.title).slice(0, 2) : [];
+  const pending = activeCards(100).length;
+  const approvedToday = Math.min(3, approvalsToday());
+  const progressPct = Math.max(8, Math.min(100, (approvedToday / 3) * 100));
   return `
     <div class="deck-shell">
       <section class="boss-meter">
-        <div><span>Daily boss</span><strong>${escapeHtml(sourceName(card))}</strong></div>
-        <p><i style="--hp:${bossHp}%"></i></p>
-        <em>${bossHp}% HP · ${combo} combo</em>
+        <div><span>Daily objective</span><strong>${approvedToday}/3 approvals · ${pending} open</strong></div>
+        <p><i style="--hp:${progressPct}%"></i></p>
+        <em>Beat the day · ${combo} combo</em>
       </section>
-      <div class="deck-swipe-cues" aria-hidden="true"><span>Skip</span><strong>Drag card</strong><span>Do it</span></div>
+      <div class="deck-swipe-cues" aria-hidden="true">
+        <span>Skip</span>
+        <strong>Swipe or choose</strong>
+        <span>Do it</span>
+      </div>
       ${stackCards.map((item, index) => `
-        <article class="swipe-card concept-card" style="--stack:${index}; --z:${stackCards.length - index}; --shade:${index === 0 ? 1 : 0}" data-card-id="${item.id}" data-swipe-card="${index === 0 ? "1" : "0"}">
-          <div class="card-rarity">Impact ${pointsFor(item)}</div>
-          ${renderVisual(item, "deck-visual")}
-          <section>
-            ${renderMeta(item)}
-            <h2>${escapeHtml(clip(item.title, 78))}</h2>
-            <p>${escapeHtml(clip(item.why, 150))}</p>
+        <article class="swipe-card concept-card ${hasRealVisual(item) ? "with-media" : "no-media-card"}" style="--stack:${index}; --z:${stackCards.length - index}; --shade:${index === 0 ? 1 : 0}" data-card-id="${item.id}" data-swipe-card="${index === 0 ? "1" : "0"}">
+          <div class="swipe-intent left">Skip</div>
+          <div class="swipe-intent right">Do it</div>
+          <header class="boss-card-head">
+            <div>
+              <small>${escapeHtml(categoryMeta(item).label)}</small>
+              <strong>${escapeHtml(sourceName(item))}</strong>
+            </div>
+            <b>+${pointsFor(item)} XP</b>
+          </header>
+          ${hasRealVisual(item) ? renderVisual(item, "deck-visual") : ""}
+          <section class="boss-card-copy">
+            <h2>${escapeHtml(clip(item.title, hasRealVisual(item) ? 84 : 112))}</h2>
+            <p>${escapeHtml(clip(item.why, hasRealVisual(item) ? 150 : 230))}</p>
+            ${index === 0 ? `<p class="lane-note">Choose a move below. Swipe right or tap Do it to start the selected move in Telegram.</p>` : ""}
+            ${index === 0 && blocks.length ? `
+              <div class="boss-proof">
+                ${blocks.map((block) => `
+                  <details>
+                    <summary>${escapeHtml(block.title || "Detail")}</summary>
+                    <p>${escapeHtml(clip(block.body || "", 220))}</p>
+                  </details>
+                `).join("")}
+              </div>
+            ` : ""}
           </section>
         </article>
       `).join("")}
-      ${renderActions(card, "deck-actions")}
+      ${renderBossSwipeActions(card)}
     </div>
+  `;
+}
+
+function renderBossSwipeActions(card) {
+  const choices = agentChoices(card).slice(0, 4);
+  return `
+    <footer class="action-bar deck-actions">
+      <div class="boss-action-label">Choose the move</div>
+      <div class="boss-choice-grid">
+        ${choices.map((button, index) => `
+          <button class="${index === selectedIndex(card) ? "selected" : ""}" data-action="variant" data-card-id="${card.id}" data-index="${index}">
+            <span>${index + 1}</span>${escapeHtml(button.text)}
+          </button>
+        `).join("")}
+      </div>
+      <div class="boss-utility-grid">
+        <button class="skip-move" data-action="skip" data-card-id="${card.id}" aria-label="Skip">×</button>
+        <button class="context-move" data-action="context" data-card-id="${card.id}">Comment</button>
+        <button class="voice-move" data-action="voice" data-card-id="${card.id}" aria-label="Speak">Mic</button>
+        <button class="launch-move" data-action="start" data-card-id="${card.id}" data-index="${selectedIndex(card)}">Do it</button>
+      </div>
+    </footer>
   `;
 }
 
@@ -1533,7 +1581,8 @@ function renderVisual(card, extra = "") {
 }
 
 function hasRealVisual(card) {
-  return Boolean(card?.visual?.src && ["image", "video"].includes(card.visual.kind));
+  if (!card?.visual?.src || !["image", "video"].includes(card.visual.kind)) return false;
+  return !String(card.visual.src).startsWith("data:image/svg+xml");
 }
 
 function renderMeta(card) {
@@ -1629,7 +1678,7 @@ function categoryMeta(card) {
 }
 
 function selectedIndex(card) {
-  const total = cardButtons(card).length;
+  const total = agentChoices(card).length;
   if (!total) return 0;
   const raw = Number(state.selected[String(card.id)] || 0);
   return Math.max(0, Math.min(total - 1, raw));
@@ -1647,7 +1696,7 @@ function agentChoices(card) {
 }
 
 function selectedRaw(card) {
-  return cardButtons(card)[selectedIndex(card)]?.raw || "";
+  return agentChoices(card)[selectedIndex(card)]?.raw || "";
 }
 
 function primaryButton(card) {
@@ -1670,10 +1719,18 @@ function decisionFor(card) {
   return state.local.decisions[String(card.id)] || null;
 }
 
+function approvalsToday() {
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  return Object.values(state.local.decisions || {}).filter((item) => (
+    item?.status === "started" && Number(item.at || 0) >= start.getTime()
+  )).length;
+}
+
 function markDecision(card, status, detail = "") {
   if (!card) return;
   haptic(status === "started" ? "success" : "light");
-  const gained = status === "started" ? pointsFor(card) : 5;
+  const gained = status === "started" ? pointsFor(card) : 0;
   const combo = status === "started" ? Number(state.local.combo || 0) + 1 : 0;
   state.local.decisions[String(card.id)] = {
     status,
@@ -1687,7 +1744,7 @@ function markDecision(card, status, detail = "") {
   state.local.lastReward = status === "started"
     ? `+${gained} XP · ${combo} combo`
     : "Combo reset · better next card";
-  state.local.points = Number(state.local.points || 0) + gained;
+  if (gained) state.local.points = Number(state.local.points || 0) + gained;
   saveLocalState();
   state.focusCardId = activeCards(1)[0]?.id || state.cards[0]?.id || null;
 }
@@ -1902,6 +1959,7 @@ let swipe = null;
 app.addEventListener("pointerdown", (event) => {
   const target = event.target.closest("[data-swipe-card]");
   if (!target) return;
+  if (target.dataset.swipeCard !== "1") return;
   swipe = {
     el: target,
     id: target.dataset.cardId,
@@ -1940,6 +1998,14 @@ app.addEventListener("pointerup", (event) => {
     syncSkip(card);
   }
   render();
+});
+
+app.addEventListener("pointercancel", () => {
+  if (!swipe) return;
+  swipe.el.classList.remove("swiping");
+  swipe.el.style.transform = "";
+  swipe.el.dataset.intent = "";
+  swipe = null;
 });
 
 await refresh();
