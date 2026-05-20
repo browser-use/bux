@@ -25,6 +25,12 @@
 #                          user is and can supply this directly.
 #   TG_OWNER_USERNAME    — Optional companion to TG_OWNER_ID (display only).
 #   TG_OWNER_NAME        — Optional companion to TG_OWNER_ID (display only).
+#   BUX_DEFAULT_AGENT    — Optional default Telegram lane agent
+#                          (claude, codex, hermes).
+#   WITH_HERMES          — configure Hermes support (default 0 while the
+#                          Hermes package source is still operator-defined).
+#   HERMES_BIN           — Optional existing Hermes binary path.
+#   HERMES_INSTALL_CMD   — Optional install command, run as the bux user.
 #   WITH_ZTK             — install ztk (default 1; set to 0 to skip). ztk is a
 #                          Zig CLI that compresses long Bash tool outputs
 #                          (git diff, ls, test runners) before they hit
@@ -36,6 +42,7 @@ set -euo pipefail
 
 BUX_REF="${BUX_REF:-main}"
 WITH_ZTK="${WITH_ZTK:-1}"
+WITH_HERMES="${WITH_HERMES:-0}"
 
 # --- pinned versions -------------------------------------------------------
 # Keep all third-party version pins together so bumping is a single edit.
@@ -579,6 +586,16 @@ fi
 chmod 0644 "$CODEX_CONFIG"
 '
 
+# --- Hermes support (optional third lane agent) ---------------------------
+# Hermes' package/source is still operator-defined, so this is opt-in for now.
+# The installer is conservative: it preserves existing Hermes auth/subscription
+# state under /home/bux and only installs the Bux wrapper + context.
+if [ "$WITH_HERMES" = "1" ]; then
+	say 'configuring Hermes support for bux'
+	/bin/bash "$REPO_DIR/agent/install-hermes" \
+		|| warn 'hermes install failed (non-fatal — /hermes will report the issue)'
+fi
+
 # --- login banner: print live browser URL on each ssh login ---------------
 if ! grep -q 'BU_BROWSER_LIVE_URL' /home/bux/.profile 2>/dev/null; then
 	cat >> /home/bux/.profile <<'PROFILE'
@@ -627,6 +644,16 @@ EOF
 		[ -n "${TG_OWNER_USERNAME:-}" ] && printf 'TG_OWNER_USERNAME=%s\n' "$TG_OWNER_USERNAME" >> /etc/bux/tg.env
 		[ -n "${TG_OWNER_NAME:-}" ] && printf 'TG_OWNER_NAME=%s\n' "$TG_OWNER_NAME" >> /etc/bux/tg.env
 	fi
+	case "${BUX_DEFAULT_AGENT:-}" in
+		claude|codex|hermes)
+			printf 'BUX_DEFAULT_AGENT=%s\n' "$BUX_DEFAULT_AGENT" >> /etc/bux/tg.env
+			;;
+		"")
+			;;
+		*)
+			warn "ignoring invalid BUX_DEFAULT_AGENT=$BUX_DEFAULT_AGENT"
+			;;
+	esac
 	# 0o640 root:bux so the tg-send helper can read the bot token from
 	# `at` jobs running as bux. Worst-case leak: someone with bux access
 	# can call sendMessage, but only the bound chat receives it — they

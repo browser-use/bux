@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# Stable Bux wrapper around the real Hermes binary.
+#
+# Telegram and tests call this wrapper instead of calling `hermes` directly so
+# Bux can provide the same workspace, browser, and routing environment every
+# time while preserving Hermes' own auth/subscription files under /home/bux.
+set -euo pipefail
+
+BUX_HOME="${BUX_HOME:-/home/bux}"
+BUX_USER="${BUX_USER:-bux}"
+HERMES_HOME="${HERMES_HOME:-$BUX_HOME/.hermes}"
+export HOME="$BUX_HOME"
+export USER="$BUX_USER"
+export HERMES_HOME
+export PATH="$BUX_HOME/.local/bin:$BUX_HOME/.npm-global/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+export BUX_HERMES_SOUL="${BUX_HERMES_SOUL:-$HERMES_HOME/SOUL.md}"
+
+BROWSER_ENV="${BROWSER_ENV:-$BUX_HOME/.claude/browser.env}"
+if [ -r "$BROWSER_ENV" ]; then
+	set -a
+	# shellcheck disable=SC1090
+	. "$BROWSER_ENV"
+	set +a
+fi
+HERMES_ENV="${HERMES_ENV:-$HERMES_HOME/env}"
+if [ -r "$HERMES_ENV" ]; then
+	set -a
+	# shellcheck disable=SC1090
+	. "$HERMES_ENV"
+	set +a
+fi
+
+if [ "${1:-}" = "--bux-env-check" ]; then
+	printf 'BUX_HOME=%s\n' "$BUX_HOME"
+	printf 'BUX_HERMES_SOUL=%s\n' "$BUX_HERMES_SOUL"
+	printf 'BU_CDP_WS=%s\n' "${BU_CDP_WS:-}"
+	printf 'BU_BROWSER_ID=%s\n' "${BU_BROWSER_ID:-}"
+	printf 'BU_PROFILE_ID=%s\n' "${BU_PROFILE_ID:-}"
+	exit 0
+fi
+
+find_hermes() {
+	if [ -n "${HERMES_BIN:-}" ]; then
+		if [ -x "$HERMES_BIN" ]; then
+			printf '%s\n' "$HERMES_BIN"
+			return 0
+		fi
+		printf 'bux-hermes: HERMES_BIN is not executable: %s\n' "$HERMES_BIN" >&2
+		return 1
+	fi
+	for candidate in \
+		"$BUX_HOME/.local/bin/hermes" \
+		"$BUX_HOME/.npm-global/bin/hermes" \
+		/usr/local/bin/hermes \
+		/usr/bin/hermes
+	do
+		if [ -x "$candidate" ]; then
+			printf '%s\n' "$candidate"
+			return 0
+		fi
+	done
+	if command -v hermes >/dev/null 2>&1; then
+		command -v hermes
+		return 0
+	fi
+	return 1
+}
+
+if ! hermes_bin="$(find_hermes)"; then
+	cat >&2 <<'EOF'
+bux-hermes: Hermes is not installed or not executable.
+
+Install or authenticate Hermes as the bux user, then retry. For a terminal
+login flow from Telegram, use:
+
+  /terminal hermes login
+EOF
+	exit 127
+fi
+
+cmd="${1:-}"
+case "$cmd" in
+	run)
+		shift
+		if [ -n "${HERMES_RUN_COMMAND:-}" ]; then
+			export HERMES_PROMPT="$*"
+			exec bash -lc "$HERMES_RUN_COMMAND"
+		fi
+		exec "$hermes_bin" --oneshot "$*"
+		;;
+	status)
+		if "$hermes_bin" status >/dev/null 2>&1; then
+			exec "$hermes_bin" status
+		fi
+		exec "$hermes_bin" --version
+		;;
+	"")
+		exec "$hermes_bin" --help
+		;;
+	*)
+		exec "$hermes_bin" "$@"
+		;;
+esac

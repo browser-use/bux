@@ -1,11 +1,11 @@
 """Telegram bot — forum-aware, multi-agent, per-lane sessions.
 
-Each (chat_id, message_thread_id) pair is its own lane: per-lane claude/codex
-session id, per-lane FIFO. All lanes share `/home/bux` as the working dir —
+Each (chat_id, message_thread_id) pair is its own lane: per-lane claude/codex/
+hermes session id, per-lane FIFO. All lanes share `/home/bux` as the working dir —
 per-lane isolation is purely at the *agent session* layer (different session
 UUIDs → different transcripts), not the filesystem. Within a lane messages
 serialize so the same session UUID is never written by two procs at once.
-Across lanes, no concurrency cap: spin up as many parallel claude/codex
+Across lanes, no concurrency cap: spin up as many parallel claude/codex/hermes
 turns as the box can carry.
 
 Auth: deeplink-based one-shot setup token. First chat to redeem `/start <token>`
@@ -18,7 +18,7 @@ Env (from /etc/bux/tg.env):
 
 State (on disk):
   /etc/bux/tg-allowed.txt        — newline-separated allowed chat_ids (mode 640 root:bux)
-  /etc/bux/tg-state.json         — {offset, agents: {lane_slug: 'claude'|'codex'},
+  /etc/bux/tg-state.json         — {offset, agents: {lane_slug: 'claude'|'codex'|'hermes'},
                                     owners: {chat_id: {user_id,name,username,bound_at}}}
   /etc/bux/tg-queue.json         — {lane_slug: [job, …]} pending FIFO
   /home/bux/.bux/sessions/<slug> — per-lane claude/codex session UUID
@@ -30,7 +30,7 @@ Flow:
      other-chat messages drop silently.
   3. Once allowed, each message is keyed to a lane (chat_id, thread_id) and
      enqueued. A worker drains that lane, dispatching each job to the lane's
-     bound agent (claude default; `/codex` flips it).
+     bound agent (claude default; `/codex` or `/hermes` flips it).
   4. Stream-json events from claude come back as one editable TG message
      bubble in the lane's topic, with a per-turn random "thinking" emoji in
      the placeholder and a 💔 reaction only on failure.
@@ -253,7 +253,8 @@ def random_thinking_reaction() -> str:
 # Recognised agents per lane. Values double as PATH binary names.
 AGENT_CLAUDE = "claude"
 AGENT_CODEX = "codex"
-AGENTS = (AGENT_CLAUDE, AGENT_CODEX)
+AGENT_HERMES = "hermes"
+AGENTS = (AGENT_CLAUDE, AGENT_CODEX, AGENT_HERMES)
 DEFAULT_AGENT = AGENT_CLAUDE
 CODEX_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
 CODEX_MODEL_CHOICES = (
@@ -284,6 +285,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("compact", "summarize this topic's session to free up context"),
     ("claude", "switch/login/logout Claude"),
     ("codex", "switch/login/logout Codex"),
+    ("hermes", "switch to Hermes"),
     ("fast", "switch this topic's Codex lane to fast mode"),
     ("model", "show/set this topic's Codex model"),
     ("usage", "show latest Codex usage / rate-limit diagnostic"),
@@ -638,6 +640,19 @@ def _cloud_terminal_reply_markup(url: str) -> dict:
             [{"text": f"Copy link {_short_button_url(url)}", "copy_text": {"text": url}}],
         ]
     }
+
+
+def _configured_default_agent() -> str | None:
+    raw = (
+        os.environ.get("BUX_DEFAULT_AGENT", "").strip().lower()
+        or _read_kv(TG_ENV).get("BUX_DEFAULT_AGENT", "").strip().lower()
+    )
+    if not raw:
+        return None
+    if raw in AGENTS:
+        return raw
+    LOG.warning("ignoring invalid BUX_DEFAULT_AGENT=%r", raw)
+    return None
 
 
 def _write_tg_env_value(key: str, value: str) -> None:
@@ -1444,16 +1459,19 @@ def _is_agent_authed(agent: str) -> bool:
 
 
 def _agent_for(key: LaneKey, state: dict) -> str:
-    """Resolve which agent handles this lane. /claude or /codex sets it.
+    """Resolve which agent handles this lane. /claude, /codex, /hermes set it.
 
-    For unbound lanes (no explicit /claude or /codex), prefer the CLI
-    that's actually signed in. If both are signed in, keep claude as
-    the historical default. If neither is, also fall back to claude —
-    the user will see the auth-error path and can switch with /codex.
+    For unbound lanes, an explicit BUX_DEFAULT_AGENT wins first. Without that,
+    prefer the CLI that's actually signed in. If both are signed in, keep claude
+    as the historical default. If neither is, also fall back to claude — the
+    user will see the auth-error path and can switch with /codex or /hermes.
     """
     bound = (state.get("agents") or {}).get(_lane_slug(key))
     if bound in AGENTS:
         return bound
+    configured = _configured_default_agent()
+    if configured:
+        return configured
     if _is_agent_authed(AGENT_CLAUDE):
         return AGENT_CLAUDE
     if _is_agent_authed(AGENT_CODEX):
@@ -4635,7 +4653,7 @@ class Bot:
         # If at least one is signed in, dispatch normally — the auth-
         # error fallback below still catches mid-session 401s for an
         # expired credential.
-        if not _login_status_cached("claude") and not _login_status_cached("codex"):
+        if agent != AGENT_HERMES and not _login_status_cached("claude") and not _login_status_cached("codex"):
             owner = _owner_for(chat_id, self.state) or {}
             sender_id = (sender or {}).get("user_id")
             if not owner or not sender_id or _is_owner({"user_id": sender_id}, owner):
@@ -4684,6 +4702,8 @@ class Bot:
         try:
             if agent == AGENT_CODEX:
                 self._run_codex(key, prompt, reply_to, sender=sender, thinking_emoji=thinking_emoji)
+            elif agent == AGENT_HERMES:
+                self._run_hermes(key, prompt, reply_to, sender=sender, thinking_emoji=thinking_emoji)
             else:
                 self._run_claude(key, prompt, reply_to, sender=sender, thinking_emoji=thinking_emoji)
         except Exception as e:
@@ -5485,6 +5505,169 @@ class Bot:
             reply_markup=_codex_rate_limit_markup(_codex_settings_for(key, self.state)),
         )
 
+    def _run_hermes(
+        self,
+        key: LaneKey,
+        prompt: str,
+        reply_to: int | None,
+        sender: dict | None = None,
+        thinking_emoji: str | None = None,
+    ) -> None:
+        """Stream a Hermes turn into the lane's TG topic.
+
+        Hermes' exact CLI event shape is intentionally hidden behind
+        /usr/local/bin/bux-hermes. Until Hermes exposes a stable JSONL
+        contract here, treat stdout lines as user-visible text and surface
+        stderr when the turn produces no visible output.
+        """
+        chat_id, thread_id = key
+        env = self._build_env(key, AGENT_HERMES, sender=sender)
+        prompt = _prefix_sender(prompt, sender, _owner_for(chat_id, self.state))
+
+        hermes_wrapper = self._which_hermes()
+        if not hermes_wrapper:
+            self.react(chat_id, reply_to, EMOJI_ERROR)
+            self.send(
+                chat_id,
+                "Hermes is not configured on this box yet. Run "
+                "`WITH_HERMES=1 sudo /opt/bux/repo/agent/bootstrap.sh`, or use "
+                "`/terminal hermes login` after installing Hermes as the `bux` user.",
+                reply_to=reply_to,
+                thread_id=thread_id,
+                markdown=True,
+            )
+            return
+
+        cmd = ["sudo", "-u", "bux", "-H"] + [f"{k}={v}" for k, v in env.items() if v]
+        cmd += [hermes_wrapper, "run", prompt]
+
+        import tempfile
+
+        stderr_buf = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=stderr_buf,
+                text=True,
+                cwd=str(WORKSPACE),
+                start_new_session=True,
+            )
+        except Exception as e:
+            try:
+                stderr_buf.close()
+            except Exception:
+                pass
+            self.react(chat_id, reply_to, EMOJI_ERROR)
+            self.send(
+                chat_id,
+                f"Failed to spawn Hermes: {e}",
+                reply_to=reply_to,
+                thread_id=thread_id,
+            )
+            return
+
+        slug = _lane_slug(key)
+        with _inflight_lock:
+            _inflight_procs[slug] = proc
+
+        stream_msg = StreamingMessage(self, chat_id, reply_to, thread_id, thinking_emoji=thinking_emoji)
+        stream_msg.start()
+        started_at = time.time()
+        any_text = False
+        assert proc.stdout is not None
+        try:
+            try:
+                for line in proc.stdout:
+                    text = self._hermes_visible_text(line)
+                    if text:
+                        stream_msg.append(text)
+                        any_text = True
+            except Exception:
+                LOG.exception("Hermes stdout loop failed")
+            duration_ms = int((time.time() - started_at) * 1000)
+            stream_msg.finalize(duration_ms=duration_ms)
+
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    _kill_inflight_proc(slug, proc, "drain-timeout")
+                    proc.wait(timeout=1)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+            if proc.returncode in (-9, -15):
+                if _inflight_cancel_reasons.get(slug) not in {"user-cancel", "drain-timeout", "followup-steer"}:
+                    self.react(chat_id, reply_to, EMOJI_ERROR)
+                    self.send(
+                        chat_id,
+                        "Cancelled.",
+                        reply_to=reply_to,
+                        thread_id=thread_id,
+                    )
+                return
+
+            if not any_text:
+                err = ""
+                try:
+                    stderr_buf.seek(0)
+                    err = stderr_buf.read().strip()
+                except Exception:
+                    pass
+                self.react(chat_id, reply_to, EMOJI_ERROR)
+                self.send(
+                    chat_id,
+                    err or "(Hermes returned no output)",
+                    reply_to=reply_to,
+                    thread_id=thread_id,
+                )
+            elif proc.returncode not in (0, None):
+                self.react(chat_id, reply_to, EMOJI_ERROR)
+        finally:
+            with _inflight_lock:
+                if _inflight_procs.get(slug) is proc:
+                    _inflight_procs.pop(slug, None)
+                    _inflight_cancel_reasons.pop(slug, None)
+            try:
+                stderr_buf.close()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _hermes_visible_text(line: str) -> str:
+        raw = line.strip()
+        if not raw:
+            return ""
+        try:
+            ev = json.loads(raw)
+        except Exception:
+            return raw
+        if not isinstance(ev, dict):
+            return raw
+        for key in ("text", "message", "content", "output"):
+            val = ev.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+        return ""
+
+    @staticmethod
+    def _which_hermes() -> str | None:
+        env_path = os.environ.get("BUX_HERMES_WRAPPER", "").strip()
+        if env_path and os.path.isfile(env_path) and os.access(env_path, os.X_OK):
+            return env_path
+        for p in (
+            "/usr/local/bin/bux-hermes",
+            "/usr/bin/bux-hermes",
+            "/opt/bux/repo/agent/bux-hermes",
+        ):
+            if os.path.isfile(p) and os.access(p, os.X_OK):
+                return p
+        return None
+
     @staticmethod
     def _which_codex() -> str | None:
         for p in (
@@ -6274,6 +6457,8 @@ class Bot:
                 "/claude login — sign in Claude through a terminal flow\n"
                 "/claude logout — sign out Claude\n"
                 "/goal <what to work on> — continuous goal-mode, copilot by default (I suggest, you accept). Append 'autopilot' / 'full autonomy' / 'no approvals' for full autonomy.\n"
+                "/hermes — switch this topic to Hermes\n"
+                "/hermes status — show Hermes wrapper status\n"
                 "/agency — open the Mini App\n"
                 "/miniapp — open the Mini App\n"
                 "/live — live-view URL of the active browser\n"
@@ -6572,6 +6757,24 @@ class Bot:
                 self._cmd_claude_logout(chat_id, mid, thread_id, sender, owner)
                 return
             self._cmd_agent(key, chat_id, mid, thread_id, AGENT_CLAUDE)
+            return
+        if cmd == "/hermes":
+            action = arg.strip().lower()
+            if action == "status":
+                self._cmd_hermes_status(chat_id, mid, thread_id)
+                return
+            if action in ("login", "auth"):
+                _set_agent_for(key, AGENT_HERMES, self.state)
+                self.send(
+                    chat_id,
+                    "Hermes login is local to this box. Use `/terminal hermes login` "
+                    "or `/terminal bux-hermes login` to complete it as the `bux` user.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
+            self._cmd_agent(key, chat_id, mid, thread_id, AGENT_HERMES)
             return
         if cmd == "/version":
             self._cmd_version(chat_id, mid, thread_id)
@@ -6906,7 +7109,7 @@ class Bot:
         if not arg:
             self.send(
                 chat_id,
-                f"This topic is using `{current}`.\n\nUse `/claude` or `/codex` "
+                f"This topic is using `{current}`.\n\nUse `/claude`, `/codex`, or `/hermes` "
                 "to switch.",
                 reply_to=reply_to,
                 thread_id=thread_id,
@@ -7534,6 +7737,49 @@ class Bot:
             thread_id=thread_id,
             reply_markup=_login_picker_reply_markup(),
         )
+
+    def _cmd_hermes_status(
+        self,
+        chat_id: int,
+        reply_to: int | None,
+        thread_id: int,
+    ) -> None:
+        wrapper = self._which_hermes()
+        if not wrapper:
+            self.send(
+                chat_id,
+                "Hermes wrapper is not installed. Run "
+                "`WITH_HERMES=1 sudo /opt/bux/repo/agent/bootstrap.sh`.",
+                reply_to=reply_to,
+                thread_id=thread_id,
+                markdown=True,
+            )
+            return
+        try:
+            r = subprocess.run(
+                ["sudo", "-u", "bux", "-H", wrapper, "status"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                cwd=str(WORKSPACE),
+            )
+            out = ((r.stdout or "") + (r.stderr or "")).strip()
+            if not out:
+                out = f"Hermes wrapper present at `{wrapper}` (rc={r.returncode})."
+            self.send(
+                chat_id,
+                out,
+                reply_to=reply_to,
+                thread_id=thread_id,
+                markdown=True,
+            )
+        except Exception as e:
+            self.send(
+                chat_id,
+                f"Hermes status failed: {e}",
+                reply_to=reply_to,
+                thread_id=thread_id,
+            )
 
     def _cmd_claude_login(
         self,

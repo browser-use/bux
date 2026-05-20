@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# Idempotently add Bux integration around Hermes without touching Hermes auth.
+set -euo pipefail
+
+WITH_HERMES="${WITH_HERMES:-1}"
+if [ "$WITH_HERMES" = "0" ]; then
+	echo "install-hermes: skipped (WITH_HERMES=0)"
+	exit 0
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="${BUX_REPO_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+BUX_HOME="${BUX_HOME:-/home/bux}"
+BUX_USER="${BUX_USER:-bux}"
+BUX_GROUP="${BUX_GROUP:-bux}"
+BUX_BIN_DIR="${BUX_BIN_DIR:-/usr/local/bin}"
+HERMES_HOME="${HERMES_HOME:-$BUX_HOME/.hermes}"
+HERMES_SOUL="${HERMES_SOUL:-$HERMES_HOME/SOUL.md}"
+HERMES_INSTALL_MODE="${HERMES_INSTALL_MODE:-detect}"
+export HERMES_HOME
+
+say() { printf 'install-hermes: %s\n' "$*"; }
+warn() { printf 'install-hermes: WARN %s\n' "$*" >&2; }
+
+user_exists() {
+	id -u "$BUX_USER" >/dev/null 2>&1
+}
+
+chown_bux_if_possible() {
+	if user_exists; then
+		chown "$BUX_USER:$BUX_GROUP" "$@" 2>/dev/null || true
+	fi
+}
+
+run_as_bux() {
+	if user_exists && [ "$(id -u)" -eq 0 ]; then
+		sudo -iu "$BUX_USER" bash -lc "$*"
+	else
+		bash -lc "$*"
+	fi
+}
+
+find_hermes() {
+	if [ -n "${HERMES_BIN:-}" ] && [ -x "$HERMES_BIN" ]; then
+		printf '%s\n' "$HERMES_BIN"
+		return 0
+	fi
+	for candidate in \
+		"$BUX_HOME/.local/bin/hermes" \
+		"$BUX_HOME/.npm-global/bin/hermes" \
+		/usr/local/bin/hermes \
+		/usr/bin/hermes
+	do
+		if [ -x "$candidate" ]; then
+			printf '%s\n' "$candidate"
+			return 0
+		fi
+	done
+	return 1
+}
+
+install -d -m 0755 "$HERMES_HOME"
+chown_bux_if_possible "$HERMES_HOME"
+
+if hermes_bin="$(find_hermes)"; then
+	say "found Hermes at $hermes_bin"
+elif [ -n "${HERMES_INSTALL_CMD:-}" ]; then
+	say "running HERMES_INSTALL_CMD as $BUX_USER"
+	run_as_bux "$HERMES_INSTALL_CMD" || warn "HERMES_INSTALL_CMD failed"
+elif [ "$HERMES_INSTALL_MODE" = "skip" ] || [ "$HERMES_INSTALL_MODE" = "detect" ]; then
+	warn "Hermes binary not found; leaving wrapper installed so /hermes reports a clear error"
+else
+	warn "unknown HERMES_INSTALL_MODE=$HERMES_INSTALL_MODE; not installing Hermes"
+fi
+
+if [ -d "$BUX_BIN_DIR" ] || mkdir -p "$BUX_BIN_DIR" 2>/dev/null; then
+	if ln -sfn "$REPO_DIR/agent/bux-hermes" "$BUX_BIN_DIR/bux-hermes" 2>/dev/null; then
+		say "linked $BUX_BIN_DIR/bux-hermes"
+	else
+		warn "could not link $BUX_BIN_DIR/bux-hermes"
+	fi
+else
+	warn "could not create $BUX_BIN_DIR"
+fi
+
+python3 - "$REPO_DIR/agent/HERMES.md" "$REPO_DIR/private/hermes/soul.local.md" "$HERMES_SOUL" <<'PY'
+from __future__ import annotations
+
+import re
+import shutil
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+local = Path(sys.argv[2])
+dest = Path(sys.argv[3])
+
+managed = source.read_text(encoding="utf-8").rstrip() + "\n"
+local_text = local.read_text(encoding="utf-8").rstrip() + "\n" if local.exists() else ""
+
+block = (
+    "<!-- BEGIN BUX HERMES MANAGED -->\n"
+    + managed
+    + "<!-- END BUX HERMES MANAGED -->\n\n"
+    + "<!-- BEGIN BUX HERMES LOCAL -->\n"
+    + local_text
+    + "<!-- END BUX HERMES LOCAL -->\n"
+)
+
+dest.parent.mkdir(parents=True, exist_ok=True)
+existing = dest.read_text(encoding="utf-8") if dest.exists() else ""
+if existing and not (dest.with_suffix(dest.suffix + ".pre-bux")).exists():
+    shutil.copy2(dest, dest.with_suffix(dest.suffix + ".pre-bux"))
+
+pattern = re.compile(
+    r"(?s)<!-- BEGIN BUX HERMES MANAGED -->.*<!-- END BUX HERMES LOCAL -->\n?"
+)
+if pattern.search(existing):
+    out = pattern.sub(block, existing)
+elif existing.strip():
+    out = existing.rstrip() + "\n\n" + block
+else:
+    out = block
+
+dest.write_text(out, encoding="utf-8")
+PY
+
+chmod 0644 "$HERMES_SOUL"
+chown_bux_if_possible "$HERMES_SOUL"
+say "updated $HERMES_SOUL"
+
+if hermes_bin="$(find_hermes)"; then
+	printf 'HERMES_BIN=%s\n' "$hermes_bin" > "$HERMES_HOME/env"
+	chmod 0644 "$HERMES_HOME/env"
+	chown_bux_if_possible "$HERMES_HOME/env"
+	"$hermes_bin" --version >/dev/null 2>&1 || true
+fi

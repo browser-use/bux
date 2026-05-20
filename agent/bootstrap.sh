@@ -109,6 +109,10 @@ chmod 0644 "$CODEX_CONFIG"
 # agent/ after a box has already been provisioned never get linked into
 # /usr/local/bin without a re-bootstrap. Re-assert here on every update so
 # the symlinks track agent/ as new helpers ship. Idempotent (ln -sfn).
+HERMES_WAS_ENABLED=0
+if [ -x /usr/local/bin/bux-hermes ] || [ -f /home/bux/.hermes/SOUL.md ]; then
+  HERMES_WAS_ENABLED=1
+fi
 ln -sfn "$REPO_DIR/agent/tg-send"        /usr/local/bin/tg-send
 ln -sfn "$REPO_DIR/agent/tg-buttons"     /usr/local/bin/tg-buttons
 ln -sfn "$REPO_DIR/agent/tg-schedule"    /usr/local/bin/tg-schedule
@@ -118,6 +122,15 @@ ln -sfn /usr/local/bin/tg-schedule       /usr/local/bin/schedule
 ln -sfn "$REPO_DIR/agent/agency-report"  /usr/local/bin/agency-report
 ln -sfn "$REPO_DIR/agent/bux-restart"    /usr/local/bin/bux-restart
 ln -sfn "$REPO_DIR/agent/bux-miniapp-tunnel" /usr/local/bin/bux-miniapp-tunnel
+ln -sfn "$REPO_DIR/agent/bux-hermes"     /usr/local/bin/bux-hermes
+
+# --- Hermes support (optional third lane agent) ---------------------------
+# Keep existing Hermes-enabled boxes current, but do not make every production
+# box opt into Hermes just because this helper exists in the repo.
+if [ "${WITH_HERMES:-0}" = "1" ] || [ "$HERMES_WAS_ENABLED" = "1" ]; then
+  /bin/bash "$AGENT_DIR/install-hermes" \
+    || echo "bootstrap: hermes install/update failed (non-fatal)" >&2
+fi
 
 # --- system prompt + CLAUDE.md/AGENTS.md symlinks --------------------------
 # The one source of truth is /home/bux/system-prompt.md (copied from the
