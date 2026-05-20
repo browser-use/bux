@@ -366,12 +366,11 @@ systemctl enable bux-browser-keeper.service
 # bux-tg is the main UX, enabled-but-conditional on /etc/bux/tg.env.
 systemctl enable bux-tg.service
 
-# bux-miniapp + tunnel are lazy-started by the bot on /miniapp invocation
-# (see _start_miniapp_service in telegram_bot.py). They aren't enabled at
-# boot — they only run if the user opens the Mini App, and the cloudflared
-# tunnel stops when not in use. Disable any prior enables to make this
-# rollout self-healing.
-systemctl disable bux-miniapp.service bux-miniapp-tunnel.service 2>/dev/null || true
+# bux-miniapp + tunnel stay warm so /agency opens immediately after reboot.
+# The Mini App API still validates Telegram initData against this box's bot
+# token and owner before returning private cards.
+systemctl enable bux-miniapp.service
+systemctl enable bux-miniapp-tunnel.service
 
 # Boot-time pull runs ahead of the others on every reboot.
 systemctl enable bux-boot-update.service

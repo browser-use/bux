@@ -6,6 +6,7 @@ import hmac
 import importlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -444,7 +445,7 @@ class MiniAppTest(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
-    def test_comment_api_marks_card_differently_so_it_does_not_reappear(self) -> None:
+    def test_comment_api_keeps_card_pending_for_later_start(self) -> None:
         with self.agency_db.conn() as db:
             suggestion_id = self.agency_db.insert(
                 db,
@@ -466,15 +467,39 @@ class MiniAppTest(unittest.TestCase):
             )
             self.assertTrue(result["ok"])
             cards = self._request(base + "/api/cards")
-            self.assertEqual(cards["cards"], [])
-            activity = self._request(base + "/api/activity")
-            self.assertEqual(activity["activity"][0]["status"], "differently")
+            self.assertEqual(cards["cards"][0]["id"], suggestion_id)
+            comments = self._request(f"{base}/api/cards/{suggestion_id}/comments")
+            self.assertEqual(comments["comments"][0]["body"], "Make it sharper")
             with self.agency_db.conn() as db:
                 row = db.execute("SELECT status FROM suggestions WHERE id = ?", (suggestion_id,)).fetchone()
-            self.assertEqual(row["status"], "differently")
+            self.assertEqual(row["status"], "pending")
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_boss_swipe_selected_raw_ignores_hidden_skip(self) -> None:
+        script = Path(__file__).with_name("mini_app_static") / "concepts.js"
+        text = script.read_text()
+        start = text.index("function selectedIndex(")
+        end = text.index("function primaryButton(", start)
+        snippet = text[start:end]
+        js = (
+            "const state={selected:{}};\n"
+            "function ensureButtons(value){return Array.isArray(value)?value:['Start'];}\n"
+            "function buttonText(value){return String(value||'').replace(/^✅\\s*/,'').replace(/^🛠️?\\s*/,'').replace(/^✏️\\s*/,'').trim()||'Start';}\n"
+            f"{snippet}\n"
+            "const card={id:'x',buttons:['Skip','Draft reply','Send later']};\n"
+            "state.selected.x=0; console.log(selectedRaw(card));\n"
+            "state.selected.x=1; console.log(selectedRaw(card));\n"
+        )
+        result = subprocess.run(
+            ["node", "-e", js],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        self.assertEqual(result.stdout.strip().splitlines(), ["Draft reply", "Send later"])
 
     def test_start_dispatch_applies_miniapp_provider_setting(self) -> None:
         runs: list[tuple[tuple[int, int], str]] = []

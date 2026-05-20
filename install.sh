@@ -602,7 +602,7 @@ fi
 # install.sh wrote them via heredoc and bootstrap.sh immediately
 # replaced those with symlinks — pure dead code that had also drifted
 # from the source-of-truth repo files.
-for unit in bux-browser-keeper.service bux-ttyd.service bux-tg.service bux-miniapp.service; do
+for unit in bux-browser-keeper.service bux-ttyd.service bux-tg.service bux-miniapp.service bux-miniapp-tunnel.service; do
 	ln -sfn "$REPO_DIR/agent/$unit" "/etc/systemd/system/$unit"
 done
 
@@ -633,10 +633,13 @@ EOF
 	# can't spam arbitrary users.
 	chmod 640 /etc/bux/tg.env
 	chown root:bux /etc/bux/tg.env
-	# bux-miniapp + tunnel are lazy-started by the bot on /miniapp;
-	# only bux-tg is always-on once /etc/bux/tg.env exists.
+	# Keep the Mini App backend + HTTPS tunnel warm so /agency opens
+	# immediately after reboot. The API still requires Telegram initData
+	# signed by this box's bot token and matching the box owner.
 	systemctl enable bux-tg.service >/dev/null
+	systemctl enable bux-miniapp.service bux-miniapp-tunnel.service >/dev/null
 	systemctl restart bux-tg.service
+	systemctl restart bux-miniapp.service bux-miniapp-tunnel.service
 
 	# Resolve bot username for the user-facing instructions.
 	bot_username=$(curl -fsSL "https://api.telegram.org/bot${TG_BOT_TOKEN}/getMe" | jq -r '.result.username' 2>/dev/null || echo '')
