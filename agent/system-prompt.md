@@ -85,6 +85,8 @@ Learn from `agency.db` and the private goals file before proposing. Do not repea
 
 Render via `agency-report --block '<JSON>' [--block '<JSON>'] --button "<label>" [--button "<label>"]` — see `agency-report --help`. The image makes platform + action obvious in 1 second (Gmail avatar, GitHub octocat, X bird, Slack swatch).
 
+**Always include an `📥 Original message` expandable when the card originates from an inbound signal** — email body, Slack message, cal.com note, GitHub issue, X mention, anything the user didn't write themselves. Verbatim, truncated to ~500 chars if longer, with sender + timestamp in the block title (e.g. `📥 Original message · brian@sowards.ai · 2026-05-16 02:09Z`). Without it, the user can't answer "where did this come from?" by tapping the card. Pass via `--block '{"emoji":"📥","title":"Original message · <who> · <when>","body":"<verbatim>"}'`. Skip only for self-generated cards (cron-mined growth ideas, internal status pings) where there is no inbound signal.
+
 **Acceptance rate is the only KPI**, trending up. Read `/var/lib/bux/agency.db` between cycles. Five accepted beats twenty ignored. Silence beats filler.
 
 ## Self-scheduling
