@@ -318,6 +318,29 @@ class LoginRoutingTest(unittest.TestCase):
         self.assertIn("You've hit your usage limit", msg)
         self.assertNotIn("codex returned no output", msg)
 
+    def test_codex_login_ignores_live_browser_url_when_copying_device_link(self) -> None:
+        class FakeProc:
+            stdout = iter(
+                [
+                    "Live browser: https://live.browser-use.com/session\n",
+                    "Open https://auth.openai.com/codex/device?abc=123\n",
+                    "Enter this code: ABCD-EFGH\n",
+                ]
+            )
+
+            def wait(self) -> int:
+                return 0
+
+        seen: list[tuple[str | None, str | None]] = []
+        provider = telegram_bot._CodexProvider()
+
+        with mock.patch.object(telegram_bot.subprocess, "Popen", return_value=FakeProc()):
+            ok, msg = provider.login(lambda _text, url=None, code=None: seen.append((url, code)))
+
+        self.assertTrue(ok)
+        self.assertEqual(msg, "connected")
+        self.assertEqual(seen, [("https://auth.openai.com/codex/device?abc=123", "ABCD-EFGH")])
+
     def test_minimal_codex_login_markup_shows_link_and_code_hints(self) -> None:
         markup = telegram_bot._minimal_codex_login_markup(
             "https://auth.openai.com/codex/device?abc=123",
@@ -328,9 +351,21 @@ class LoginRoutingTest(unittest.TestCase):
         self.assertEqual(rows[0][0]["text"], "Open Link")
         self.assertEqual(rows[0][0]["url"], "https://auth.openai.com/codex/device?abc=123")
         self.assertIn("https://au", rows[1][0]["text"])
+        self.assertIn("…23", rows[1][0]["text"])
         self.assertEqual(rows[1][0]["copy_text"]["text"], "https://auth.openai.com/codex/device?abc=123")
-        self.assertIn("ABCD-EFGH", rows[2][0]["text"])
+        self.assertIn("ABCD-EFG", rows[2][0]["text"])
         self.assertEqual(rows[2][0]["copy_text"]["text"], "ABCD-EFGH")
+
+    def test_short_button_url_keeps_prefix_and_suffix(self) -> None:
+        self.assertEqual(
+            telegram_bot._short_button_url("https://auth.openai.com/codex/device?abc=123"),
+            "https://auth.openai…23",
+        )
+
+    def test_short_code_label_keeps_normal_device_codes_readable(self) -> None:
+        self.assertEqual(telegram_bot._short_code_label("ABCD-EFGH"), "ABCD-EFGH")
+        self.assertEqual(telegram_bot._short_code_label("WXYZ-1234"), "WXYZ-1234")
+        self.assertEqual(telegram_bot._short_code_label("LONG-CODE-123456"), "LONG-CODE-12…")
 
     def test_login_picker_recommends_codex(self) -> None:
         sent: list[tuple[str, dict]] = []
@@ -381,6 +416,200 @@ class LoginRoutingTest(unittest.TestCase):
         _, kwargs = start_login.call_args
         self.assertNotIn("force", kwargs)
         self.assertTrue(kwargs["minimal_login_mode"])
+
+    def test_codex_rate_limit_turns_fast_off_and_offers_rotation_buttons(self) -> None:
+        sent: list[tuple[str, dict]] = []
+        bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
+        bot.state = {
+            "offset": 0,
+            "agents": {},
+            "codex_settings": {"100_123": {"service_tier": "fast"}},
+            "owners": {},
+        }
+        bot.send = lambda _chat, text, **kwargs: sent.append((text, kwargs))  # type: ignore[method-assign]
+
+        with mock.patch.object(telegram_bot, "save_state"):
+            bot._send_codex_rate_limit(
+                (100, 123),
+                100,
+                55,
+                123,
+                "You've hit your usage limit. try again at May 23rd, 2026 2:25 PM.",
+            )
+
+        self.assertNotIn("service_tier", telegram_bot._codex_settings_for((100, 123), bot.state))
+        text, kwargs = sent[-1]
+        self.assertIn("turned fast mode off", text)
+        self.assertIn("May 23rd, 2026 2:25 PM", text)
+        labels = [
+            button["text"]
+            for row in kwargs["reply_markup"]["inline_keyboard"]
+            for button in row
+        ]
+        self.assertEqual(labels[:2], ["Log out Codex", "Sign in Codex"])
+
+    def test_usage_command_reports_last_codex_limit_diagnostic(self) -> None:
+        sent: list[tuple[str, dict]] = []
+        bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
+        bot.state = {
+            "offset": 0,
+            "agents": {},
+            "codex_settings": {},
+            "codex_usage": {
+                "100_123": {
+                    "message": "Weekly limit reached. try again at May 23rd, 2026 2:25 PM.",
+                    "seen_at": 1_779_552_000,
+                }
+            },
+            "owners": {},
+        }
+        bot.send = lambda _chat, text, **kwargs: sent.append((text, kwargs))  # type: ignore[method-assign]
+
+        completed = mock.Mock()
+        completed.stdout = "Logged in using ChatGPT\n"
+        completed.stderr = ""
+        with mock.patch.object(telegram_bot.subprocess, "run", return_value=completed):
+            bot._cmd_usage((100, 123), 100, 55, 123)
+
+        text, kwargs = sent[-1]
+        self.assertIn("Weekly limit reached", text)
+        self.assertIn("Logged in using ChatGPT", text)
+        labels = [
+            button["text"]
+            for row in kwargs["reply_markup"]["inline_keyboard"]
+            for button in row
+        ]
+        self.assertIn("Log out Codex", labels)
+
+
+class TerminalCommandTest(unittest.TestCase):
+    def test_terminal_command_mints_cloud_terminal_url(self) -> None:
+        sent: list[tuple[int, str, dict]] = []
+        bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
+        bot.state = {
+            "offset": 0,
+            "agents": {},
+            "codex_settings": {},
+            "owners": {"100": {"user_id": "55", "name": "Magnus"}},
+        }
+        bot.setup_token = None
+        bot._username = "bux_bot"
+        bot.send = lambda chat, text, **kwargs: sent.append((chat, text, kwargs))  # type: ignore[method-assign]
+
+        with (
+            mock.patch.object(telegram_bot, "load_allow", return_value={100}),
+            mock.patch.object(
+                telegram_bot,
+                "_mint_cloud_terminal_url",
+                return_value=(True, "https://terminal.example/t", "tg-100_main"),
+            ) as mint_terminal,
+            mock.patch.object(telegram_bot, "ShellSession") as shell_session,
+        ):
+            bot.handle(
+                {
+                    "chat": {"id": 100, "type": "private"},
+                    "from": {"id": 55, "username": "Magnus_Mueller"},
+                    "message_id": 123,
+                    "text": "/terminal",
+                }
+            )
+
+        mint_terminal.assert_called_once_with("100_main", launch="claude")
+        shell_session.assert_not_called()
+        self.assertEqual(sent[-1][0], 100)
+        self.assertIn("cloud terminal ready", sent[-1][1])
+        self.assertIn("No Browser Use Cloud browser login needed", sent[-1][1])
+        self.assertEqual(
+            sent[-1][2]["reply_markup"]["inline_keyboard"][0][0]["url"],
+            "https://terminal.example/t",
+        )
+
+    def test_terminal_command_can_launch_bash_cloud_terminal(self) -> None:
+        bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
+        bot.state = {
+            "offset": 0,
+            "agents": {},
+            "codex_settings": {},
+            "owners": {"100": {"user_id": "55", "name": "Magnus"}},
+        }
+        bot.setup_token = None
+        bot._username = "bux_bot"
+        bot.send = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+
+        with (
+            mock.patch.object(telegram_bot, "load_allow", return_value={100}),
+            mock.patch.object(
+                telegram_bot,
+                "_mint_cloud_terminal_url",
+                return_value=(True, "https://terminal.example/t", "tg-100_main"),
+            ) as mint_terminal,
+        ):
+            bot.handle(
+                {
+                    "chat": {"id": 100, "type": "private"},
+                    "from": {"id": 55, "username": "Magnus_Mueller"},
+                    "message_id": 123,
+                    "text": "/terminal bash",
+                }
+            )
+
+        mint_terminal.assert_called_once_with("100_main", launch="bash")
+
+    def test_terminal2_keeps_old_in_telegram_shell(self) -> None:
+        bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
+        bot.state = {
+            "offset": 0,
+            "agents": {},
+            "codex_settings": {},
+            "owners": {"100": {"user_id": "55", "name": "Magnus"}},
+        }
+        bot.setup_token = None
+        bot._username = "bux_bot"
+        bot.send = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+
+        with (
+            mock.patch.object(telegram_bot, "load_allow", return_value={100}),
+            mock.patch.object(telegram_bot, "_get_shell_session", return_value=None),
+            mock.patch.object(telegram_bot, "ShellSession") as shell_session,
+        ):
+            bot.handle(
+                {
+                    "chat": {"id": 100, "type": "private"},
+                    "from": {"id": 55, "username": "Magnus_Mueller"},
+                    "message_id": 123,
+                    "text": "/terminal2 gh auth login",
+                }
+            )
+
+        shell_session.assert_called_once()
+        self.assertEqual(shell_session.call_args.kwargs["initial_cmd"], "gh auth login")
+        shell_session.return_value.start.assert_called_once()
+
+    def test_mint_cloud_terminal_url_uses_box_api_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            box_env = Path(tmp) / "env"
+            box_env.write_text(
+                "BROWSER_USE_API_KEY=secret-api-key\n"
+                "BUX_API_URL=https://api.test\n",
+                encoding="utf-8",
+            )
+            resp = mock.Mock()
+            resp.json.return_value = {"url": "https://terminal.example/t"}
+            resp.raise_for_status.return_value = None
+
+            with (
+                mock.patch.object(telegram_bot, "BOX_ENV", box_env),
+                mock.patch.object(telegram_bot.httpx, "post", return_value=resp) as post,
+            ):
+                ok, url, window_id = telegram_bot._mint_cloud_terminal_url("100_main")
+
+        self.assertTrue(ok)
+        self.assertEqual(url, "https://terminal.example/t")
+        self.assertEqual(window_id, "tg-100_main")
+        post.assert_called_once()
+        _, kwargs = post.call_args
+        self.assertEqual(kwargs["params"], {"launch": "claude", "w": "tg-100_main"})
+        self.assertEqual(kwargs["headers"], {"X-Browser-Use-API-Key": "secret-api-key"})
 
 
 class GoalCommandRoutingTest(unittest.TestCase):
@@ -710,6 +939,70 @@ class GoalCommandRoutingTest(unittest.TestCase):
         self.assertIn("Codex goal is still working", rendered)
         self.assertIn("Queued follow", rendered)
         self.assertIn("1", rendered)
+
+    def test_goal_relay_replaces_heartbeat_instead_of_accumulating(self) -> None:
+        sent: list[tuple[int, str, dict]] = []
+        edits: list[tuple[int, int, str, dict]] = []
+
+        class FakeBot:
+            def __init__(self) -> None:
+                self.state = {"goal_tmux": {"slug": {"name": "tmux-name"}}}
+
+            def send(self, chat_id: int, text: str, **kwargs) -> None:
+                sent.append((chat_id, text, kwargs))
+
+            def send_returning_id(self, chat_id: int, text: str, **kwargs) -> int:
+                sent.append((chat_id, text, kwargs))
+                return 777
+
+            def edit(self, chat_id: int, message_id: int, text: str, **kwargs) -> bool:
+                edits.append((chat_id, message_id, text, kwargs))
+                return True
+
+        relay = telegram_bot.GoalTmuxRelay(FakeBot(), "slug", 100, 123, "tmux-name")
+        relay._turn_started_at = time.monotonic() - 101
+        relay._next_heartbeat_at = 0
+        relay._maybe_relay_heartbeat()
+        relay._turn_started_at = time.monotonic() - 131
+        relay._next_heartbeat_at = 0
+        relay._maybe_relay_heartbeat()
+
+        rendered = edits[-1][2]
+        self.assertEqual(len(sent), 1)
+        self.assertEqual({edit[1] for edit in edits}, {777})
+        self.assertEqual(rendered.count("Codex goal is still working"), 1)
+        self.assertNotIn("Elapsed: 101", rendered)
+        self.assertIn("Elapsed: 131", rendered)
+
+    def test_goal_relay_removes_heartbeat_when_real_output_arrives(self) -> None:
+        sent: list[tuple[int, str, dict]] = []
+        edits: list[tuple[int, int, str, dict]] = []
+
+        class FakeBot:
+            def __init__(self) -> None:
+                self.state = {"goal_tmux": {"slug": {"name": "tmux-name"}}}
+
+            def send(self, chat_id: int, text: str, **kwargs) -> None:
+                sent.append((chat_id, text, kwargs))
+
+            def send_returning_id(self, chat_id: int, text: str, **kwargs) -> int:
+                sent.append((chat_id, text, kwargs))
+                return 777
+
+            def edit(self, chat_id: int, message_id: int, text: str, **kwargs) -> bool:
+                edits.append((chat_id, message_id, text, kwargs))
+                return True
+
+        relay = telegram_bot.GoalTmuxRelay(FakeBot(), "slug", 100, 123, "tmux-name")
+        relay._turn_started_at = time.monotonic() - 101
+        relay._next_heartbeat_at = 0
+        relay._maybe_relay_heartbeat()
+        relay._relay_message("Actual model update.")
+
+        rendered = edits[-1][2]
+        self.assertEqual(len(sent), 1)
+        self.assertNotIn("Codex goal is still working", rendered)
+        self.assertIn("Actual model update", rendered)
 
     def test_goal_tmux_input_confirms_nested_goal_prompt(self) -> None:
         calls: list[list[str]] = []

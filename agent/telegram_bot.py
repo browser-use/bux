@@ -256,7 +256,12 @@ AGENT_CODEX = "codex"
 AGENTS = (AGENT_CLAUDE, AGENT_CODEX)
 DEFAULT_AGENT = AGENT_CLAUDE
 CODEX_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
-CODEX_MODEL_CHOICES = ("gpt-5.5", "gpt-5.4", "gpt-5.4-mini")
+CODEX_MODEL_CHOICES = (
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex-spark",
+    "gpt-5.4-mini",
+)
 CODEX_FAST_SERVICE_TIER = "fast"
 CODEX_LEGACY_FAST_SERVICE_TIERS = {"priority"}
 CODEX_DEFAULT_SETTINGS = {
@@ -270,7 +275,8 @@ CODEX_DEFAULT_SETTINGS = {
 # in the `/` autocomplete popup. Descriptions are short — TG clips them.
 BOT_COMMANDS: list[tuple[str, str]] = [
     ("help", "show all commands"),
-    ("terminal", "open an interactive shell (e.g. /terminal gh auth login)"),
+    ("terminal", "open the Browser Use Cloud web terminal"),
+    ("terminal2", "open the old in-Telegram shell"),
     ("exit", "close the active terminal session"),
     ("interrupt", "send Ctrl-C to the active terminal session"),
     ("enter", "send Enter to the active terminal session"),
@@ -280,6 +286,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("codex", "switch/login/logout Codex"),
     ("fast", "switch this topic's Codex lane to fast mode"),
     ("model", "show/set this topic's Codex model"),
+    ("usage", "show latest Codex usage / rate-limit diagnostic"),
     ("agency", "open the goal card feed"),
     ("goal", "continuous goal — I keep working across turns, posting cards. Add 'autopilot' or 'no approvals' for full autonomy."),
     ("miniapp", "open the goal card feed"),
@@ -293,6 +300,9 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("version", "show the bux agent version"),
     ("update", "pull latest code + restart"),
 ]
+
+CLOUD_TERMINAL_DEFAULT_API_URL = "https://api.browser-use.com"
+CLOUD_TERMINAL_LAUNCHES = {"bash", "claude"}
 
 
 # ---------------------------------------------------------------------------
@@ -562,6 +572,72 @@ def _read_kv(path: Path) -> dict[str, str]:
         k, v = line.split("=", 1)
         out[k.strip()] = v.strip().strip('"').strip("'")
     return out
+
+
+def _cloud_terminal_window_id(slug: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", slug).strip("_") or "main"
+    window_id = f"tg-{cleaned}"
+    if len(window_id) <= 64:
+        return window_id
+    suffix = hashlib.sha1(slug.encode("utf-8")).hexdigest()[:8]
+    return f"{window_id[:55]}-{suffix}"
+
+
+def _browser_use_v3_api_base(box_env: dict[str, str]) -> str:
+    raw = (
+        box_env.get("BUX_API_URL")
+        or box_env.get("BROWSER_USE_API_URL")
+        or os.environ.get("BUX_API_URL")
+        or os.environ.get("BROWSER_USE_API_URL")
+        or CLOUD_TERMINAL_DEFAULT_API_URL
+    ).strip()
+    base = raw.rstrip("/") or CLOUD_TERMINAL_DEFAULT_API_URL
+    if base.endswith("/api/v3"):
+        return base
+    return f"{base}/api/v3"
+
+
+def _mint_cloud_terminal_url(slug: str, launch: str = "claude") -> tuple[bool, str, str]:
+    box_env = _read_kv(BOX_ENV)
+    api_key = box_env.get("BROWSER_USE_API_KEY") or os.environ.get("BROWSER_USE_API_KEY")
+    window_id = _cloud_terminal_window_id(slug)
+    if not api_key:
+        return False, "no BROWSER_USE_API_KEY on this box", window_id
+    if launch not in CLOUD_TERMINAL_LAUNCHES:
+        launch = "claude"
+    endpoint = f"{_browser_use_v3_api_base(box_env)}/boxes/me/shell"
+    try:
+        resp = httpx.post(
+            endpoint,
+            params={"launch": launch, "w": window_id},
+            headers={"X-Browser-Use-API-Key": api_key},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        url = str(data.get("url") or "").strip()
+        if not url.startswith(("https://", "http://")):
+            return False, "cloud did not return a terminal URL", window_id
+        return True, url, window_id
+    except httpx.HTTPStatusError as e:
+        body = ""
+        try:
+            body = e.response.text.strip()
+        except Exception:
+            pass
+        detail = body[:180] if body else e.response.reason_phrase
+        return False, f"cloud terminal lookup failed ({e.response.status_code}): {detail}", window_id
+    except Exception as e:
+        return False, f"cloud terminal lookup failed: {e}", window_id
+
+
+def _cloud_terminal_reply_markup(url: str) -> dict:
+    return {
+        "inline_keyboard": [
+            [{"text": "Open terminal", "url": url}],
+            [{"text": f"Copy link {_short_button_url(url)}", "copy_text": {"text": url}}],
+        ]
+    }
 
 
 def _write_tg_env_value(key: str, value: str) -> None:
@@ -1497,6 +1573,22 @@ def _format_codex_model_picker_message(settings: dict) -> str:
     return "Codex settings\n\n" + _format_codex_settings(settings)
 
 
+def _record_codex_usage_diagnostic(key: LaneKey, state: dict, message: str) -> None:
+    message = _ANSI_RE.sub("", message or "").strip()
+    if not message:
+        return
+    state.setdefault("codex_usage", {})[_lane_slug(key)] = {
+        "message": message,
+        "seen_at": int(time.time()),
+    }
+    save_state(state)
+
+
+def _codex_usage_diagnostic_for(key: LaneKey, state: dict) -> dict | None:
+    raw = (state.get("codex_usage") or {}).get(_lane_slug(key))
+    return raw if isinstance(raw, dict) else None
+
+
 # ---------------------------------------------------------------------------
 # Per-lane FIFO + worker pool.
 #
@@ -1820,10 +1912,10 @@ def _snapshot_lane(slug: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# `/terminal` — interactive shell mode.
+# `/terminal2` — old in-Telegram interactive shell mode.
 #
-# Owner sends `/terminal` (optionally with an initial command, e.g.
-# `/terminal gh auth login`). The bot spawns a persistent `bash` as the
+# Owner sends `/terminal2` (optionally with an initial command, e.g.
+# `/terminal2 gh auth login`). The bot spawns a persistent `bash` as the
 # bux user inside a PTY and streams output back to the lane. From that
 # moment on, every plain-text message in the lane is written to the
 # shell's stdin (newline-appended) — so an interactive login flow
@@ -1834,7 +1926,7 @@ def _snapshot_lane(slug: str) -> list[dict]:
 # `/interrupt` sends Ctrl-C to the foreground process, `/eof` sends Ctrl-D,
 # and `/cancel` SIGKILLs the session group as the hard escape hatch.
 #
-# `/terminal` while a session is already active is a no-op so a typo
+# `/terminal2` while a session is already active is a no-op so a typo
 # doesn't tear down what the user is working on. Bypasses the lane
 # FIFO: terminal work is meant for the user to do now.
 # ---------------------------------------------------------------------------
@@ -1858,6 +1950,7 @@ _goal_relays: dict[str, "GoalTmuxRelay"] = {}
 _goal_input_echoes: dict[str, list[str]] = {}
 _goal_starting_lock = threading.Lock()
 _goal_starting: dict[str, threading.Event] = {}
+_GOAL_HEARTBEAT_PREFIX = "Codex goal is still working in the live terminal."
 
 
 def _get_shell_session(slug: str) -> "ShellSession | None":
@@ -1952,6 +2045,13 @@ def _wait_for_goal_start(slug: str, timeout: float = 8.0) -> bool:
 
 
 def _record_goal_tmux(state: dict, slug: str, chat_id: int, thread_id: int, name: str) -> None:
+    LOG.info(
+        "goal tmux record slug=%s chat=%s thread=%s name=%s",
+        slug,
+        chat_id,
+        thread_id or 0,
+        name,
+    )
     state.setdefault("goal_tmux", {})[slug] = {
         "chat_id": chat_id,
         "thread_id": thread_id or 0,
@@ -1990,6 +2090,12 @@ def _send_goal_tmux_input(name: str, text: str, slug: str | None = None, queue_i
                 _goal_input_echoes[slug] = _goal_input_echoes[slug][-8:]
                 relay = _goal_relays.get(slug)
             if relay is not None:
+                LOG.info(
+                    "goal tmux input slug=%s name=%s text_prefix=%r",
+                    slug,
+                    name,
+                    text.strip()[:80],
+                )
                 relay.begin_user_turn()
         return ok
     except Exception:
@@ -2085,9 +2191,28 @@ class GoalTmuxRelay:
         with _goal_relays_lock:
             existing = _goal_relays.get(self.slug)
             if existing is not None:
+                LOG.info(
+                    "goal relay replaced slug=%s old_chat=%s old_thread=%s old_name=%s new_chat=%s new_thread=%s new_name=%s",
+                    self.slug,
+                    existing.chat_id,
+                    existing.thread_id,
+                    existing.name,
+                    self.chat_id,
+                    self.thread_id,
+                    self.name,
+                )
                 existing._stop.set()
             _goal_relays[self.slug] = self
         self._rollout_path = _codex_rollout_path(self.codex_thread_id)
+        LOG.info(
+            "goal relay start slug=%s chat=%s thread=%s name=%s codex_thread=%s rollout=%s",
+            self.slug,
+            self.chat_id,
+            self.thread_id,
+            self.name,
+            self.codex_thread_id or "",
+            str(self._rollout_path) if self._rollout_path else "",
+        )
         if self._rollout_path is not None:
             try:
                 self._rollout_pos = (
@@ -2122,6 +2247,15 @@ class GoalTmuxRelay:
                 return
             try:
                 self._rollout_pos = self._rollout_path.stat().st_size
+                LOG.info(
+                    "goal relay attached rollout slug=%s chat=%s thread=%s codex_thread=%s rollout=%s pos=%s",
+                    self.slug,
+                    self.chat_id,
+                    self.thread_id,
+                    self.codex_thread_id or "",
+                    self._rollout_path,
+                    self._rollout_pos,
+                )
             except OSError:
                 self._rollout_pos = 0
             return
@@ -2194,7 +2328,10 @@ class GoalTmuxRelay:
                     thread_id=self.thread_id,
                     thinking_emoji="...",
                 )
-            self._stream_msg.append(message)
+            removed_heartbeat = False
+            if not message.startswith(_GOAL_HEARTBEAT_PREFIX):
+                removed_heartbeat = self._stream_msg.remove_blocks_with_prefix(_GOAL_HEARTBEAT_PREFIX)
+            self._stream_msg.append(message, force=removed_heartbeat)
             self._next_heartbeat_at = time.monotonic() + 30.0
             if final:
                 self._stream_msg.finalize()
@@ -2206,11 +2343,23 @@ class GoalTmuxRelay:
             elapsed = max(1, int(time.monotonic() - self._turn_started_at))
             queued = len(self._pending_inputs)
             unit = "second" if elapsed == 1 else "seconds"
-            text = f"Codex goal is still working in the live terminal.\n\nElapsed: {elapsed} {unit}."
+            text = f"{_GOAL_HEARTBEAT_PREFIX}\n\nElapsed: {elapsed} {unit}."
             if queued:
                 text += f"\nQueued follow-ups: {queued}."
             self._next_heartbeat_at = time.monotonic() + 30.0
-        self._relay_message(text)
+        self._relay_heartbeat(text)
+
+    def _relay_heartbeat(self, message: str) -> None:
+        with self._stream_lock:
+            if self._stream_msg is None:
+                self._stream_msg = StreamingMessage(
+                    self.bot,
+                    self.chat_id,
+                    reply_to=None,
+                    thread_id=self.thread_id,
+                    thinking_emoji="...",
+                )
+            self._stream_msg.append(message, replace_prefix=_GOAL_HEARTBEAT_PREFIX, force=True)
 
     def _after_final_message(self) -> None:
         next_input: str | None = None
@@ -2249,8 +2398,22 @@ def _ensure_goal_relay(bot: "Bot", slug: str, chat_id: int, thread_id: int, stat
         _forget_goal_tmux(state, slug)
         return False
     with _goal_relays_lock:
-        if slug in _goal_relays:
-            return True
+        existing = _goal_relays.get(slug)
+        if existing is not None:
+            if existing.chat_id == chat_id and existing.thread_id == (thread_id or 0) and existing.name == name:
+                return True
+            LOG.warning(
+                "goal relay slug mismatch slug=%s state_chat=%s state_thread=%s state_name=%s relay_chat=%s relay_thread=%s relay_name=%s; replacing stale relay",
+                slug,
+                chat_id,
+                thread_id or 0,
+                name,
+                existing.chat_id,
+                existing.thread_id,
+                existing.name,
+            )
+            existing._stop.set()
+            _goal_relays.pop(slug, None)
     codex_thread_id = str(entry.get("codex_thread_id") or "") or _codex_thread_id_for((chat_id, thread_id or 0))
     GoalTmuxRelay(bot, slug, chat_id, thread_id or 0, name, codex_thread_id).start()
     return True
@@ -2266,6 +2429,16 @@ def _start_goal_tmux(bot: "Bot", key: LaneKey, slug: str, chat_id: int, thread_i
             rollout_pos = rollout_path.stat().st_size
         except OSError:
             rollout_pos = None
+    LOG.info(
+        "goal tmux start slug=%s chat=%s thread=%s name=%s codex_thread=%s rollout=%s rollout_pos=%s",
+        slug,
+        chat_id,
+        thread_id or 0,
+        name,
+        codex_thread_id or "",
+        str(rollout_path) if rollout_path else "",
+        rollout_pos if rollout_pos is not None else "",
+    )
     if not _goal_tmux_alive(name):
         cmd = _codex_interactive_command_for(key, state, prompt=goal_line)
         r = _run_tmux(["new-session", "-d", "-s", name, "-c", str(WORKSPACE), cmd], timeout=8.0)
@@ -2296,7 +2469,7 @@ class ShellSession:
     Lifecycle:
       - start() forks `bash` as bux inside a PTY. If `initial_cmd` is set,
         it's written to bash's stdin right after the PTY is hooked up so
-        the user can do `/terminal gh auth login` as a single message.
+        the user can do `/terminal2 gh auth login` as a single message.
       - A reader thread pulls from the master fd, strips ANSI, and posts
         debounced chunks to TG as monospace bubbles.
       - send_input(text) writes user-supplied text + "\\n" to the master
@@ -2306,7 +2479,7 @@ class ShellSession:
         `/interrupt`, `/eof`, and `/cancel` are server-side fast paths:
         graceful shell exit, Ctrl-C, Ctrl-D, and SIGKILL respectively.
 
-    Only one session per lane. `/terminal` while one is alive is a no-op.
+    Only one session per lane. `/terminal2` while one is alive is a no-op.
     """
 
     def __init__(
@@ -2459,7 +2632,7 @@ class ShellSession:
         self._reader_thread.start()
         self._flusher_thread.start()
 
-        # Seed an initial command if the user typed `/terminal <cmd>`. The
+        # Seed an initial command if the user typed `/terminal2 <cmd>`. The
         # write happens after the threads start so the bash startup output
         # and the seeded command's output both stream back as one flow.
         if self.initial_cmd:
@@ -2641,7 +2814,7 @@ class ShellSession:
             # button and also include the raw URL in a code block as a
             # fallback for Telegram clients / Bot API paths that fail to
             # render copy_text buttons. In normal mode we keep the verbose
-            # treatment for users running `/terminal claude auth login`
+            # treatment for users running `/terminal2 claude auth login`
             # directly.
             if "claude.ai/login" in url or "/oauth/authorize" in url:
                 if self.minimal_login_mode:
@@ -3045,8 +3218,8 @@ class _CodexProvider:
                     continue
                 lines.append(line)
                 for tok in line.split():
-                    if tok.startswith("https://"):
-                        url = tok.rstrip(".")
+                    if tok.startswith(self.DEVICE_URL):
+                        url = tok.rstrip(".,)")
                         break
                 low = line.lower()
                 match = self._CODE_RE.search(line)
@@ -3062,7 +3235,7 @@ class _CodexProvider:
                         "Open this Codex device-auth link:\n"
                         f"{url}\n\n"
                         "Enter this one-time code:\n"
-                        f"`{code}`\n\n"
+                        f"*{_short_code_label(code)}*\n\n"
                         "Only enter this code on the OpenAI auth page above. "
                         "If OpenAI asks you to enable this sign-in method in "
                         "security settings, enable it there, then press "
@@ -3180,7 +3353,7 @@ def _codex_login_reply_markup(url: str, code: str) -> dict:
         "inline_keyboard": [
             [{"text": "Open Link", "url": url}],
             [{"text": f"Copy Link {_short_button_url(url)}", "copy_text": {"text": url}}],
-            [{"text": f"Copy Code {code}", "copy_text": {"text": code}}],
+            [{"text": f"Copy Code {_short_code_label(code)}", "copy_text": {"text": code}}],
             [{"text": "Retry after enabling", "callback_data": "codex_login_retry"}],
         ]
     }
@@ -3228,7 +3401,17 @@ def _minimal_oauth_url_markup(url: str) -> dict:
 
 
 def _short_button_url(url: str) -> str:
-    return (url or "")[:10]
+    url = (url or "").strip()
+    if len(url) <= 24:
+        return url
+    return f"{url[:20].rstrip('.,/')}…{url[-2:]}"
+
+
+def _short_code_label(code: str, *, limit: int = 12) -> str:
+    code = (code or "").strip()
+    if len(code) <= limit:
+        return code
+    return f"{code[:limit]}…"
 
 
 def _minimal_codex_login_markup(url: str, code: str) -> dict:
@@ -3242,9 +3425,23 @@ def _minimal_codex_login_markup(url: str, code: str) -> dict:
         "inline_keyboard": [
             [{"text": "Open Link", "url": url}],
             [{"text": f"📋 Copy Link {_short_button_url(url)}", "copy_text": {"text": url}}],
-            [{"text": f"📋 Copy Code {code}", "copy_text": {"text": code}}],
+            [{"text": f"📋 Copy Code {_short_code_label(code)}", "copy_text": {"text": code}}],
         ]
     }
+
+
+def _codex_rate_limit_markup(settings: dict) -> dict:
+    rows: list[list[dict]] = []
+    if settings.get("service_tier") == CODEX_FAST_SERVICE_TIER:
+        rows.append([{"text": "Turn fast mode off", "callback_data": "codex_limit:fast_off"}])
+    rows.extend(
+        [
+            [{"text": "Log out Codex", "callback_data": "codex_limit:logout"}],
+            [{"text": "Sign in Codex", "callback_data": "codex_limit:login"}],
+            [{"text": "Open usage page", "url": "https://chatgpt.com/codex/settings/usage"}],
+        ]
+    )
+    return {"inline_keyboard": rows}
 
 
 def _login_picker_reply_markup() -> dict:
@@ -3296,6 +3493,15 @@ def _codex_no_output_message(stderr_text: str, stdout_diagnostics: list[str]) ->
     parts.extend(line for line in stdout_diagnostics[-8:] if line)
     text = _ANSI_RE.sub("", "\n".join(parts)).strip()
     return text or "(codex returned no output)"
+
+
+def _format_codex_usage_diagnostic(message: str) -> str:
+    message = _ANSI_RE.sub("", message or "").strip()
+    if not message:
+        return "No terminal diagnostic captured."
+    if len(message) > 1800:
+        message = message[:1797].rstrip() + "..."
+    return "Terminal diagnostic:\n```\n" + message + "\n```"
 
 
 def _is_codex_auth_error(text: str) -> bool:
@@ -3620,11 +3826,28 @@ class StreamingMessage:
         self._last_emitted = ""
         self._last_edit_at = time.time()
 
-    def append(self, chunk: str) -> None:
+    def remove_blocks_with_prefix(self, prefix: str) -> bool:
+        """Drop transient status blocks before appending real model output."""
+        if not prefix:
+            return False
+        before = len(self._blocks)
+        self._blocks = [b for b in self._blocks if not b.strip().startswith(prefix)]
+        return len(self._blocks) != before
+
+    def append(
+        self,
+        chunk: str,
+        *,
+        replace_prefix: str | None = None,
+        force: bool = False,
+    ) -> None:
         """Record a new assistant text block; render & push (debounced)."""
         chunk = (chunk or "").strip()
         if not chunk:
             return
+        removed = False
+        if replace_prefix:
+            removed = self.remove_blocks_with_prefix(replace_prefix)
         self._blocks.append(chunk)
         rendered = _render_streaming_view(
             self._blocks,
@@ -3637,7 +3860,7 @@ class StreamingMessage:
         if self._message_id is None:
             self._send_initial(rendered)
             return
-        if time.time() - self._last_edit_at < self._DEBOUNCE_SEC:
+        if not (force or removed) and time.time() - self._last_edit_at < self._DEBOUNCE_SEC:
             return
         self._edit(rendered)
 
@@ -4125,6 +4348,17 @@ class Bot:
         del reply_to
         as_markdown = markdown or pre_rendered
         chunks = _chunk_for_telegram(text, REPLY_MAX)
+        if len(chunks) > 1:
+            LOG.info(
+                "telegram send chunked chat=%s thread=%s chunks=%s raw_len=%s chunk_lens=%s markdown=%s pre_rendered=%s",
+                chat_id,
+                thread_id or 0,
+                len(chunks),
+                len(text or ""),
+                ",".join(str(len(c)) for c in chunks),
+                bool(markdown),
+                bool(pre_rendered),
+            )
         first_id: int | None = None
         for chunk in chunks:
             if as_markdown:
@@ -5036,13 +5270,13 @@ class Bot:
                 if usage_limit_error:
                     stream_msg.finalize()
                     self.react(chat_id, reply_to, EMOJI_ERROR)
-                    self.send(
+                    self._send_codex_rate_limit(
+                        key,
                         chat_id,
+                        reply_to,
+                        thread_id,
                         usage_limit_error,
-                        reply_to=reply_to,
-                        thread_id=thread_id,
                     )
-                    self._send_login_picker(chat_id, reply_to, thread_id)
                     try:
                         proc.wait(timeout=5)
                     except subprocess.TimeoutExpired:
@@ -5133,13 +5367,13 @@ class Bot:
                 no_output_msg = _codex_no_output_message(err, stdout_diagnostics)
                 self.react(chat_id, reply_to, EMOJI_ERROR)
                 if _is_usage_limit_error(no_output_msg):
-                    self.send(
+                    self._send_codex_rate_limit(
+                        key,
                         chat_id,
+                        reply_to,
+                        thread_id,
                         no_output_msg,
-                        reply_to=reply_to,
-                        thread_id=thread_id,
                     )
-                    self._send_login_picker(chat_id, reply_to, thread_id)
                     return
                 if _is_codex_auth_error(no_output_msg):
                     _login_status_cache_invalidate("codex")
@@ -5185,6 +5419,71 @@ class Bot:
                 stderr_buf.close()
             except Exception:
                 pass
+
+    def _send_codex_rate_limit(
+        self,
+        key: LaneKey,
+        chat_id: int,
+        reply_to: int | None,
+        thread_id: int,
+        message: str,
+    ) -> None:
+        _set_agent_for(key, AGENT_CODEX, self.state)
+        _record_codex_usage_diagnostic(key, self.state, message)
+        settings = _codex_settings_for(key, self.state)
+        if settings.get("service_tier") == CODEX_FAST_SERVICE_TIER:
+            settings = _set_codex_settings(key, self.state, service_tier="")
+        text = (
+            "Codex hit a usage limit. I turned fast mode off for this topic.\n\n"
+            f"{_format_codex_usage_diagnostic(message)}"
+        )
+        self.send(
+            chat_id,
+            text,
+            reply_to=reply_to,
+            thread_id=thread_id,
+            markdown=True,
+            reply_markup=_codex_rate_limit_markup(settings),
+        )
+
+    def _cmd_usage(
+        self,
+        key: LaneKey,
+        chat_id: int,
+        reply_to: int | None,
+        thread_id: int,
+    ) -> None:
+        diag = _codex_usage_diagnostic_for(key, self.state)
+        lines = ["Codex usage"]
+        if diag and diag.get("message"):
+            seen = diag.get("seen_at")
+            if isinstance(seen, int) and seen > 0:
+                lines.append(f"Last limit diagnostic: `{time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(seen))}`")
+            lines.append("")
+            lines.append(_format_codex_usage_diagnostic(str(diag.get("message") or "")))
+        else:
+            lines.append("No Codex rate-limit diagnostic has been captured in this topic yet.")
+        try:
+            r = subprocess.run(
+                ["sudo", "-iu", "bux", "codex", "login", "status"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            status = _ANSI_RE.sub("", (r.stdout + r.stderr)).strip()
+            if status:
+                lines.extend(["", "Login status:", f"`{status}`"])
+        except Exception as e:
+            lines.extend(["", f"`codex login status` failed: `{e}`"])
+        self.send(
+            chat_id,
+            "\n".join(lines),
+            reply_to=reply_to,
+            thread_id=thread_id,
+            markdown=True,
+            reply_markup=_codex_rate_limit_markup(_codex_settings_for(key, self.state)),
+        )
 
     @staticmethod
     def _which_codex() -> str | None:
@@ -5684,18 +5983,70 @@ class Bot:
         if not cmd and text.strip().lower() == "fast":
             cmd = "/fast"
 
-        # `/terminal` — owner-only mode switch. Spawns a persistent bash
-        # in this lane; from this point on plain-text messages route to
-        # its stdin. `/terminal <initial cmd>` seeds the first command,
-        # so `/terminal gh auth login` starts the shell + runs gh auth login
-        # in one shot. `/terminal` while a session is already alive is a
-        # no-op (the user said so) — protects an active session from a
-        # fat-fingered re-trigger.
+        # `/terminal` — owner-only Browser Use Cloud web terminal. This mints
+        # a one-shot URL using the box API key; no Browser Use Cloud browser
+        # login is needed just to open the terminal.
         if cmd == "/terminal":
             if not _is_owner(sender, owner):
                 self.send(
                     chat_id,
                     "❌ `/terminal` is owner-only.",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
+            launch = "claude"
+            requested_launch = arg.strip().lower()
+            if requested_launch:
+                if requested_launch in ("bash", "shell"):
+                    launch = "bash"
+                elif requested_launch in ("claude", "agency"):
+                    launch = "claude"
+                else:
+                    self.send(
+                        chat_id,
+                        "`/terminal` opens the cloud web terminal now. "
+                        "Use `/terminal2 <cmd>` for the old in-Telegram shell, "
+                        "or `/terminal bash` for a bash web terminal.",
+                        reply_to=mid,
+                        thread_id=thread_id,
+                        markdown=True,
+                    )
+                    return
+            ok, result, window_id = _mint_cloud_terminal_url(slug, launch=launch)
+            if not ok:
+                self.send(
+                    chat_id,
+                    f"❌ {result}",
+                    reply_to=mid,
+                    thread_id=thread_id,
+                    markdown=True,
+                )
+                return
+            self.send(
+                chat_id,
+                "💻 cloud terminal ready.\n\n"
+                f"Window: `{window_id}`\n"
+                f"Launch: `{launch}`\n\n"
+                "No Browser Use Cloud browser login needed. I mint this with "
+                "the box API key. The link expires after about 15 minutes; "
+                "run `/terminal` again for a fresh one.",
+                reply_to=mid,
+                thread_id=thread_id,
+                markdown=True,
+                reply_markup=_cloud_terminal_reply_markup(result),
+            )
+            return
+
+        # `/terminal2` — owner-only compatibility path for the old Telegram
+        # PTY. It spawns a persistent bash in this lane; plain-text messages
+        # route to stdin until the session exits.
+        if cmd == "/terminal2":
+            if not _is_owner(sender, owner):
+                self.send(
+                    chat_id,
+                    "❌ `/terminal2` is owner-only.",
                     reply_to=mid,
                     thread_id=thread_id,
                     markdown=True,
@@ -5727,7 +6078,7 @@ class Bot:
                 LOG.exception("shell start failed for %s", slug)
                 self.send(
                     chat_id,
-                    f"❌ failed to start terminal: {e}",
+                    f"❌ failed to start terminal2: {e}",
                     reply_to=mid,
                     thread_id=thread_id,
                 )
@@ -5743,7 +6094,7 @@ class Bot:
             if sess is None:
                 self.send(
                     chat_id,
-                    "No terminal session here. `/terminal` to start one.",
+                    "No terminal2 session here. `/terminal2` to start one.",
                     reply_to=mid,
                     thread_id=thread_id,
                     markdown=True,
@@ -5770,7 +6121,7 @@ class Bot:
             if sess is None:
                 self.send(
                     chat_id,
-                    "No terminal session here. `/terminal` to start one.",
+                    "No terminal2 session here. `/terminal2` to start one.",
                     reply_to=mid,
                     thread_id=thread_id,
                     markdown=True,
@@ -5804,7 +6155,7 @@ class Bot:
             if sess is None:
                 self.send(
                     chat_id,
-                    "No terminal session here. `/terminal` to start one.",
+                    "No terminal2 session here. `/terminal2` to start one.",
                     reply_to=mid,
                     thread_id=thread_id,
                     markdown=True,
@@ -5837,7 +6188,7 @@ class Bot:
             if sess is None:
                 self.send(
                     chat_id,
-                    "No terminal session here. `/terminal` to start one.",
+                    "No terminal2 session here. `/terminal2` to start one.",
                     reply_to=mid,
                     thread_id=thread_id,
                     markdown=True,
@@ -5906,18 +6257,19 @@ class Bot:
                 "Forum topics each get their own agent session and run in "
                 "parallel — no concurrency cap, only the box's RAM gates it.\n\n"
                 "Commands\n"
-                "/terminal — open an interactive shell here (owner-only); "
-                "replies route to stdin until you `exit` or send /exit. "
-                "/terminal <cmd> seeds the first command, e.g. `/terminal gh auth login`\n"
-                "/interrupt — send Ctrl-C to the active terminal session\n"
-                "/enter — send Enter to the active terminal session\n"
-                "/eof — send Ctrl-D to the active terminal session\n"
-                "/exit — ask bash to close the active terminal session\n"
+                "/terminal — open the Browser Use Cloud web terminal (owner-only)\n"
+                "/terminal bash — open a bash web terminal instead of Claude\n"
+                "/terminal2 — old in-Telegram shell; replies route to stdin until you `exit` or send /exit. "
+                "/terminal2 <cmd> seeds the first command, e.g. `/terminal2 gh auth login`\n"
+                "/interrupt — send Ctrl-C to the active terminal2 session\n"
+                "/enter — send Enter to the active terminal2 session\n"
+                "/eof — send Ctrl-D to the active terminal2 session\n"
+                "/exit — ask bash to close the active terminal2 session\n"
                 "/codex — switch this topic to Codex\n"
                 "/codex login — sign in Codex with device auth\n"
                 "/codex logout — sign out Codex\n"
                 "/fast — switch this topic to Codex with low reasoning effort\n"
-                "/model — show/set this topic's Codex model, e.g. `/model gpt-5.4 low`\n"
+                "/model — show/set this topic's Codex model, e.g. `/model gpt-5.3-codex-spark low`\n"
                 "/claude — switch this topic to Claude\n"
                 "/claude login — sign in Claude through a terminal flow\n"
                 "/claude logout — sign out Claude\n"
@@ -6205,6 +6557,9 @@ class Bot:
             return
         if cmd == "/model":
             self._cmd_codex_model(key, chat_id, mid, thread_id, arg)
+            return
+        if cmd == "/usage":
+            self._cmd_usage(key, chat_id, mid, thread_id)
             return
         if cmd == "/claude":
             action = arg.strip().lower()
@@ -7087,7 +7442,7 @@ class Bot:
                 self.send(
                     chat_id,
                     "🔑 *Sign in to Codex*\n"
-                    f"Code: *{code}*\n\n"
+                    f"Code: *{_short_code_label(code)}*\n\n"
                     "Tap *Open Link* or *Copy Link* → enter the code, "
                     "then come back here. `/cancel` to abort.",
                     reply_to=reply_to,
@@ -7531,6 +7886,9 @@ class Bot:
             if data.startswith("codex_model:"):
                 self._handle_codex_model_callback(cb, data)
                 return
+            if data.startswith("codex_limit:"):
+                self._handle_codex_limit_callback(cb, data)
+                return
             if data == "codex_login_retry":
                 msg = cb.get("message") or {}
                 chat = msg.get("chat") or {}
@@ -7674,6 +8032,77 @@ class Bot:
                     markdown=True,
                     reply_markup=_codex_model_picker_markup(settings),
                 )
+
+    def _handle_codex_limit_callback(self, cb: dict, data: str) -> None:
+        msg = cb.get("message") or {}
+        chat = msg.get("chat") or {}
+        chat_id = chat.get("id")
+        thread_id = int(msg.get("message_thread_id") or 0)
+        sender = cb.get("from") or {}
+        owner = _owner_for(chat_id, self.state) if chat_id else None
+        if owner and not _is_owner({"user_id": sender.get("id")}, owner):
+            self.call(
+                "answerCallbackQuery",
+                callback_query_id=cb["id"],
+                text="Only the box owner can rotate Codex accounts.",
+                show_alert=True,
+            )
+            return
+        if not chat_id:
+            return
+        action = data.split(":", 1)[1] if ":" in data else ""
+        key = (int(chat_id), thread_id)
+        _set_agent_for(key, AGENT_CODEX, self.state)
+        if action == "fast_off":
+            settings = _set_codex_settings(key, self.state, service_tier="")
+            self.call("answerCallbackQuery", callback_query_id=cb["id"], text="Fast mode off")
+            self.send(
+                int(chat_id),
+                "Fast mode is off for this topic.\n\n" + _format_codex_settings(settings),
+                thread_id=thread_id,
+                markdown=True,
+                reply_markup=_codex_rate_limit_markup(settings),
+            )
+            return
+        if action == "logout":
+            ok, msg_text = CODEX_AUTH_PROVIDER.logout()
+            _login_status_cache_invalidate("codex")
+            self.call(
+                "answerCallbackQuery",
+                callback_query_id=cb["id"],
+                text="Logged out" if ok else "Logout failed",
+                show_alert=not ok,
+            )
+            self.send(
+                int(chat_id),
+                ("✓" if ok else "❌") + f" `codex` {msg_text}",
+                thread_id=thread_id,
+                markdown=True,
+                reply_markup={
+                    "inline_keyboard": [
+                        [{"text": "Sign in Codex", "callback_data": "codex_limit:login"}],
+                    ]
+                },
+            )
+            return
+        if action == "login":
+            self.call("answerCallbackQuery", callback_query_id=cb["id"], text="Starting Codex login...")
+            self._start_login_provider(
+                "codex",
+                CODEX_AUTH_PROVIDER,
+                int(chat_id),
+                msg.get("message_id"),
+                thread_id,
+                force=True,
+                minimal_login_mode=True,
+            )
+            return
+        self.call(
+            "answerCallbackQuery",
+            callback_query_id=cb["id"],
+            text="Unknown Codex action.",
+            show_alert=True,
+        )
 
     def _handle_login_picker_callback(self, cb: dict, data: str) -> None:
         """Process a Sign-in picker tap. callback_data: `login_pick:<provider>`.
