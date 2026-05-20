@@ -423,8 +423,9 @@ def send_card(
         fields = {
             **base_fields,
             "caption": body,
-            "reply_markup": reply_markup_json,
         }
+        if reply_markup_json:
+            fields["reply_markup"] = reply_markup_json
         files = {"photo": (path.name, path.read_bytes(), ctype)}
         method = "sendPhoto"
         # sendPhoto caption max is 1024 chars. If we'd exceed, truncate
