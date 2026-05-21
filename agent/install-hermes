@@ -133,5 +133,11 @@ if hermes_bin="$(find_hermes)"; then
 	printf 'HERMES_BIN=%s\n' "$hermes_bin" > "$HERMES_HOME/env"
 	chmod 0644 "$HERMES_HOME/env"
 	chown_bux_if_possible "$HERMES_HOME/env"
-	"$hermes_bin" --version >/dev/null 2>&1 || true
+	if user_exists && [ "$(id -u)" -eq 0 ]; then
+		sudo -u "$BUX_USER" -H env HERMES_HOME="$HERMES_HOME" "$hermes_bin" --version >/dev/null 2>&1 || true
+		sudo -u "$BUX_USER" -H env HERMES_HOME="$HERMES_HOME" "$REPO_DIR/agent/bux-hermes" configure-auto --quiet >/dev/null 2>&1 || true
+	else
+		HERMES_HOME="$HERMES_HOME" "$hermes_bin" --version >/dev/null 2>&1 || true
+		HERMES_HOME="$HERMES_HOME" "$REPO_DIR/agent/bux-hermes" configure-auto --quiet >/dev/null 2>&1 || true
+	fi
 fi

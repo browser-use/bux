@@ -1305,6 +1305,56 @@ class HermesRoutingTest(unittest.TestCase):
             "hello json",
         )
 
+    def test_hermes_codex_provider_setup_switches_lane(self) -> None:
+        bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
+        bot.state = {"offset": 0, "agents": {}, "codex_settings": {}, "owners": {}}
+        sent: list[str] = []
+        bot.send = lambda _chat, text, **_kwargs: sent.append(text)  # type: ignore[method-assign]
+
+        completed = types.SimpleNamespace(
+            returncode=0,
+            stdout="Hermes configured for OpenAI Codex (gpt-5.5).\n",
+            stderr="",
+        )
+        with (
+            mock.patch.object(telegram_bot.Bot, "_which_hermes", return_value="/usr/local/bin/bux-hermes"),
+            mock.patch.object(telegram_bot.subprocess, "run", return_value=completed) as run,
+            mock.patch.object(telegram_bot, "save_state"),
+        ):
+            bot._cmd_hermes_provider(
+                (100, 25),
+                100,
+                55,
+                25,
+                sender={"user_id": "1"},
+                owner={"user_id": "1"},
+                provider="codex",
+            )
+
+        self.assertEqual(bot.state["agents"]["100_25"], "hermes")
+        self.assertEqual(run.call_args.args[0][-1], "configure-codex")
+        self.assertIn("OpenAI Codex", sent[0])
+
+    def test_hermes_provider_setup_is_owner_only(self) -> None:
+        bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
+        bot.state = {"offset": 0, "agents": {}, "codex_settings": {}, "owners": {}}
+        sent: list[str] = []
+        bot.send = lambda _chat, text, **_kwargs: sent.append(text)  # type: ignore[method-assign]
+
+        with mock.patch.object(telegram_bot.subprocess, "run") as run:
+            bot._cmd_hermes_provider(
+                (100, 25),
+                100,
+                55,
+                25,
+                sender={"user_id": "2"},
+                owner={"user_id": "1"},
+                provider="codex",
+            )
+
+        run.assert_not_called()
+        self.assertIn("owner-only", sent[0])
+
 
 class MiniAppLaunchTest(unittest.TestCase):
     def test_public_url_can_be_read_from_tg_env_when_process_env_is_stale(self) -> None:

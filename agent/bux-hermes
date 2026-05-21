@@ -78,6 +78,128 @@ EOF
 	exit 127
 fi
 
+hermes_python() {
+	local first
+	first="$(head -n 1 "$hermes_bin" 2>/dev/null || true)"
+	if [[ "$first" == "#!"*python* ]]; then
+		first="${first#\#!}"
+		if [ -x "$first" ]; then
+			printf '%s\n' "$first"
+			return 0
+		fi
+	fi
+	command -v python3
+}
+
+current_provider() {
+	"$(hermes_python)" <<'PY' 2>/dev/null || true
+from pathlib import Path
+import os
+import yaml
+
+path = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))) / "config.yaml"
+try:
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+except Exception:
+    data = {}
+model = data.get("model") if isinstance(data, dict) else {}
+provider = model.get("provider") if isinstance(model, dict) else ""
+print(str(provider or "").strip())
+PY
+}
+
+configure_codex() {
+	local model="${1:-${HERMES_CODEX_MODEL:-gpt-5.5}}"
+	HERMES_CODEX_MODEL="$model" "$(hermes_python)" <<'PY'
+from __future__ import annotations
+
+import os
+import sys
+
+from hermes_cli.auth import (
+    DEFAULT_CODEX_BASE_URL,
+    AuthError,
+    _import_codex_cli_tokens,
+    _save_codex_tokens,
+    _update_config_for_provider,
+    resolve_codex_runtime_credentials,
+)
+
+base_url = os.environ.get("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or DEFAULT_CODEX_BASE_URL
+source = ""
+try:
+    creds = resolve_codex_runtime_credentials()
+    base_url = str(creds.get("base_url") or base_url).strip().rstrip("/") or base_url
+    source = "existing Hermes Codex credentials"
+except Exception:
+    tokens = _import_codex_cli_tokens()
+    if not tokens:
+        print(
+            "No usable Codex CLI credentials found. Run /codex login first, "
+            "or use /terminal hermes model for a separate Hermes login.",
+            file=sys.stderr,
+        )
+        raise SystemExit(3)
+    _save_codex_tokens(tokens)
+    source = "imported Codex CLI credentials"
+
+_update_config_for_provider("openai-codex", base_url)
+print(source)
+PY
+	"$hermes_bin" config set model.default "$model" >/dev/null
+	printf 'Hermes configured for OpenAI Codex (%s).\n' "$model"
+}
+
+configure_claude() {
+	local model="${1:-${HERMES_CLAUDE_MODEL:-claude-sonnet-4-6}}"
+	"$(hermes_python)" <<'PY'
+from __future__ import annotations
+
+import sys
+
+from agent.anthropic_adapter import read_claude_code_credentials, _resolve_claude_code_token_from_credentials
+from hermes_cli.config import use_anthropic_claude_code_credentials
+
+creds = read_claude_code_credentials()
+if not _resolve_claude_code_token_from_credentials(creds):
+    print(
+        "No usable Claude Code credentials found. Run /claude login first, "
+        "or use /terminal hermes model for a separate Hermes login.",
+        file=sys.stderr,
+    )
+    raise SystemExit(3)
+
+use_anthropic_claude_code_credentials()
+print("using Claude Code credentials")
+PY
+	"$hermes_bin" config set model.provider anthropic >/dev/null
+	"$hermes_bin" config set model.base_url https://api.anthropic.com >/dev/null
+	"$hermes_bin" config set model.default "$model" >/dev/null
+	printf 'Hermes configured for Claude Code (%s).\n' "$model"
+}
+
+configure_auto() {
+	local quiet=0
+	if [ "${1:-}" = "--quiet" ]; then
+		quiet=1
+	fi
+	local provider
+	provider="$(current_provider)"
+	if [ -n "$provider" ]; then
+		if [ "$quiet" = 0 ]; then
+			printf 'Hermes already configured for %s.\n' "$provider"
+		fi
+		return 0
+	fi
+	if configure_codex; then
+		return 0
+	fi
+	if configure_claude; then
+		return 0
+	fi
+	return 3
+}
+
 cmd="${1:-}"
 case "$cmd" in
 	run)
@@ -93,6 +215,18 @@ case "$cmd" in
 			exec "$hermes_bin" status
 		fi
 		exec "$hermes_bin" --version
+		;;
+	configure-codex|setup-codex)
+		shift
+		configure_codex "$@"
+		;;
+	configure-claude|setup-claude)
+		shift
+		configure_claude "$@"
+		;;
+	configure-auto|setup-auto)
+		shift
+		configure_auto "$@"
 		;;
 	"")
 		exec "$hermes_bin" --help

@@ -6458,6 +6458,8 @@ class Bot:
                 "/claude logout — sign out Claude\n"
                 "/goal <what to work on> — continuous goal-mode, copilot by default (I suggest, you accept). Append 'autopilot' / 'full autonomy' / 'no approvals' for full autonomy.\n"
                 "/hermes — switch this topic to Hermes\n"
+                "/hermes codex — use existing Codex login for Hermes\n"
+                "/hermes claude — use existing Claude Code login for Hermes\n"
                 "/hermes status — show Hermes wrapper status\n"
                 "/agency — open the Mini App\n"
                 "/miniapp — open the Mini App\n"
@@ -6762,6 +6764,15 @@ class Bot:
             action = arg.strip().lower()
             if action == "status":
                 self._cmd_hermes_status(chat_id, mid, thread_id)
+                return
+            if action in ("auto", "setup"):
+                self._cmd_hermes_provider(key, chat_id, mid, thread_id, sender, owner, "auto")
+                return
+            if action in ("codex", "openai", "openai-codex"):
+                self._cmd_hermes_provider(key, chat_id, mid, thread_id, sender, owner, "codex")
+                return
+            if action in ("claude", "claude-code", "anthropic"):
+                self._cmd_hermes_provider(key, chat_id, mid, thread_id, sender, owner, "claude")
                 return
             if action in ("login", "auth"):
                 _set_agent_for(key, AGENT_HERMES, self.state)
@@ -7780,6 +7791,83 @@ class Bot:
                 reply_to=reply_to,
                 thread_id=thread_id,
             )
+
+    def _cmd_hermes_provider(
+        self,
+        key: LaneKey,
+        chat_id: int,
+        reply_to: int | None,
+        thread_id: int,
+        sender: dict,
+        owner: dict | None,
+        provider: str,
+    ) -> None:
+        if not _is_owner(sender, owner):
+            self.send(
+                chat_id,
+                "❌ Hermes provider setup is owner-only.",
+                reply_to=reply_to,
+                thread_id=thread_id,
+                markdown=True,
+            )
+            return
+        wrapper = self._which_hermes()
+        if not wrapper:
+            self.send(
+                chat_id,
+                "Hermes wrapper is not installed. Run "
+                "`WITH_HERMES=1 sudo /opt/bux/repo/agent/bootstrap.sh`.",
+                reply_to=reply_to,
+                thread_id=thread_id,
+                markdown=True,
+            )
+            return
+
+        actions = {
+            "auto": ("configure-auto", "an existing coding-agent login"),
+            "codex": ("configure-codex", "OpenAI Codex"),
+            "claude": ("configure-claude", "Claude Code"),
+        }
+        action, label = actions.get(provider, actions["auto"])
+        try:
+            r = subprocess.run(
+                ["sudo", "-u", "bux", "-H", wrapper, action],
+                capture_output=True,
+                text=True,
+                timeout=45,
+                cwd=str(WORKSPACE),
+            )
+        except Exception as e:
+            self.send(
+                chat_id,
+                f"Hermes {label} setup failed: {e}",
+                reply_to=reply_to,
+                thread_id=thread_id,
+            )
+            return
+
+        out = ((r.stdout or "") + (r.stderr or "")).strip()
+        if r.returncode != 0:
+            self.send(
+                chat_id,
+                f"Hermes {label} setup failed.\n\n{out}",
+                reply_to=reply_to,
+                thread_id=thread_id,
+                markdown=True,
+            )
+            return
+
+        _set_agent_for(key, AGENT_HERMES, self.state)
+        message = f"Hermes is now using {label}."
+        if out:
+            message += f"\n\n{out}"
+        self.send(
+            chat_id,
+            message,
+            reply_to=reply_to,
+            thread_id=thread_id,
+            markdown=True,
+        )
 
     def _cmd_claude_login(
         self,
