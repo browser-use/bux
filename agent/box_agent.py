@@ -36,6 +36,7 @@ LOG = logging.getLogger('box-agent')
 ENV_PATH = Path('/etc/bux/env')
 HEARTBEAT_INTERVAL = 30
 TG_ENV = Path('/etc/bux/tg.env')
+VALID_DEFAULT_AGENTS = {'claude', 'codex', 'hermes'}
 
 # Where the OSS repo is cloned by install.sh at bake time. /opt/bux/agent is
 # a symlink to /opt/bux/repo/agent so systemd units' ExecStart=/opt/bux/agent
@@ -917,11 +918,17 @@ class Agent:
 				owner_tg_user_id: int | None = int(raw_owner) if raw_owner else None
 			except (TypeError, ValueError):
 				owner_tg_user_id = None
+			raw_default_agent = msg.get('bux_default_agent') or msg.get('default_agent')
+			default_agent = str(raw_default_agent or '').strip().lower()
+			if default_agent and default_agent not in VALID_DEFAULT_AGENTS:
+				LOG.warning('ignoring invalid tg_install default_agent=%r', raw_default_agent)
+				default_agent = ''
 			await self._tg_install(
 				msg.get('bot_token', ''),
 				msg.get('setup_token', ''),
 				msg.get('bot_username', ''),
 				owner_tg_user_id=owner_tg_user_id,
+				default_agent=default_agent or None,
 			)
 		elif cmd == 'update':
 			# Pull latest agent code from the OSS repo and restart services.
@@ -1400,6 +1407,7 @@ class Agent:
 		bot_username: str,
 		*,
 		owner_tg_user_id: int | None = None,
+		default_agent: str | None = None,
 	) -> None:
 		if not bot_token:
 			await self._send(
@@ -1420,6 +1428,8 @@ class Agent:
 			# pre-dates this writer; we only need user_id for auth purposes
 			# (Telegram stamps `from.id` server-side, can't be forged).
 			lines.append(f'TG_OWNER_ID={int(owner_tg_user_id)}')
+		if default_agent:
+			lines.append(f'BUX_DEFAULT_AGENT={default_agent}')
 		TG_ENV.write_text('\n'.join(lines) + '\n', encoding='utf-8')
 		# Mode 0o600, owner bux:bux (we run as bux). Both readers can still
 		# get the token: the bux-telegram-bot.service runs as User=root

@@ -6,6 +6,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -1228,6 +1229,131 @@ class GoalCommandRoutingTest(unittest.TestCase):
 
         send_input.assert_called_once_with("goal-session", "What's the time?", slug=slug)
         enqueue.assert_not_called()
+
+
+class HermesRoutingTest(unittest.TestCase):
+    def test_bux_default_agent_routes_unbound_lane_to_hermes(self) -> None:
+        state = {"offset": 0, "agents": {}, "codex_settings": {}, "owners": {}}
+        with (
+            mock.patch.dict(os.environ, {"BUX_DEFAULT_AGENT": "hermes"}, clear=False),
+            mock.patch.object(telegram_bot, "_is_agent_authed", return_value=False),
+        ):
+            self.assertEqual(telegram_bot._agent_for((100, 25), state), "hermes")
+
+    def test_explicit_lane_binding_overrides_bux_default_agent(self) -> None:
+        state = {
+            "offset": 0,
+            "agents": {"100_25": "codex"},
+            "codex_settings": {},
+            "owners": {},
+        }
+        with mock.patch.dict(os.environ, {"BUX_DEFAULT_AGENT": "hermes"}, clear=False):
+            self.assertEqual(telegram_bot._agent_for((100, 25), state), "codex")
+
+    def test_bux_default_agent_can_be_read_from_tg_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tg_env = Path(tmp) / "tg.env"
+            tg_env.write_text("BUX_DEFAULT_AGENT=hermes\n", encoding="utf-8")
+            state = {"offset": 0, "agents": {}, "codex_settings": {}, "owners": {}}
+            with (
+                mock.patch.object(telegram_bot, "TG_ENV", tg_env),
+                mock.patch.dict(os.environ, {}, clear=True),
+                mock.patch.object(telegram_bot, "_is_agent_authed", return_value=False),
+            ):
+                self.assertEqual(telegram_bot._agent_for((100, 25), state), "hermes")
+
+    def test_hermes_lane_bypasses_claude_codex_login_gate(self) -> None:
+        bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
+        bot.state = {
+            "offset": 0,
+            "agents": {"100_25": "hermes"},
+            "codex_settings": {},
+            "owners": {},
+        }
+        called: list[str] = []
+        bot._send_login_picker = lambda *_args, **_kwargs: called.append("picker")  # type: ignore[method-assign]
+        bot._run_hermes = lambda *_args, **_kwargs: called.append("hermes")  # type: ignore[method-assign]
+        fake_agency_db = types.SimpleNamespace(
+            conn=lambda: object(),
+            pop_refine_context_for_thread=lambda _db, _thread_id: None,
+        )
+
+        with (
+            mock.patch.dict(sys.modules, {"agency_db": fake_agency_db}),
+            mock.patch.object(telegram_bot, "_login_status_cached", return_value=False),
+        ):
+            bot.run_task((100, 25), "hello", 55, sender={"user_id": "1"})
+
+        self.assertEqual(called, ["hermes"])
+
+    def test_missing_hermes_wrapper_reports_clear_error(self) -> None:
+        bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
+        bot.state = {"offset": 0, "agents": {}, "codex_settings": {}, "owners": {}}
+        sent: list[str] = []
+        bot.send = lambda _chat, text, **_kwargs: sent.append(text)  # type: ignore[method-assign]
+        bot.react = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+
+        with mock.patch.object(telegram_bot.Bot, "_which_hermes", return_value=None):
+            bot._run_hermes((100, 25), "hello", 55, sender={"user_id": "1"})
+
+        self.assertIn("Hermes is not configured", sent[0])
+
+    def test_hermes_visible_text_accepts_plain_and_json_lines(self) -> None:
+        self.assertEqual(telegram_bot.Bot._hermes_visible_text("hello\n"), "hello")
+        self.assertEqual(
+            telegram_bot.Bot._hermes_visible_text('{"text": "hello json"}\n'),
+            "hello json",
+        )
+
+    def test_hermes_codex_provider_setup_switches_lane(self) -> None:
+        bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
+        bot.state = {"offset": 0, "agents": {}, "codex_settings": {}, "owners": {}}
+        sent: list[str] = []
+        bot.send = lambda _chat, text, **_kwargs: sent.append(text)  # type: ignore[method-assign]
+
+        completed = types.SimpleNamespace(
+            returncode=0,
+            stdout="Hermes configured for OpenAI Codex (gpt-5.5).\n",
+            stderr="",
+        )
+        with (
+            mock.patch.object(telegram_bot.Bot, "_which_hermes", return_value="/usr/local/bin/bux-hermes"),
+            mock.patch.object(telegram_bot.subprocess, "run", return_value=completed) as run,
+            mock.patch.object(telegram_bot, "save_state"),
+        ):
+            bot._cmd_hermes_provider(
+                (100, 25),
+                100,
+                55,
+                25,
+                sender={"user_id": "1"},
+                owner={"user_id": "1"},
+                provider="codex",
+            )
+
+        self.assertEqual(bot.state["agents"]["100_25"], "hermes")
+        self.assertEqual(run.call_args.args[0][-1], "configure-codex")
+        self.assertIn("OpenAI Codex", sent[0])
+
+    def test_hermes_provider_setup_is_owner_only(self) -> None:
+        bot = telegram_bot.Bot.__new__(telegram_bot.Bot)
+        bot.state = {"offset": 0, "agents": {}, "codex_settings": {}, "owners": {}}
+        sent: list[str] = []
+        bot.send = lambda _chat, text, **_kwargs: sent.append(text)  # type: ignore[method-assign]
+
+        with mock.patch.object(telegram_bot.subprocess, "run") as run:
+            bot._cmd_hermes_provider(
+                (100, 25),
+                100,
+                55,
+                25,
+                sender={"user_id": "2"},
+                owner={"user_id": "1"},
+                provider="codex",
+            )
+
+        run.assert_not_called()
+        self.assertIn("owner-only", sent[0])
 
 
 class MiniAppLaunchTest(unittest.TestCase):

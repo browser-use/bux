@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+# Stable Bux wrapper around the real Hermes binary.
+#
+# Telegram and tests call this wrapper instead of calling `hermes` directly so
+# Bux can provide the same workspace, browser, and routing environment every
+# time while preserving Hermes' own auth/subscription files under /home/bux.
+set -euo pipefail
+
+BUX_HOME="${BUX_HOME:-/home/bux}"
+BUX_USER="${BUX_USER:-bux}"
+HERMES_HOME="${HERMES_HOME:-$BUX_HOME/.hermes}"
+export HOME="$BUX_HOME"
+export USER="$BUX_USER"
+export HERMES_HOME
+export PATH="$BUX_HOME/.local/bin:$BUX_HOME/.npm-global/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+export BUX_HERMES_SOUL="${BUX_HERMES_SOUL:-$HERMES_HOME/SOUL.md}"
+
+BROWSER_ENV="${BROWSER_ENV:-$BUX_HOME/.claude/browser.env}"
+if [ -r "$BROWSER_ENV" ]; then
+	set -a
+	# shellcheck disable=SC1090
+	. "$BROWSER_ENV"
+	set +a
+fi
+HERMES_ENV="${HERMES_ENV:-$HERMES_HOME/env}"
+if [ -r "$HERMES_ENV" ]; then
+	set -a
+	# shellcheck disable=SC1090
+	. "$HERMES_ENV"
+	set +a
+fi
+
+if [ "${1:-}" = "--bux-env-check" ]; then
+	printf 'BUX_HOME=%s\n' "$BUX_HOME"
+	printf 'BUX_HERMES_SOUL=%s\n' "$BUX_HERMES_SOUL"
+	printf 'BU_CDP_WS=%s\n' "${BU_CDP_WS:-}"
+	printf 'BU_BROWSER_ID=%s\n' "${BU_BROWSER_ID:-}"
+	printf 'BU_PROFILE_ID=%s\n' "${BU_PROFILE_ID:-}"
+	exit 0
+fi
+
+find_hermes() {
+	if [ -n "${HERMES_BIN:-}" ]; then
+		if [ -x "$HERMES_BIN" ]; then
+			printf '%s\n' "$HERMES_BIN"
+			return 0
+		fi
+		printf 'bux-hermes: HERMES_BIN is not executable: %s\n' "$HERMES_BIN" >&2
+		return 1
+	fi
+	for candidate in \
+		"$BUX_HOME/.local/bin/hermes" \
+		"$BUX_HOME/.npm-global/bin/hermes" \
+		/usr/local/bin/hermes \
+		/usr/bin/hermes
+	do
+		if [ -x "$candidate" ]; then
+			printf '%s\n' "$candidate"
+			return 0
+		fi
+	done
+	if command -v hermes >/dev/null 2>&1; then
+		command -v hermes
+		return 0
+	fi
+	return 1
+}
+
+if ! hermes_bin="$(find_hermes)"; then
+	cat >&2 <<'EOF'
+bux-hermes: Hermes is not installed or not executable.
+
+Install or authenticate Hermes as the bux user, then retry. For a terminal
+login flow from Telegram, use:
+
+  /terminal hermes login
+EOF
+	exit 127
+fi
+
+hermes_python() {
+	local first
+	first="$(head -n 1 "$hermes_bin" 2>/dev/null || true)"
+	if [[ "$first" == "#!"*python* ]]; then
+		first="${first#\#!}"
+		if [ -x "$first" ]; then
+			printf '%s\n' "$first"
+			return 0
+		fi
+	fi
+	command -v python3
+}
+
+current_provider() {
+	"$(hermes_python)" <<'PY' 2>/dev/null || true
+from pathlib import Path
+import os
+import yaml
+
+path = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))) / "config.yaml"
+try:
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+except Exception:
+    data = {}
+model = data.get("model") if isinstance(data, dict) else {}
+provider = model.get("provider") if isinstance(model, dict) else ""
+print(str(provider or "").strip())
+PY
+}
+
+configure_codex() {
+	local model="${1:-${HERMES_CODEX_MODEL:-gpt-5.5}}"
+	HERMES_CODEX_MODEL="$model" "$(hermes_python)" <<'PY'
+from __future__ import annotations
+
+import os
+import sys
+
+from hermes_cli.auth import (
+    DEFAULT_CODEX_BASE_URL,
+    AuthError,
+    _import_codex_cli_tokens,
+    _save_codex_tokens,
+    _update_config_for_provider,
+    resolve_codex_runtime_credentials,
+)
+
+base_url = os.environ.get("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or DEFAULT_CODEX_BASE_URL
+source = ""
+try:
+    creds = resolve_codex_runtime_credentials()
+    base_url = str(creds.get("base_url") or base_url).strip().rstrip("/") or base_url
+    source = "existing Hermes Codex credentials"
+except Exception:
+    tokens = _import_codex_cli_tokens()
+    if not tokens:
+        print(
+            "No usable Codex CLI credentials found. Run /codex login first, "
+            "or use /terminal hermes model for a separate Hermes login.",
+            file=sys.stderr,
+        )
+        raise SystemExit(3)
+    _save_codex_tokens(tokens)
+    source = "imported Codex CLI credentials"
+
+_update_config_for_provider("openai-codex", base_url)
+print(source)
+PY
+	"$hermes_bin" config set model.default "$model" >/dev/null
+	printf 'Hermes configured for OpenAI Codex (%s).\n' "$model"
+}
+
+configure_claude() {
+	local model="${1:-${HERMES_CLAUDE_MODEL:-claude-sonnet-4-6}}"
+	"$(hermes_python)" <<'PY'
+from __future__ import annotations
+
+import sys
+
+from agent.anthropic_adapter import read_claude_code_credentials, _resolve_claude_code_token_from_credentials
+from hermes_cli.config import use_anthropic_claude_code_credentials
+
+creds = read_claude_code_credentials()
+if not _resolve_claude_code_token_from_credentials(creds):
+    print(
+        "No usable Claude Code credentials found. Run /claude login first, "
+        "or use /terminal hermes model for a separate Hermes login.",
+        file=sys.stderr,
+    )
+    raise SystemExit(3)
+
+use_anthropic_claude_code_credentials()
+print("using Claude Code credentials")
+PY
+	"$hermes_bin" config set model.provider anthropic >/dev/null
+	"$hermes_bin" config set model.base_url https://api.anthropic.com >/dev/null
+	"$hermes_bin" config set model.default "$model" >/dev/null
+	printf 'Hermes configured for Claude Code (%s).\n' "$model"
+}
+
+configure_auto() {
+	local quiet=0
+	if [ "${1:-}" = "--quiet" ]; then
+		quiet=1
+	fi
+	local provider
+	provider="$(current_provider)"
+	if [ -n "$provider" ]; then
+		if [ "$quiet" = 0 ]; then
+			printf 'Hermes already configured for %s.\n' "$provider"
+		fi
+		return 0
+	fi
+	if configure_codex; then
+		return 0
+	fi
+	if configure_claude; then
+		return 0
+	fi
+	return 3
+}
+
+cmd="${1:-}"
+case "$cmd" in
+	run)
+		shift
+		if [ -n "${HERMES_RUN_COMMAND:-}" ]; then
+			export HERMES_PROMPT="$*"
+			exec bash -lc "$HERMES_RUN_COMMAND"
+		fi
+		exec "$hermes_bin" --oneshot "$*"
+		;;
+	status)
+		if "$hermes_bin" status >/dev/null 2>&1; then
+			exec "$hermes_bin" status
+		fi
+		exec "$hermes_bin" --version
+		;;
+	configure-codex|setup-codex)
+		shift
+		configure_codex "$@"
+		;;
+	configure-claude|setup-claude)
+		shift
+		configure_claude "$@"
+		;;
+	configure-auto|setup-auto)
+		shift
+		configure_auto "$@"
+		;;
+	"")
+		exec "$hermes_bin" --help
+		;;
+	*)
+		exec "$hermes_bin" "$@"
+		;;
+esac
