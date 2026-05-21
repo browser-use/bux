@@ -3911,6 +3911,23 @@ class StreamingMessage:
             return
         self._edit(rendered)
 
+    def discard(self) -> None:
+        """Remove the placeholder/current bubble for a silent retry path."""
+        if self._message_id is None:
+            return
+        try:
+            self._bot.call(
+                "deleteMessage",
+                chat_id=self._chat_id,
+                message_id=self._message_id,
+            )
+        except Exception:
+            LOG.exception("failed to delete streaming placeholder")
+            return
+        self._message_id = None
+        self._last_emitted = ""
+        self._blocks.clear()
+
     def _finalize_with_overflow(self) -> None:
         """Final view path when the answer is too long for a single bubble.
 
@@ -4881,11 +4898,7 @@ class Bot:
                     _AGENT_AUTH_CACHE.pop(AGENT_CLAUDE, None)
                     if _login_status_cached("codex"):
                         _set_agent_for(key, AGENT_CODEX, self.state)
-                        stream_msg.append(
-                            "Claude Code login is stale, but Codex is logged in. "
-                            "Switching this topic to Codex and retrying there."
-                        )
-                        stream_msg.finalize()
+                        stream_msg.discard()
                         try:
                             proc.wait(timeout=5)
                         except subprocess.TimeoutExpired:
@@ -4986,14 +4999,7 @@ class Bot:
                         _AGENT_AUTH_CACHE.pop(AGENT_CLAUDE, None)
                         if _login_status_cached("codex"):
                             _set_agent_for(key, AGENT_CODEX, self.state)
-                            self.send(
-                                chat_id,
-                                "Claude Code login is stale, but Codex is logged in. "
-                                "Switching this topic to Codex and retrying there.",
-                                reply_to=reply_to,
-                                thread_id=thread_id,
-                                markdown=True,
-                            )
+                            stream_msg.discard()
                             self._run_codex(
                                 key,
                                 prompt,
@@ -5290,11 +5296,7 @@ class Bot:
                     _login_status_cache_invalidate("codex")
                     if _login_status_cached("claude"):
                         _set_agent_for(key, AGENT_CLAUDE, self.state)
-                        stream_msg.append(
-                            "Codex login is stale, but Claude Code is logged in. "
-                            "Switching this topic to Claude Code and retrying there."
-                        )
-                        stream_msg.finalize()
+                        stream_msg.discard()
                         try:
                             proc.wait(timeout=5)
                         except subprocess.TimeoutExpired:
@@ -5379,14 +5381,7 @@ class Bot:
                     _login_status_cache_invalidate("codex")
                     if _login_status_cached("claude"):
                         _set_agent_for(key, AGENT_CLAUDE, self.state)
-                        self.send(
-                            chat_id,
-                            "Codex login is stale, but Claude Code is logged in. "
-                            "Switching this topic to Claude Code and retrying there.",
-                            reply_to=reply_to,
-                            thread_id=thread_id,
-                            markdown=True,
-                        )
+                        stream_msg.discard()
                         self._run_claude(
                             key,
                             prompt,
