@@ -30,7 +30,7 @@ Flow:
      other-chat messages drop silently.
   3. Once allowed, each message is keyed to a lane (chat_id, thread_id) and
      enqueued. A worker drains that lane, dispatching each job to the lane's
-     bound agent (claude default; `/codex` flips it).
+     bound agent (codex default; `/claude` flips it).
   4. Stream-json events from claude come back as one editable TG message
      bubble in the lane's topic, with a per-turn random "thinking" emoji in
      the placeholder and a 💔 reaction only on failure.
@@ -254,7 +254,7 @@ def random_thinking_reaction() -> str:
 AGENT_CLAUDE = "claude"
 AGENT_CODEX = "codex"
 AGENTS = (AGENT_CLAUDE, AGENT_CODEX)
-DEFAULT_AGENT = AGENT_CLAUDE
+DEFAULT_AGENT = AGENT_CODEX
 CODEX_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
 CODEX_MODEL_CHOICES = (
     "gpt-5.5",
@@ -1446,18 +1446,17 @@ def _is_agent_authed(agent: str) -> bool:
 def _agent_for(key: LaneKey, state: dict) -> str:
     """Resolve which agent handles this lane. /claude or /codex sets it.
 
-    For unbound lanes (no explicit /claude or /codex), prefer the CLI
-    that's actually signed in. If both are signed in, keep claude as
-    the historical default. If neither is, also fall back to claude —
-    the user will see the auth-error path and can switch with /codex.
+    For unbound lanes (no explicit /claude or /codex), prefer Codex. If
+    Codex is not signed in but Claude is, use Claude. If neither is signed
+    in, fall back to Codex; run_task's login gate will show the picker.
     """
     bound = (state.get("agents") or {}).get(_lane_slug(key))
     if bound in AGENTS:
         return bound
-    if _is_agent_authed(AGENT_CLAUDE):
-        return AGENT_CLAUDE
     if _is_agent_authed(AGENT_CODEX):
         return AGENT_CODEX
+    if _is_agent_authed(AGENT_CLAUDE):
+        return AGENT_CLAUDE
     return DEFAULT_AGENT
 
 
