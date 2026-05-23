@@ -274,29 +274,29 @@ CODEX_DEFAULT_SETTINGS = {
 # Registered with Telegram via setMyCommands at boot. Order = order shown
 # in the `/` autocomplete popup. Descriptions are short — TG clips them.
 BOT_COMMANDS: list[tuple[str, str]] = [
-    ("help", "show all commands"),
-    ("terminal", "open the Browser Use Cloud web terminal"),
-    ("terminal2", "open the old in-Telegram shell"),
+    ("help", "show quick help"),
+    ("terminal", "open the browser use cloud terminal"),
+    ("terminal2", "open the old telegram shell"),
     ("exit", "close the active terminal session"),
-    ("interrupt", "send Ctrl-C to the active terminal session"),
-    ("enter", "send Enter to the active terminal session"),
-    ("eof", "send Ctrl-D to the active terminal session"),
+    ("interrupt", "send ctrl-c to the active terminal"),
+    ("enter", "send enter to the active terminal"),
+    ("eof", "send ctrl-d to the active terminal"),
     ("compact", "summarize this topic's session to free up context"),
-    ("claude", "switch/login/logout Claude"),
-    ("codex", "switch/login/logout Codex"),
-    ("fast", "switch this topic's Codex lane to fast mode"),
-    ("model", "show/set this topic's Codex model"),
-    ("usage", "show latest Codex usage / rate-limit diagnostic"),
+    ("claude", "switch/login/logout claude"),
+    ("codex", "switch/login/logout codex"),
+    ("fast", "make this codex lane fast"),
+    ("model", "show/set this codex model"),
+    ("usage", "show latest codex usage"),
     ("agency", "open the goal card feed"),
-    ("goal", "continuous goal — I keep working across turns, posting cards. Add 'autopilot' or 'no approvals' for full autonomy."),
+    ("goal", "continuous goal mode"),
     ("miniapp", "open the goal card feed"),
-    ("live", "live-view URL of the active browser"),
+    ("live", "live-view url of the active browser"),
     ("queue", "pending tasks in this topic"),
     ("cancel", "kill the running task + drop pending"),
     ("schedules", "list reminders / cron jobs"),
     ("login", "auth status / connect a service (github/claude/codex)"),
     ("logout", "disconnect a service (e.g. /logout gh)"),
-    ("whoami", "your TG identity + this lane's agent"),
+    ("whoami", "your tg identity + this lane's agent"),
     ("version", "show the bux agent version"),
     ("update", "pull latest code + restart"),
 ]
@@ -5564,11 +5564,9 @@ class Bot:
             LOG.info("authorized chat_id=%s (no sender info)", chat_id)
         self.send(
             chat_id,
-            "✓ Linked.\n\n"
-            f"Chat id: {chat_id}\n\n"
-            "🔒 This bot is now locked to this chat only. Every other chat is "
-            "silently dropped — even if someone discovers the bot handle.\n\n"
-            "Pick the agent you want to drive this box:",
+            "linked.\n\n"
+            f"chat id: {chat_id}\n\n"
+            "locked down. pick who gets root:",
             reply_markup=_login_picker_reply_markup(),
         )
 
@@ -5595,8 +5593,8 @@ class Bot:
             try:
                 self.send(
                     chat_id,
-                    "✓ Activated for this chat (you're the box owner).\n\n"
-                    "Topics inside are auto-allowed. Text me anything.",
+                    "activated. you're the owner.\n\n"
+                    "text me anything. chaos gets folders.",
                 )
             except Exception:
                 LOG.exception("auto-allow welcome send failed for chat_id=%s", chat_id)
@@ -6244,45 +6242,31 @@ class Bot:
                         thread_id=thread_id,
                     )
                 return
-        if cmd in ("/start", "/help"):
+        if cmd == "/start":
             self.send(
                 chat_id,
-                "Text me anything — I'll run it on your bux.\n\n"
-                "Forum topics each get their own agent session and run in "
-                "parallel — no concurrency cap, only the box's RAM gates it.\n\n"
-                "Commands\n"
-                "/terminal — open the Browser Use Cloud web terminal (owner-only)\n"
-                "/terminal bash — open a bash web terminal instead of Claude\n"
-                "/terminal2 — old in-Telegram shell; replies route to stdin until you `exit` or send /exit. "
-                "/terminal2 <cmd> seeds the first command, e.g. `/terminal2 gh auth login`\n"
-                "/interrupt — send Ctrl-C to the active terminal2 session\n"
-                "/enter — send Enter to the active terminal2 session\n"
-                "/eof — send Ctrl-D to the active terminal2 session\n"
-                "/exit — ask bash to close the active terminal2 session\n"
-                "/codex — switch this topic to Codex\n"
-                "/codex login — sign in Codex with device auth\n"
-                "/codex logout — sign out Codex\n"
-                "/fast — switch this topic to Codex with low reasoning effort\n"
-                "/model — show/set this topic's Codex model, e.g. `/model gpt-5.3-codex-spark low`\n"
-                "/claude — switch this topic to Claude\n"
-                "/claude login — sign in Claude through a terminal flow\n"
-                "/claude logout — sign out Claude\n"
-                "/goal <what to work on> — continuous goal-mode, copilot by default (I suggest, you accept). Append 'autopilot' / 'full autonomy' / 'no approvals' for full autonomy.\n"
-                "/agency — open the Mini App\n"
-                "/miniapp — open the Mini App\n"
-                "/live — live-view URL of the active browser\n"
-                "/queue — pending tasks in this topic\n"
-                "/cancel — kill the running task / terminal + drop "
-                "everything pending in this topic\n"
-                "/cancel <id> — cancel one task (running or queued)\n"
-                "/compact — summarize this topic's agent session to free up context\n"
-                "/schedules — list reminders / cron jobs\n"
-                "/login — auth status / connect a service (e.g. /login github, /login claude, /login codex)\n"
-                "/logout — disconnect a service (e.g. /logout github, /logout claude, /logout codex)\n"
-                "/version — show the bux agent version\n"
-                "/update — pull latest code + restart (or /update <branch>)",
+                "you tell me.",
                 reply_to=mid,
                 thread_id=thread_id,
+            )
+            self.send(
+                chat_id,
+                "send one annoying thing. i'll make it less annoying.\n\n"
+                "or try `/goal ...`, `/agency`, `/terminal`.",
+                reply_to=mid,
+                thread_id=thread_id,
+                markdown=True,
+            )
+            return
+        if cmd == "/help":
+            self.send(
+                chat_id,
+                "i can run the box, drive the web, draft replies, ship code, and nag cron. public stuff gets a tap first.\n\n"
+                "try `/goal ...`, `/agency`, `/terminal`, `/login`, `/model`.\n\n"
+                "the / menu has the long list, because apparently lists survived.",
+                reply_to=mid,
+                thread_id=thread_id,
+                markdown=True,
             )
             return
         if cmd == "/goal":
