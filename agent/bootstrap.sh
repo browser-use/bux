@@ -117,9 +117,13 @@ chmod 0644 "$CODEX_CONFIG"
 # OpenRouter key server-side; the box authenticates with its box token, which
 # the `bu-cp-token` helper (below) hands to codex via auth.command. Idempotent:
 # skipped if the provider block is already present.
+# Parse only BUX_CLOUD_URL out of /etc/bux/env rather than sourcing it — the
+# file is root-owned but sourcing executes its contents as shell, so a single
+# tampered line would run as root. grep the one key/value we need; the value
+# is a URL with no shell metacharacters so plain assignment is safe.
+BUX_CLOUD_URL=''
 if [ -f /etc/bux/env ]; then
-  # shellcheck disable=SC1091
-  . /etc/bux/env || true
+  BUX_CLOUD_URL="$(grep -E '^BUX_CLOUD_URL=' /etc/bux/env | tail -n1 | cut -d= -f2- | tr -d '"'\''')"
 fi
 # wss://host -> https://host, ws://host -> http://host; drop trailing slash.
 CP_BASE="${BUX_CLOUD_URL:-wss://api.browser-use.com}"
@@ -160,9 +164,14 @@ chmod 0644 "$CODEX_CONFIG"
 cat > /usr/local/bin/bu-cp-token <<'TOKENEOF'
 #!/usr/bin/env bash
 # Print the box token for Codex's control-plane provider auth (ENG-4785).
+# Parse only BUX_BOX_TOKEN out of /etc/bux/env — don't source it, so a
+# tampered env file can't execute arbitrary shell when codex invokes us.
 set -euo pipefail
-[ -f /etc/bux/env ] && . /etc/bux/env || true
-printf '%s' "${BUX_BOX_TOKEN:-}"
+token=''
+if [ -f /etc/bux/env ]; then
+  token="$(grep -E '^BUX_BOX_TOKEN=' /etc/bux/env | tail -n1 | cut -d= -f2- | tr -d '"'\''')"
+fi
+printf '%s' "$token"
 TOKENEOF
 chmod 0755 /usr/local/bin/bu-cp-token
 

@@ -2111,25 +2111,36 @@ class Agent:
 		nudge the auth poll loop — `_codex_free_profile_active()` now returns
 		true, so it sends `codex_authed` and the wizard completes. No login.
 		"""
+		# Set the TOP-LEVEL `profile` key (the one `codex exec` honors). awk does
+		# it in a single pass so the gate can't drift from the rewrite scope: a
+		# top-level profile line (before the first [table]) is replaced in place;
+		# if none exists, the key is inserted at the very top. An in-table
+		# `profile = ...` is left alone — it isn't the default and must not be
+		# mistaken for one. Either way the top-level key ends up set, so success
+		# always means the free profile is the default.
 		script = r'''
 set -euo pipefail
 CFG="$HOME/.codex/config.toml"
 mkdir -p "$(dirname "$CFG")"
 touch "$CFG"
-if grep -qE '^[[:space:]]*profile[[:space:]]*=' "$CFG"; then
-  # Rewrite an existing top-level profile line (only before the first table).
-  awk '
-    BEGIN { seen_table = 0 }
-    /^\[/ { seen_table = 1 }
-    (!seen_table && $0 ~ /^[[:space:]]*profile[[:space:]]*=/) {
-      print "profile = \"browser-use-free\""; next
-    }
-    { print }
-  ' "$CFG" > "$CFG.tmp" && mv "$CFG.tmp" "$CFG"
-else
-  # Prepend so it lands at top level, before any [table] headers.
-  printf 'profile = "browser-use-free"\n%s' "$(cat "$CFG")" > "$CFG.tmp" && mv "$CFG.tmp" "$CFG"
-fi
+awk '
+  BEGIN { seen_table = 0; replaced = 0 }
+  /^[[:space:]]*\[/ {
+    # First table header: if we never replaced a top-level profile line,
+    # emit one now (above this header) so it stays top-level.
+    if (!seen_table && !replaced) { print "profile = \"browser-use-free\""; replaced = 1 }
+    seen_table = 1
+  }
+  (!seen_table && $0 ~ /^[[:space:]]*profile[[:space:]]*=/) {
+    print "profile = \"browser-use-free\""; replaced = 1; next
+  }
+  { print }
+  END { if (!replaced) print "profile = \"browser-use-free\"" }
+' "$CFG" > "$CFG.tmp" && mv "$CFG.tmp" "$CFG"
+# Verify the top-level key is actually set before reporting success.
+awk '/^[[:space:]]*\[/ { exit }
+     /^[[:space:]]*profile[[:space:]]*=[[:space:]]*"browser-use-free"/ { found = 1 }
+     END { exit(found ? 0 : 1) }' "$CFG"
 chmod 0644 "$CFG"
 '''
 		try:
