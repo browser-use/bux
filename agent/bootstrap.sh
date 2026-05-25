@@ -104,6 +104,68 @@ fi
 chmod 0644 "$CODEX_CONFIG"
 ' || echo "bootstrap: codex config write failed (non-fatal)" >&2
 
+# --- free-tier Codex provider (ENG-4785) ----------------------------------
+# Ship an INERT `browser-use-free` provider + profile in ~/.codex/config.toml
+# that routes Codex through the cloud control-plane proxy to DeepSeek V4 on
+# OpenRouter. It is deliberately NOT the default model_provider — `codex exec`
+# reads the default and ignores --profile, so making it default here would
+# silently route own-sub users through us. The cloud flips it on per-box by
+# writing a top-level `profile = "browser-use-free"` line (codex_use_free WS
+# command) only when the user picks the "no sub" option in setup.
+#
+# base_url points at the control plane (NOT openrouter.ai) so the CP holds the
+# OpenRouter key server-side; the box authenticates with its box token, which
+# the `bu-cp-token` helper (below) hands to codex via auth.command. Idempotent:
+# skipped if the provider block is already present.
+if [ -f /etc/bux/env ]; then
+  # shellcheck disable=SC1091
+  . /etc/bux/env || true
+fi
+# wss://host -> https://host, ws://host -> http://host; drop trailing slash.
+CP_BASE="${BUX_CLOUD_URL:-wss://api.browser-use.com}"
+CP_BASE="${CP_BASE/#wss:/https:}"
+CP_BASE="${CP_BASE/#ws:/http:}"
+CP_BASE="${CP_BASE%/}/api/codex/v1"
+sudo -u bux -H CP_BASE="$CP_BASE" bash -c '
+CODEX_CONFIG="$HOME/.codex/config.toml"
+mkdir -p "$(dirname "$CODEX_CONFIG")"
+if [ ! -f "$CODEX_CONFIG" ] || ! grep -qE "^\[model_providers\.browser-use-free\]" "$CODEX_CONFIG"; then
+  cat >> "$CODEX_CONFIG" <<TOMLEOF
+
+[model_providers.browser-use-free]
+name = "Browser Use free (DeepSeek V4)"
+base_url = "$CP_BASE"
+wire_api = "chat"
+stream_idle_timeout_ms = 300000
+
+[model_providers.browser-use-free.auth]
+command = "/usr/local/bin/bu-cp-token"
+args = []
+timeout_ms = 5000
+refresh_interval_ms = 300000
+
+[profiles.browser-use-free]
+model_provider = "browser-use-free"
+model = "deepseek/deepseek-v4-flash"
+model_reasoning_effort = "none"
+TOMLEOF
+fi
+chmod 0644 "$CODEX_CONFIG"
+' || echo "bootstrap: codex free-tier provider write failed (non-fatal)" >&2
+
+# bu-cp-token: hands Codex the box token as a bearer for the control-plane
+# proxy. Codex's auth.command runs this and uses stdout as the token. Reading
+# from /etc/bux/env at call time means token rotation is picked up without
+# rewriting config.toml.
+cat > /usr/local/bin/bu-cp-token <<'TOKENEOF'
+#!/usr/bin/env bash
+# Print the box token for Codex's control-plane provider auth (ENG-4785).
+set -euo pipefail
+[ -f /etc/bux/env ] && . /etc/bux/env || true
+printf '%s' "${BUX_BOX_TOKEN:-}"
+TOKENEOF
+chmod 0755 /usr/local/bin/bu-cp-token
+
 # --- agent shell helpers --------------------------------------------------
 # install.sh creates these symlinks on first boot, but new helpers added to
 # agent/ after a box has already been provisioned never get linked into
