@@ -358,6 +358,14 @@ install_ztk() {
 
 install_ztk
 
+# --- bux-agent-shell: web-terminal agent launcher -------------------------
+# bux-ttyd.service execs this (not /usr/bin/claude) so the terminal opens the
+# agent the box is configured for — codex on the free-DeepSeek path, else
+# claude (ENG-4785). Symlinked BEFORE the ttyd block below, which (re)starts
+# bux-ttyd.service: a fresh install.sh box never runs bootstrap.sh, so without
+# this the ttyd ExecStart target is missing and the service crash-loops.
+ln -sfn "$REPO_DIR/agent/bux-agent-shell" /usr/local/bin/bux-agent-shell
+
 # --- ttyd (web terminal, localhost only) -----------------------------------
 # Per-arch SHA256 from https://github.com/tsl0922/ttyd/releases/tag/1.7.7.
 # Never use `latest` for binaries you exec as root.
