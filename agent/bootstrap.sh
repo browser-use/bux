@@ -117,19 +117,23 @@ chmod 0644 "$CODEX_CONFIG"
 # OpenRouter key server-side; the box authenticates with its box token, which
 # the `bu-cp-token` helper (below) hands to codex via auth.command. Idempotent:
 # skipped if the provider block is already present.
-# Parse only BUX_CLOUD_URL out of /etc/bux/env rather than sourcing it — the
-# file is root-owned but sourcing executes its contents as shell, so a single
-# tampered line would run as root. grep the one key/value we need; the value
-# is a URL with no shell metacharacters so plain assignment is safe.
-BUX_CLOUD_URL=''
+#
+# base_url = BUX_CP_CODEX_URL: the PrivateLink interface-endpoint DNS in front
+# of the CP Codex proxy. The CP is internal-only — it is NOT reachable at the
+# public BUX_CLOUD_URL host (that routes to the public API backend, which has
+# no /api/codex route). Only the box VPC can reach the proxy, over PrivateLink.
+# So we use the endpoint DNS the provisioner wrote into /etc/bux/env, NOT a
+# derivation of BUX_CLOUD_URL. Parse only that one key (don't source the file —
+# sourcing as root would execute a tampered line).
+BUX_CP_CODEX_URL=''
 if [ -f /etc/bux/env ]; then
-  BUX_CLOUD_URL="$(grep -E '^BUX_CLOUD_URL=' /etc/bux/env | tail -n1 | cut -d= -f2- | tr -d '"'\''')"
+  BUX_CP_CODEX_URL="$(grep -E '^BUX_CP_CODEX_URL=' /etc/bux/env | tail -n1 | cut -d= -f2- | tr -d '"'\''')"
 fi
-# wss://host -> https://host, ws://host -> http://host; drop trailing slash.
-CP_BASE="${BUX_CLOUD_URL:-wss://api.browser-use.com}"
-CP_BASE="${CP_BASE/#wss:/https:}"
-CP_BASE="${CP_BASE/#ws:/http:}"
-CP_BASE="${CP_BASE%/}/api/codex/v1"
+# Empty (not configured for this env) -> skip writing the free-Codex provider.
+if [ -z "$BUX_CP_CODEX_URL" ]; then
+  echo "bootstrap: BUX_CP_CODEX_URL not set; skipping free-tier Codex provider" >&2
+else
+CP_BASE="${BUX_CP_CODEX_URL%/}/api/codex/v1"
 sudo -u bux -H CP_BASE="$CP_BASE" bash -c '
 CODEX_CONFIG="$HOME/.codex/config.toml"
 mkdir -p "$(dirname "$CODEX_CONFIG")"
@@ -156,6 +160,7 @@ TOMLEOF
 fi
 chmod 0644 "$CODEX_CONFIG"
 ' || echo "bootstrap: codex free-tier provider write failed (non-fatal)" >&2
+fi
 
 # bu-cp-token: hands Codex the box token as a bearer for the control-plane
 # proxy. Codex's auth.command runs this and uses stdout as the token. Reading

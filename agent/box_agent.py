@@ -265,9 +265,13 @@ def _codex_free_profile_active() -> bool:
 				if stripped.startswith('['):
 					# Top-level keys only — stop at the first table header.
 					break
-				if stripped.startswith('profile') and '=' in stripped:
-					value = stripped.split('=', 1)[1].strip().strip('"').strip("'")
-					return value == 'browser-use-free'
+				if '=' in stripped:
+					key = stripped.split('=', 1)[0].strip()
+					# Exact key match — not startswith, so `profile_dir` /
+					# `profiles` don't get mistaken for the top-level `profile`.
+					if key == 'profile':
+						value = stripped.split('=', 1)[1].strip().strip('"').strip("'")
+						return value == 'browser-use-free'
 	except Exception:
 		return False
 	return False
