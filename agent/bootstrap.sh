@@ -154,7 +154,10 @@ if [ ! -f "$CODEX_CONFIG" ] || ! grep -qE "^\[model_providers\.browser-use-free\
 [model_providers.browser-use-free]
 name = "Browser Use free (DeepSeek V4)"
 base_url = "$CP_BASE"
-wire_api = "chat"
+# Codex hard-removed wire_api = "chat" (Feb 2026); "responses" is the only
+# supported value. Codex calls {base_url}/responses, which the CP proxy
+# forwards to OpenRouter's drop-in Responses API. See ENG-4785.
+wire_api = "responses"
 stream_idle_timeout_ms = 300000
 
 [model_providers.browser-use-free.auth]
@@ -205,6 +208,9 @@ ln -sfn /usr/local/bin/tg-schedule       /usr/local/bin/schedule
 ln -sfn "$REPO_DIR/agent/agency-report"  /usr/local/bin/agency-report
 ln -sfn "$REPO_DIR/agent/bux-restart"    /usr/local/bin/bux-restart
 ln -sfn "$REPO_DIR/agent/bux-miniapp-tunnel" /usr/local/bin/bux-miniapp-tunnel
+# Web-terminal agent launcher: picks codex (free-DeepSeek profile or signed-in)
+# vs claude, so ttyd doesn't hardcode claude on a codex-only box (ENG-4785).
+ln -sfn "$REPO_DIR/agent/bux-agent-shell" /usr/local/bin/bux-agent-shell
 
 # --- system prompt + CLAUDE.md/AGENTS.md symlinks --------------------------
 # The one source of truth is /home/bux/system-prompt.md (copied from the
