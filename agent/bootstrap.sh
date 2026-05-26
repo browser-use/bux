@@ -145,18 +145,50 @@ case "$BUX_CP_CODEX_URL" in
   *)         BUX_CP_CODEX_URL="https://${BUX_CP_CODEX_URL}" ;;
 esac
 CP_BASE="${BUX_CP_CODEX_URL%/}/api/codex/v1"
-sudo -u bux -H CP_BASE="$CP_BASE" bash -c '
-CODEX_CONFIG="$HOME/.codex/config.toml"
-mkdir -p "$(dirname "$CODEX_CONFIG")"
-if [ ! -f "$CODEX_CONFIG" ] || ! grep -qE "^\[model_providers\.browser-use-free\]" "$CODEX_CONFIG"; then
-  cat >> "$CODEX_CONFIG" <<TOMLEOF
+# Self-healing rewrite of the free-Codex config (ENG-4785). The old "append
+# only if the provider header is absent" guard left boxes stuck: a partial or
+# old write (profile table missing, or stale wire_api = "chat") was never
+# repaired, surfacing in Codex as "profile browser-use-free not found" or a
+# wire_api load error. We instead strip every existing browser-use-free table
+# (provider, its .auth sub-table, and the profile) and re-append fresh ones on
+# every bootstrap, so an outdated box self-heals on the next /update.
+#
+# Done in Python (run as the bux user) rather than awk-inside-bash-c, which is
+# a nested-quote minefield. CP_BASE is passed via env so it isn't interpolated
+# into the script text.
+sudo -u bux -H BUX_CP_BASE="$CP_BASE" python3 - <<'PYEOF' || \
+  echo "bootstrap: codex free-tier provider write failed (non-fatal)" >&2
+import os
+from pathlib import Path
 
+cfg = Path.home() / ".codex" / "config.toml"
+cfg.parent.mkdir(parents=True, exist_ok=True)
+existing = cfg.read_text(encoding="utf-8") if cfg.exists() else ""
+
+# Drop existing browser-use-free tables: from each matching [header] line until
+# the next [header] or EOF. Non-matching tables (e.g. [features]) and top-level
+# keys (incl. the `profile` selector codex_use_free sets) are preserved.
+strip_headers = (
+    "[model_providers.browser-use-free]",
+    "[model_providers.browser-use-free.auth]",
+    "[profiles.browser-use-free]",
+)
+out, skip = [], False
+for line in existing.splitlines():
+    s = line.strip()
+    if s.startswith("["):
+        skip = s in strip_headers
+    if not skip:
+        out.append(line)
+
+base = os.environ["BUX_CP_BASE"]
+block = f'''
 [model_providers.browser-use-free]
 name = "Browser Use free (DeepSeek V4)"
-base_url = "$CP_BASE"
-# Codex hard-removed wire_api = "chat" (Feb 2026); "responses" is the only
-# supported value. Codex calls {base_url}/responses, which the CP proxy
-# forwards to OpenRouter's drop-in Responses API. See ENG-4785.
+base_url = "{base}"
+# Codex removed wire_api = "chat" (Feb 2026); "responses" is the only supported
+# value. Codex calls {{base_url}}/responses, which the CP proxy forwards to
+# OpenRouter's drop-in Responses API. See ENG-4785.
 wire_api = "responses"
 stream_idle_timeout_ms = 300000
 
@@ -170,10 +202,12 @@ refresh_interval_ms = 300000
 model_provider = "browser-use-free"
 model = "deepseek/deepseek-v4-flash"
 model_reasoning_effort = "none"
-TOMLEOF
-fi
-chmod 0644 "$CODEX_CONFIG"
-' || echo "bootstrap: codex free-tier provider write failed (non-fatal)" >&2
+'''
+
+body = "\n".join(out).rstrip("\n")
+cfg.write_text((body + "\n" if body else "") + block, encoding="utf-8")
+cfg.chmod(0o644)
+PYEOF
 fi
 
 # bu-cp-token: hands Codex the box token as a bearer for the control-plane
