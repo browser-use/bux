@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Launch the agent the box is actually configured for in the web terminal /
+# SSH session, instead of hardcoding claude (ENG-4785).
+#
+# Picks codex when the box is on the free DeepSeek path (the browser-use-free
+# profile is the default in ~/.codex/config.toml) or when codex is signed in;
+# otherwise falls back to claude. Mirrors the agent-selection logic the
+# telegram bot uses so the terminal and the bot agree on which agent runs.
+set -u
+
+CODEX_CONFIG="${CODEX_CONFIG:-$HOME/.codex/config.toml}"
+
+# True if the top-level `profile` key selects the free DeepSeek profile.
+# Top-level only: stop scanning at the first [table] header. Exact key match.
+free_profile_active() {
+  [ -f "$CODEX_CONFIG" ] || return 1
+  while IFS= read -r line; do
+    case "$line" in
+      \[*) return 1 ;;  # first table header -> no top-level profile line
+      profile*=*)
+        val="${line#*=}"
+        val="$(printf '%s' "$val" | tr -d ' "'\''')"
+        [ "$val" = "browser-use-free" ] && return 0 || return 1
+        ;;
+    esac
+  done < "$CODEX_CONFIG"
+  return 1
+}
+
+codex_signed_in() {
+  command -v codex >/dev/null 2>&1 || return 1
+  codex login status 2>&1 | grep -qi "logged in" && \
+    ! (codex login status 2>&1 | grep -qi "not logged in")
+}
+
+if command -v codex >/dev/null 2>&1 && { free_profile_active || codex_signed_in; }; then
+  exec codex "$@"
+fi
+exec claude "$@"

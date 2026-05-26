@@ -1395,6 +1395,30 @@ _AGENT_AUTH_CACHE: dict[str, tuple[float, bool]] = {}
 _AGENT_AUTH_TTL_S = 30.0
 
 
+def _codex_free_profile_active() -> bool:
+    """True if config.toml selects the free DeepSeek profile as the default.
+
+    The free path (ENG-4785) needs no `codex login` — the control plane holds
+    the credential, the box just routes to it. So "authed" for Codex means the
+    top-level `profile = "browser-use-free"` line is present. Matches the exact
+    top-level `profile` key (not startswith), so `profile_dir`/`profiles` aren't
+    mistaken for the default-profile selector. Mirror of the same helper in
+    box_agent.py.
+    """
+    try:
+        with open(CODEX_CONFIG, encoding="utf-8") as f:
+            for line in f:
+                stripped = line.strip()
+                if stripped.startswith("["):
+                    break  # top-level keys only — stop at the first table header
+                if "=" in stripped and stripped.split("=", 1)[0].strip() == "profile":
+                    value = stripped.split("=", 1)[1].strip().strip('"').strip("'")
+                    return value == "browser-use-free"
+    except Exception:
+        return False
+    return False
+
+
 def _is_agent_authed(agent: str) -> bool:
     """Cheap check: is this CLI signed in? Shells out to the CLI's
     `auth status` and caches the result for `_AGENT_AUTH_TTL_S` seconds.
@@ -1421,6 +1445,13 @@ def _is_agent_authed(agent: str) -> bool:
     cached = _AGENT_AUTH_CACHE.get(agent)
     if cached and now - cached[0] < _AGENT_AUTH_TTL_S:
         return cached[1]
+    # Free DeepSeek path (ENG-4785): Codex has no `codex login` here — auth is
+    # the browser-use-free profile + bu-cp-token, so `codex login status` would
+    # report "not logged in" and misroute the user to Claude / the picker.
+    # Treat an active free profile as authed (mirrors box_agent.check_codex_authed).
+    if agent == AGENT_CODEX and _codex_free_profile_active():
+        _AGENT_AUTH_CACHE[agent] = (now, True)
+        return True
     sub = ["auth", "status"] if agent == AGENT_CLAUDE else ["login", "status"]
     cmd = ["sudo", "-iu", "bux", agent, *sub]
     try:
@@ -3637,10 +3668,16 @@ def _login_status_cached(provider: str) -> bool:
         except Exception:
             ok = False
     elif provider == "codex":
-        try:
-            ok, _ = CODEX_AUTH_PROVIDER.check()
-        except Exception:
-            ok = False
+        # Free DeepSeek path (ENG-4785): no `codex login`, so an active
+        # browser-use-free profile counts as signed in (else the picker shows
+        # "not signed in" for a box that's actually ready).
+        if _codex_free_profile_active():
+            ok = True
+        else:
+            try:
+                ok, _ = CODEX_AUTH_PROVIDER.check()
+            except Exception:
+                ok = False
     else:
         return False
     with _login_status_lock:
