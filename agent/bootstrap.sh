@@ -133,6 +133,17 @@ fi
 if [ -z "$BUX_CP_CODEX_URL" ]; then
   echo "bootstrap: BUX_CP_CODEX_URL not set; skipping free-tier Codex provider" >&2
 else
+# Normalize the scheme: Codex needs an absolute https:// base_url. The value is
+# meant to be a full URL, but tolerate a bare host (or ws/wss left over from a
+# misconfigured SSM value) by coercing to https:// rather than emitting an
+# invalid scheme-less base_url that silently breaks routing.
+case "$BUX_CP_CODEX_URL" in
+  https://*) ;;
+  http://*)  ;;
+  wss://*)   BUX_CP_CODEX_URL="https://${BUX_CP_CODEX_URL#wss://}" ;;
+  ws://*)    BUX_CP_CODEX_URL="http://${BUX_CP_CODEX_URL#ws://}" ;;
+  *)         BUX_CP_CODEX_URL="https://${BUX_CP_CODEX_URL}" ;;
+esac
 CP_BASE="${BUX_CP_CODEX_URL%/}/api/codex/v1"
 sudo -u bux -H CP_BASE="$CP_BASE" bash -c '
 CODEX_CONFIG="$HOME/.codex/config.toml"
