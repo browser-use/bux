@@ -104,6 +104,93 @@ fi
 chmod 0644 "$CODEX_CONFIG"
 ' || echo "bootstrap: codex config write failed (non-fatal)" >&2
 
+# --- free-tier Codex provider (ENG-4785) ----------------------------------
+# Ship an INERT `browser-use-free` provider + profile in ~/.codex/config.toml
+# that routes Codex through the cloud control-plane proxy to DeepSeek V4 on
+# OpenRouter. It is deliberately NOT the default model_provider — `codex exec`
+# reads the default and ignores --profile, so making it default here would
+# silently route own-sub users through us. The cloud flips it on per-box by
+# writing a top-level `profile = "browser-use-free"` line (codex_use_free WS
+# command) only when the user picks the "no sub" option in setup.
+#
+# base_url points at the control plane (NOT openrouter.ai) so the CP holds the
+# OpenRouter key server-side; the box authenticates with its box token, which
+# the `bu-cp-token` helper (below) hands to codex via auth.command. Idempotent:
+# skipped if the provider block is already present.
+#
+# base_url = BUX_CP_CODEX_URL: the PrivateLink interface-endpoint DNS in front
+# of the CP Codex proxy. The CP is internal-only — it is NOT reachable at the
+# public BUX_CLOUD_URL host (that routes to the public API backend, which has
+# no /api/codex route). Only the box VPC can reach the proxy, over PrivateLink.
+# So we use the endpoint DNS the provisioner wrote into /etc/bux/env, NOT a
+# derivation of BUX_CLOUD_URL. Parse only that one key (don't source the file —
+# sourcing as root would execute a tampered line).
+BUX_CP_CODEX_URL=''
+if [ -f /etc/bux/env ]; then
+  BUX_CP_CODEX_URL="$(grep -E '^BUX_CP_CODEX_URL=' /etc/bux/env | tail -n1 | cut -d= -f2- | tr -d '"'\''')"
+fi
+# Empty (not configured for this env) -> skip writing the free-Codex provider.
+if [ -z "$BUX_CP_CODEX_URL" ]; then
+  echo "bootstrap: BUX_CP_CODEX_URL not set; skipping free-tier Codex provider" >&2
+else
+# Normalize the scheme: Codex needs an absolute https:// base_url. The value is
+# meant to be a full URL, but tolerate a bare host (or ws/wss left over from a
+# misconfigured SSM value) by coercing to https:// rather than emitting an
+# invalid scheme-less base_url that silently breaks routing.
+case "$BUX_CP_CODEX_URL" in
+  https://*) ;;
+  http://*)  ;;
+  wss://*)   BUX_CP_CODEX_URL="https://${BUX_CP_CODEX_URL#wss://}" ;;
+  ws://*)    BUX_CP_CODEX_URL="http://${BUX_CP_CODEX_URL#ws://}" ;;
+  *)         BUX_CP_CODEX_URL="https://${BUX_CP_CODEX_URL}" ;;
+esac
+CP_BASE="${BUX_CP_CODEX_URL%/}/api/codex/v1"
+sudo -u bux -H CP_BASE="$CP_BASE" bash -c '
+CODEX_CONFIG="$HOME/.codex/config.toml"
+mkdir -p "$(dirname "$CODEX_CONFIG")"
+if [ ! -f "$CODEX_CONFIG" ] || ! grep -qE "^\[model_providers\.browser-use-free\]" "$CODEX_CONFIG"; then
+  cat >> "$CODEX_CONFIG" <<TOMLEOF
+
+[model_providers.browser-use-free]
+name = "Browser Use free (DeepSeek V4)"
+base_url = "$CP_BASE"
+wire_api = "chat"
+stream_idle_timeout_ms = 300000
+
+[model_providers.browser-use-free.auth]
+command = "/usr/local/bin/bu-cp-token"
+args = []
+timeout_ms = 5000
+refresh_interval_ms = 300000
+
+[profiles.browser-use-free]
+model_provider = "browser-use-free"
+model = "deepseek/deepseek-v4-flash"
+model_reasoning_effort = "none"
+TOMLEOF
+fi
+chmod 0644 "$CODEX_CONFIG"
+' || echo "bootstrap: codex free-tier provider write failed (non-fatal)" >&2
+fi
+
+# bu-cp-token: hands Codex the box token as a bearer for the control-plane
+# proxy. Codex's auth.command runs this and uses stdout as the token. Reading
+# from /etc/bux/env at call time means token rotation is picked up without
+# rewriting config.toml.
+cat > /usr/local/bin/bu-cp-token <<'TOKENEOF'
+#!/usr/bin/env bash
+# Print the box token for Codex's control-plane provider auth (ENG-4785).
+# Parse only BUX_BOX_TOKEN out of /etc/bux/env — don't source it, so a
+# tampered env file can't execute arbitrary shell when codex invokes us.
+set -euo pipefail
+token=''
+if [ -f /etc/bux/env ]; then
+  token="$(grep -E '^BUX_BOX_TOKEN=' /etc/bux/env | tail -n1 | cut -d= -f2- | tr -d '"'\''')"
+fi
+printf '%s' "$token"
+TOKENEOF
+chmod 0755 /usr/local/bin/bu-cp-token
+
 # --- agent shell helpers --------------------------------------------------
 # install.sh creates these symlinks on first boot, but new helpers added to
 # agent/ after a box has already been provisioned never get linked into

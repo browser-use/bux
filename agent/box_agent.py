@@ -248,6 +248,35 @@ async def check_claude_authed() -> bool:
 	return '"loggedin": true' in text or '"loggedin":true' in text
 
 
+def _codex_free_profile_active() -> bool:
+	"""True if config.toml selects the free DeepSeek profile as default.
+
+	The free path (ENG-4785) needs no `codex login` — the control plane holds
+	the credential, the box just routes to it. So "authed" for this box means
+	the top-level `profile = "browser-use-free"` line is present. Checked
+	before shelling out to `codex login status` so the free path reports
+	authed without a sign-in.
+	"""
+	try:
+		cfg = '/home/bux/.codex/config.toml'
+		with open(cfg, encoding='utf-8') as f:
+			for line in f:
+				stripped = line.strip()
+				if stripped.startswith('['):
+					# Top-level keys only — stop at the first table header.
+					break
+				if '=' in stripped:
+					key = stripped.split('=', 1)[0].strip()
+					# Exact key match — not startswith, so `profile_dir` /
+					# `profiles` don't get mistaken for the top-level `profile`.
+					if key == 'profile':
+						value = stripped.split('=', 1)[1].strip().strip('"').strip("'")
+						return value == 'browser-use-free'
+	except Exception:
+		return False
+	return False
+
+
 async def check_codex_authed() -> bool:
 	"""Shell out to `codex login status`; return True iff logged in.
 
@@ -256,7 +285,12 @@ async def check_codex_authed() -> bool:
 	failure. Matching plain-text substrings keeps us forward-compatible
 	with minor copy changes; the false case (CLI not installed, etc.)
 	just keeps codex_authed=false until the user installs / signs in.
+
+	The free DeepSeek path short-circuits this: it has no login, so an
+	active `browser-use-free` profile counts as authed.
 	"""
+	if _codex_free_profile_active():
+		return True
 	try:
 		proc = await asyncio.create_subprocess_exec(
 			CODEX_BIN,
@@ -950,6 +984,11 @@ class Agent:
 			await self._codex_login_start()
 		elif cmd == 'codex_login_cancel':
 			await self._codex_login_cancel()
+		elif cmd == 'codex_use_free':
+			# Point Codex at the free DeepSeek path (ENG-4785): select the
+			# inert browser-use-free profile bootstrap wrote, then report
+			# codex_authed so the wizard completes. No login involved.
+			await self._codex_use_free()
 		elif cmd == 'ping':
 			await self._send({'type': 'pong'})
 		else:
@@ -2066,6 +2105,75 @@ class Agent:
 	async def _codex_login_cancel(self) -> None:
 		await self._codex_login_cleanup()
 		await self._send({'type': 'ack', 'cmd': 'codex_login_cancel', 'ok': True})
+
+	async def _codex_use_free(self) -> None:
+		"""Select the free DeepSeek profile (ENG-4785).
+
+		Bootstrap already wrote the inert `[profiles.browser-use-free]` block;
+		this just makes it the default by ensuring a top-level
+		`profile = "browser-use-free"` line, which `codex exec` honors. Then
+		nudge the auth poll loop — `_codex_free_profile_active()` now returns
+		true, so it sends `codex_authed` and the wizard completes. No login.
+		"""
+		# Set the TOP-LEVEL `profile` key (the one `codex exec` honors). awk does
+		# it in a single pass so the gate can't drift from the rewrite scope: a
+		# top-level profile line (before the first [table]) is replaced in place;
+		# if none exists, the key is inserted at the very top. An in-table
+		# `profile = ...` is left alone — it isn't the default and must not be
+		# mistaken for one. Either way the top-level key ends up set, so success
+		# always means the free profile is the default.
+		script = r'''
+set -euo pipefail
+CFG="$HOME/.codex/config.toml"
+mkdir -p "$(dirname "$CFG")"
+touch "$CFG"
+awk '
+  BEGIN { seen_table = 0; replaced = 0 }
+  /^[[:space:]]*\[/ {
+    # First table header: if we never replaced a top-level profile line,
+    # emit one now (above this header) so it stays top-level.
+    if (!seen_table && !replaced) { print "profile = \"browser-use-free\""; replaced = 1 }
+    seen_table = 1
+  }
+  (!seen_table && $0 ~ /^[[:space:]]*profile[[:space:]]*=/) {
+    print "profile = \"browser-use-free\""; replaced = 1; next
+  }
+  { print }
+  END { if (!replaced) print "profile = \"browser-use-free\"" }
+' "$CFG" > "$CFG.tmp" && mv "$CFG.tmp" "$CFG"
+# Verify the top-level key is actually set before reporting success.
+awk '/^[[:space:]]*\[/ { exit }
+     /^[[:space:]]*profile[[:space:]]*=[[:space:]]*"browser-use-free"/ { found = 1 }
+     END { exit(found ? 0 : 1) }' "$CFG"
+chmod 0644 "$CFG"
+'''
+		try:
+			proc = await asyncio.create_subprocess_exec(
+				'sudo',
+				'-u',
+				'bux',
+				'-H',
+				'bash',
+				'-c',
+				script,
+				stdout=asyncio.subprocess.PIPE,
+				stderr=asyncio.subprocess.STDOUT,
+			)
+			res = await _run_with_timeout(proc, 10)
+		except Exception:
+			LOG.exception('codex_use_free: failed to write profile')
+			res = None
+
+		if res is None or proc.returncode != 0:
+			detail = (res[0].decode(errors='replace') if res else '') or 'config write failed'
+			await self._send(
+				{'type': 'ack', 'cmd': 'codex_use_free', 'ok': False, 'error': detail[:200]}
+			)
+			return
+
+		await self._send({'type': 'ack', 'cmd': 'codex_use_free', 'ok': True})
+		# Wake the auth poll loop so codex_authed flips immediately.
+		self._codex_auth_wakeup.set()
 
 	async def _codex_login_cleanup(self) -> None:
 		"""Tear down any in-flight codex_login pty + reader task. Mirror
