@@ -15,14 +15,20 @@ CODEX_CONFIG="${CODEX_CONFIG:-$HOME/.codex/config.toml}"
 free_profile_active() {
   [ -f "$CODEX_CONFIG" ] || return 1
   while IFS= read -r line; do
-    case "$line" in
+    # Strip leading whitespace so indented headers/keys are matched uniformly.
+    trimmed="${line#"${line%%[![:space:]]*}"}"
+    # Extract the key (text before the first '='), whitespace-trimmed, so we
+    # match the EXACT top-level `profile` key — not `profile_dir`/`profiles`.
+    key="${trimmed%%=*}"
+    key="${key%"${key##*[![:space:]]}"}"
+    case "$trimmed" in
       \[*) return 1 ;;  # first table header -> no top-level profile line
-      profile*=*)
-        val="${line#*=}"
-        val="$(printf '%s' "$val" | tr -d ' "'\''')"
-        [ "$val" = "browser-use-free" ] && return 0 || return 1
-        ;;
     esac
+    if [ "$key" = "profile" ] && [ "$trimmed" != "$key" ]; then
+      val="${trimmed#*=}"
+      val="$(printf '%s' "$val" | tr -d ' "'\''')"
+      [ "$val" = "browser-use-free" ] && return 0 || return 1
+    fi
   done < "$CODEX_CONFIG"
   return 1
 }
