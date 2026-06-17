@@ -13,10 +13,6 @@ $ curl -fsSL https://raw.githubusercontent.com/browser-use/bux/main/install.sh \
 ```
 
 More launch links:
-
-- [Public demo release](https://github.com/browser-use/bux/releases/tag/box-demo-2026-05-14)
-- [Pinned announcement discussion](https://github.com/browser-use/bux/discussions/181)
-- [Browser Use Box wiki](https://github.com/browser-use/bux/wiki)
 - [Launch page](https://browser-use.github.io/bux/)
 - [Managed pilot for Telegram-heavy teams](https://browser-use.github.io/bux/pilot.html)
 - [Managed pilot playbook](https://browser-use.github.io/bux/managed-pilot-playbook.html)
