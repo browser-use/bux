@@ -127,7 +127,7 @@ chmod 0644 "$CODEX_CONFIG"
 # sourcing as root would execute a tampered line).
 BUX_CP_CODEX_URL=''
 if [ -f /etc/bux/env ]; then
-  BUX_CP_CODEX_URL="$(grep -E '^BUX_CP_CODEX_URL=' /etc/bux/env | tail -n1 | cut -d= -f2- | tr -d '"'\''')"
+  BUX_CP_CODEX_URL="$(grep -E '^BUX_CP_CODEX_URL=' /etc/bux/env | tail -n1 | cut -d= -f2- | tr -d '"'\''' || true)"
 fi
 # Empty (not configured for this env) -> skip writing the free-Codex provider.
 if [ -z "$BUX_CP_CODEX_URL" ]; then
@@ -222,7 +222,7 @@ cat > /usr/local/bin/bu-cp-token <<'TOKENEOF'
 set -euo pipefail
 token=''
 if [ -f /etc/bux/env ]; then
-  token="$(grep -E '^BUX_BOX_TOKEN=' /etc/bux/env | tail -n1 | cut -d= -f2- | tr -d '"'\''')"
+  token="$(grep -E '^BUX_BOX_TOKEN=' /etc/bux/env | tail -n1 | cut -d= -f2- | tr -d '"'\''' || true)"
 fi
 printf '%s' "$token"
 TOKENEOF
