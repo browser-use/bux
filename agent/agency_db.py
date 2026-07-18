@@ -84,6 +84,106 @@ def init_schema(db: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_sugg_created     ON suggestions(created_at);
         CREATE INDEX IF NOT EXISTS idx_sugg_msg         ON suggestions(tg_chat_id, tg_message_id);
         CREATE INDEX IF NOT EXISTS idx_sugg_worker_topic ON suggestions(worker_topic_id);
+
+        CREATE TABLE IF NOT EXISTS agentcard_wallets (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_key     TEXT NOT NULL DEFAULT 'default',
+          owner_user_id   TEXT NOT NULL DEFAULT '',
+          name            TEXT NOT NULL,
+          currency        TEXT NOT NULL DEFAULT 'USD',
+          status          TEXT CHECK (status IN ('active','disabled')) NOT NULL DEFAULT 'active',
+          risk_tier       TEXT NOT NULL DEFAULT 'local_test',
+          created_by      TEXT NOT NULL DEFAULT '',
+          metadata_json   TEXT,
+          created_at      INTEGER NOT NULL,
+          updated_at      INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_agentcard_wallet_project
+          ON agentcard_wallets(project_key, owner_user_id, status);
+
+        CREATE TABLE IF NOT EXISTS agentcard_wallet_ledger (
+          id              INTEGER PRIMARY KEY AUTOINCREMENT,
+          wallet_id       INTEGER NOT NULL REFERENCES agentcard_wallets(id),
+          entry_type      TEXT CHECK (entry_type IN
+                            ('credit','hold','release','capture','refund','adjustment'))
+                          NOT NULL,
+          effect_cents    INTEGER NOT NULL,
+          amount_cents    INTEGER NOT NULL CHECK (amount_cents >= 0),
+          source          TEXT NOT NULL DEFAULT '',
+          idempotency_key TEXT,
+          metadata_json   TEXT,
+          created_at      INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_agentcard_ledger_wallet
+          ON agentcard_wallet_ledger(wallet_id, created_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_agentcard_ledger_idempotency
+          ON agentcard_wallet_ledger(wallet_id, idempotency_key)
+          WHERE idempotency_key IS NOT NULL;
+
+        CREATE TABLE IF NOT EXISTS agentcard_reservations (
+          id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+          wallet_id             INTEGER NOT NULL REFERENCES agentcard_wallets(id),
+          project_key           TEXT NOT NULL DEFAULT 'default',
+          run_id                TEXT NOT NULL DEFAULT '',
+          prompt                TEXT NOT NULL DEFAULT '',
+          max_amount_cents      INTEGER NOT NULL CHECK (max_amount_cents > 0),
+          settled_amount_cents  INTEGER NOT NULL DEFAULT 0 CHECK (settled_amount_cents >= 0),
+          released_amount_cents INTEGER NOT NULL DEFAULT 0 CHECK (released_amount_cents >= 0),
+          status                TEXT CHECK (status IN
+                                  ('reserved','card_requested','settled','cancelled','expired'))
+                                NOT NULL DEFAULT 'reserved',
+          expires_at            INTEGER,
+          idempotency_key       TEXT,
+          metadata_json         TEXT,
+          created_at            INTEGER NOT NULL,
+          updated_at            INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_agentcard_reservations_wallet
+          ON agentcard_reservations(wallet_id, status, created_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_agentcard_reservation_run
+          ON agentcard_reservations(wallet_id, run_id)
+          WHERE run_id != '';
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_agentcard_reservation_idempotency
+          ON agentcard_reservations(wallet_id, idempotency_key)
+          WHERE idempotency_key IS NOT NULL;
+
+        CREATE TABLE IF NOT EXISTS agentcard_cards (
+          id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+          wallet_id             INTEGER NOT NULL REFERENCES agentcard_wallets(id),
+          reservation_id        INTEGER NOT NULL REFERENCES agentcard_reservations(id),
+          provider_card_id      TEXT NOT NULL DEFAULT '',
+          provider_request_id   TEXT NOT NULL DEFAULT '',
+          requested_amount_cents INTEGER NOT NULL CHECK (requested_amount_cents > 0),
+          captured_amount_cents INTEGER NOT NULL DEFAULT 0 CHECK (captured_amount_cents >= 0),
+          last4                 TEXT NOT NULL DEFAULT '',
+          merchant              TEXT NOT NULL DEFAULT '',
+          status                TEXT CHECK (status IN
+                                  ('provider_not_configured','requested','issued','authorized',
+                                   'captured','declined','refunded','cancelled','expired'))
+                                NOT NULL DEFAULT 'provider_not_configured',
+          evidence_json         TEXT,
+          details_returned_at   INTEGER,
+          idempotency_key       TEXT,
+          created_at            INTEGER NOT NULL,
+          updated_at            INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_agentcard_cards_wallet
+          ON agentcard_cards(wallet_id, created_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_agentcard_cards_idempotency
+          ON agentcard_cards(reservation_id, idempotency_key)
+          WHERE idempotency_key IS NOT NULL;
+
+        CREATE TABLE IF NOT EXISTS agentcard_card_events (
+          id                INTEGER PRIMARY KEY AUTOINCREMENT,
+          wallet_card_id    INTEGER NOT NULL REFERENCES agentcard_cards(id),
+          event_type        TEXT NOT NULL,
+          provider_event_id TEXT NOT NULL DEFAULT '',
+          idempotency_key   TEXT,
+          payload_json      TEXT,
+          created_at        INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_agentcard_card_events_card
+          ON agentcard_card_events(wallet_card_id, created_at);
         """
     )
     # Backfill columns on pre-existing tables. ALTER TABLE has no
@@ -342,3 +442,569 @@ def pop_refine_context_for_thread(
     )
     db.commit()
     return "\n".join(parts)
+
+
+def _json_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _require_positive_cents(amount_cents: int, field: str = "amount_cents") -> int:
+    try:
+        value = int(amount_cents)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be an integer number of cents") from exc
+    if value <= 0:
+        raise ValueError(f"{field} must be greater than 0")
+    return value
+
+
+def _agentcard_wallet_row(db: sqlite3.Connection, wallet_id: int) -> sqlite3.Row:
+    row = db.execute(
+        "SELECT * FROM agentcard_wallets WHERE id = ?",
+        (int(wallet_id),),
+    ).fetchone()
+    if row is None:
+        raise ValueError("wallet not found")
+    return row
+
+
+def _agentcard_ledger_effect_cents(db: sqlite3.Connection, wallet_id: int) -> int:
+    row = db.execute(
+        """
+        SELECT COALESCE(SUM(effect_cents), 0) AS balance_cents
+          FROM agentcard_wallet_ledger
+         WHERE wallet_id = ?
+        """,
+        (int(wallet_id),),
+    ).fetchone()
+    return int(row["balance_cents"] or 0) if row else 0
+
+
+def _agentcard_active_hold_cents(db: sqlite3.Connection, wallet_id: int) -> int:
+    row = db.execute(
+        """
+        SELECT COALESCE(SUM(max_amount_cents - settled_amount_cents - released_amount_cents), 0) AS hold_cents
+          FROM agentcard_reservations
+         WHERE wallet_id = ?
+           AND status IN ('reserved', 'card_requested')
+        """,
+        (int(wallet_id),),
+    ).fetchone()
+    return max(0, int(row["hold_cents"] or 0)) if row else 0
+
+
+def _agentcard_wallet_summary(
+    db: sqlite3.Connection,
+    row: sqlite3.Row | dict[str, Any],
+) -> dict[str, Any]:
+    wallet = dict(row)
+    wallet_id = int(wallet["id"])
+    available_cents = _agentcard_ledger_effect_cents(db, wallet_id)
+    active_hold_cents = _agentcard_active_hold_cents(db, wallet_id)
+    wallet["available_cents"] = available_cents
+    wallet["active_hold_cents"] = active_hold_cents
+    wallet["total_balance_cents"] = available_cents + active_hold_cents
+    return wallet
+
+
+def agentcard_create_wallet(
+    db: sqlite3.Connection,
+    *,
+    name: str,
+    project_key: str = "default",
+    owner_user_id: str = "",
+    currency: str = "USD",
+    risk_tier: str = "local_test",
+    created_by: str = "",
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    name = " ".join(str(name or "").split())
+    if not name:
+        raise ValueError("wallet name required")
+    currency = str(currency or "USD").upper()
+    if len(currency) != 3:
+        raise ValueError("currency must be a 3-letter code")
+    now = _now()
+    cur = db.execute(
+        """
+        INSERT INTO agentcard_wallets (
+          project_key, owner_user_id, name, currency, risk_tier, created_by,
+          metadata_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(project_key or "default"),
+            str(owner_user_id or ""),
+            name[:120],
+            currency,
+            str(risk_tier or "local_test"),
+            str(created_by or ""),
+            _json_or_none(metadata),
+            now,
+            now,
+        ),
+    )
+    db.commit()
+    return agentcard_get_wallet(db, int(cur.lastrowid))
+
+
+def agentcard_get_wallet(db: sqlite3.Connection, wallet_id: int) -> dict[str, Any]:
+    return _agentcard_wallet_summary(db, _agentcard_wallet_row(db, wallet_id))
+
+
+def agentcard_list_wallets(
+    db: sqlite3.Connection,
+    *,
+    project_key: str | None = None,
+    owner_user_id: str | None = None,
+    include_disabled: bool = False,
+) -> list[dict[str, Any]]:
+    where: list[str] = []
+    params: list[Any] = []
+    if project_key is not None:
+        where.append("project_key = ?")
+        params.append(str(project_key or "default"))
+    if owner_user_id is not None:
+        where.append("owner_user_id = ?")
+        params.append(str(owner_user_id or ""))
+    if not include_disabled:
+        where.append("status = 'active'")
+    sql = "SELECT * FROM agentcard_wallets"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY id DESC"
+    rows = db.execute(sql, params).fetchall()
+    return [_agentcard_wallet_summary(db, row) for row in rows]
+
+
+def agentcard_fund_wallet(
+    db: sqlite3.Connection,
+    wallet_id: int,
+    *,
+    amount_cents: int,
+    source: str = "local_admin_grant",
+    idempotency_key: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    amount = _require_positive_cents(amount_cents)
+    wallet = _agentcard_wallet_row(db, wallet_id)
+    if wallet["status"] != "active":
+        raise ValueError("wallet is disabled")
+    if idempotency_key:
+        existing = db.execute(
+            """
+            SELECT id FROM agentcard_wallet_ledger
+             WHERE wallet_id = ? AND idempotency_key = ?
+             LIMIT 1
+            """,
+            (int(wallet_id), idempotency_key),
+        ).fetchone()
+        if existing:
+            return agentcard_get_wallet(db, wallet_id)
+    now = _now()
+    db.execute(
+        """
+        INSERT INTO agentcard_wallet_ledger (
+          wallet_id, entry_type, effect_cents, amount_cents, source,
+          idempotency_key, metadata_json, created_at
+        ) VALUES (?, 'credit', ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            int(wallet_id),
+            amount,
+            amount,
+            str(source or "local_admin_grant"),
+            idempotency_key,
+            _json_or_none(metadata),
+            now,
+        ),
+    )
+    db.execute(
+        "UPDATE agentcard_wallets SET updated_at = ? WHERE id = ?",
+        (now, int(wallet_id)),
+    )
+    db.commit()
+    return agentcard_get_wallet(db, wallet_id)
+
+
+def _agentcard_existing_reservation(
+    db: sqlite3.Connection,
+    wallet_id: int,
+    *,
+    run_id: str = "",
+    idempotency_key: str | None = None,
+) -> dict[str, Any] | None:
+    row = None
+    if idempotency_key:
+        row = db.execute(
+            """
+            SELECT * FROM agentcard_reservations
+             WHERE wallet_id = ? AND idempotency_key = ?
+             LIMIT 1
+            """,
+            (int(wallet_id), idempotency_key),
+        ).fetchone()
+    if row is None and run_id:
+        row = db.execute(
+            """
+            SELECT * FROM agentcard_reservations
+             WHERE wallet_id = ? AND run_id = ?
+             LIMIT 1
+            """,
+            (int(wallet_id), run_id),
+        ).fetchone()
+    return agentcard_reservation_payload(db, row) if row else None
+
+
+def agentcard_reserve_wallet(
+    db: sqlite3.Connection,
+    wallet_id: int,
+    *,
+    amount_cents: int,
+    run_id: str = "",
+    prompt: str = "",
+    expires_at: int | None = None,
+    idempotency_key: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    amount = _require_positive_cents(amount_cents, "max_amount_cents")
+    wallet = _agentcard_wallet_row(db, wallet_id)
+    if wallet["status"] != "active":
+        raise ValueError("wallet is disabled")
+    existing = _agentcard_existing_reservation(
+        db,
+        wallet_id,
+        run_id=str(run_id or ""),
+        idempotency_key=idempotency_key,
+    )
+    if existing:
+        return existing
+    available = _agentcard_ledger_effect_cents(db, wallet_id)
+    if available < amount:
+        raise ValueError("wallet has insufficient available balance")
+    now = _now()
+    cur = db.execute(
+        """
+        INSERT INTO agentcard_reservations (
+          wallet_id, project_key, run_id, prompt, max_amount_cents, status,
+          expires_at, idempotency_key, metadata_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 'reserved', ?, ?, ?, ?, ?)
+        """,
+        (
+            int(wallet_id),
+            str(wallet["project_key"] or "default"),
+            str(run_id or ""),
+            str(prompt or "")[:2000],
+            amount,
+            expires_at,
+            idempotency_key,
+            _json_or_none(metadata),
+            now,
+            now,
+        ),
+    )
+    reservation_id = int(cur.lastrowid)
+    db.execute(
+        """
+        INSERT INTO agentcard_wallet_ledger (
+          wallet_id, entry_type, effect_cents, amount_cents, source,
+          idempotency_key, metadata_json, created_at
+        ) VALUES (?, 'hold', ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            int(wallet_id),
+            -amount,
+            amount,
+            "reservation",
+            f"reservation:{reservation_id}:hold",
+            _json_or_none({"reservation_id": reservation_id}),
+            now,
+        ),
+    )
+    db.execute(
+        "UPDATE agentcard_wallets SET updated_at = ? WHERE id = ?",
+        (now, int(wallet_id)),
+    )
+    db.commit()
+    return agentcard_get_reservation(db, reservation_id)
+
+
+def agentcard_get_reservation(
+    db: sqlite3.Connection,
+    reservation_id: int,
+) -> dict[str, Any]:
+    row = db.execute(
+        "SELECT * FROM agentcard_reservations WHERE id = ?",
+        (int(reservation_id),),
+    ).fetchone()
+    if row is None:
+        raise ValueError("reservation not found")
+    return agentcard_reservation_payload(db, row)
+
+
+def agentcard_reservation_payload(
+    db: sqlite3.Connection,
+    row: sqlite3.Row | dict[str, Any],
+) -> dict[str, Any]:
+    reservation = dict(row)
+    remaining = (
+        int(reservation["max_amount_cents"])
+        - int(reservation["settled_amount_cents"])
+        - int(reservation["released_amount_cents"])
+    )
+    reservation["remaining_hold_cents"] = max(0, remaining)
+    reservation["wallet"] = agentcard_get_wallet(db, int(reservation["wallet_id"]))
+    return reservation
+
+
+def agentcard_cancel_reservation(
+    db: sqlite3.Connection,
+    reservation_id: int,
+    *,
+    reason: str = "cancelled",
+) -> dict[str, Any]:
+    row = db.execute(
+        "SELECT * FROM agentcard_reservations WHERE id = ?",
+        (int(reservation_id),),
+    ).fetchone()
+    if row is None:
+        raise ValueError("reservation not found")
+    if row["status"] in {"cancelled", "settled", "expired"}:
+        return agentcard_reservation_payload(db, row)
+    remaining = max(
+        0,
+        int(row["max_amount_cents"])
+        - int(row["settled_amount_cents"])
+        - int(row["released_amount_cents"]),
+    )
+    now = _now()
+    if remaining:
+        db.execute(
+            """
+            INSERT INTO agentcard_wallet_ledger (
+              wallet_id, entry_type, effect_cents, amount_cents, source,
+              idempotency_key, metadata_json, created_at
+            ) VALUES (?, 'release', ?, ?, 'reservation_cancel', ?, ?, ?)
+            """,
+            (
+                int(row["wallet_id"]),
+                remaining,
+                remaining,
+                f"reservation:{reservation_id}:cancel-release",
+                _json_or_none({"reservation_id": int(reservation_id), "reason": reason}),
+                now,
+            ),
+        )
+    db.execute(
+        """
+        UPDATE agentcard_reservations
+           SET status = 'cancelled',
+               released_amount_cents = released_amount_cents + ?,
+               updated_at = ?
+         WHERE id = ?
+        """,
+        (remaining, now, int(reservation_id)),
+    )
+    db.execute(
+        "UPDATE agentcard_wallets SET updated_at = ? WHERE id = ?",
+        (now, int(row["wallet_id"])),
+    )
+    db.commit()
+    return agentcard_get_reservation(db, reservation_id)
+
+
+def agentcard_settle_reservation(
+    db: sqlite3.Connection,
+    reservation_id: int,
+    *,
+    captured_amount_cents: int,
+    provider_event_id: str = "",
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    captured = int(captured_amount_cents)
+    if captured < 0:
+        raise ValueError("captured_amount_cents must be >= 0")
+    row = db.execute(
+        "SELECT * FROM agentcard_reservations WHERE id = ?",
+        (int(reservation_id),),
+    ).fetchone()
+    if row is None:
+        raise ValueError("reservation not found")
+    if row["status"] in {"cancelled", "settled", "expired"}:
+        return agentcard_reservation_payload(db, row)
+    max_amount = int(row["max_amount_cents"])
+    if captured > max_amount:
+        raise ValueError("captured amount exceeds reservation")
+    release = max_amount - captured
+    now = _now()
+    db.execute(
+        """
+        INSERT INTO agentcard_wallet_ledger (
+          wallet_id, entry_type, effect_cents, amount_cents, source,
+          idempotency_key, metadata_json, created_at
+        ) VALUES (?, 'capture', 0, ?, 'provider_capture', ?, ?, ?)
+        """,
+        (
+            int(row["wallet_id"]),
+            captured,
+            f"reservation:{reservation_id}:capture:{provider_event_id or 'manual'}",
+            _json_or_none(metadata),
+            now,
+        ),
+    )
+    if release:
+        db.execute(
+            """
+            INSERT INTO agentcard_wallet_ledger (
+              wallet_id, entry_type, effect_cents, amount_cents, source,
+              idempotency_key, metadata_json, created_at
+            ) VALUES (?, 'release', ?, ?, 'reservation_settle', ?, ?, ?)
+            """,
+            (
+                int(row["wallet_id"]),
+                release,
+                release,
+                f"reservation:{reservation_id}:settle-release",
+                _json_or_none(metadata),
+                now,
+            ),
+        )
+    db.execute(
+        """
+        UPDATE agentcard_reservations
+           SET status = 'settled',
+               settled_amount_cents = ?,
+               released_amount_cents = ?,
+               updated_at = ?
+         WHERE id = ?
+        """,
+        (captured, release, now, int(reservation_id)),
+    )
+    db.execute(
+        """
+        UPDATE agentcard_cards
+           SET captured_amount_cents = ?,
+               status = CASE
+                 WHEN status IN ('provider_not_configured', 'requested') THEN status
+                 ELSE 'captured'
+               END,
+               updated_at = ?
+         WHERE reservation_id = ?
+        """,
+        (captured, now, int(reservation_id)),
+    )
+    db.execute(
+        "UPDATE agentcard_wallets SET updated_at = ? WHERE id = ?",
+        (now, int(row["wallet_id"])),
+    )
+    db.commit()
+    return agentcard_get_reservation(db, reservation_id)
+
+
+def agentcard_request_card(
+    db: sqlite3.Connection,
+    reservation_id: int,
+    *,
+    requested_amount_cents: int | None = None,
+    merchant: str = "",
+    evidence: dict[str, Any] | None = None,
+    idempotency_key: str | None = None,
+) -> dict[str, Any]:
+    reservation = agentcard_get_reservation(db, reservation_id)
+    if reservation["status"] in {"cancelled", "settled", "expired"}:
+        raise ValueError("reservation is not active")
+    remaining = int(reservation["remaining_hold_cents"])
+    amount = _require_positive_cents(
+        requested_amount_cents if requested_amount_cents is not None else remaining,
+        "requested_amount_cents",
+    )
+    if amount > remaining:
+        raise ValueError("requested amount exceeds reservation")
+    if idempotency_key:
+        existing = db.execute(
+            """
+            SELECT * FROM agentcard_cards
+             WHERE reservation_id = ? AND idempotency_key = ?
+             LIMIT 1
+            """,
+            (int(reservation_id), idempotency_key),
+        ).fetchone()
+        if existing:
+            return agentcard_card_payload(existing)
+    now = _now()
+    cur = db.execute(
+        """
+        INSERT INTO agentcard_cards (
+          wallet_id, reservation_id, requested_amount_cents, merchant,
+          status, evidence_json, idempotency_key, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'provider_not_configured', ?, ?, ?, ?)
+        """,
+        (
+            int(reservation["wallet_id"]),
+            int(reservation_id),
+            amount,
+            str(merchant or "")[:240],
+            _json_or_none(evidence),
+            idempotency_key,
+            now,
+            now,
+        ),
+    )
+    card_id = int(cur.lastrowid)
+    db.execute(
+        """
+        INSERT INTO agentcard_card_events (
+          wallet_card_id, event_type, idempotency_key, payload_json, created_at
+        ) VALUES (?, 'provider_not_configured', ?, ?, ?)
+        """,
+        (
+            card_id,
+            f"card:{card_id}:provider_not_configured",
+            _json_or_none({"merchant": merchant, "requested_amount_cents": amount}),
+            now,
+        ),
+    )
+    db.execute(
+        """
+        UPDATE agentcard_reservations
+           SET status = 'card_requested', updated_at = ?
+         WHERE id = ? AND status = 'reserved'
+        """,
+        (now, int(reservation_id)),
+    )
+    db.commit()
+    row = db.execute("SELECT * FROM agentcard_cards WHERE id = ?", (card_id,)).fetchone()
+    return agentcard_card_payload(row)
+
+
+def agentcard_card_payload(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    card = dict(row)
+    card.pop("provider_card_id", None)
+    card.pop("provider_request_id", None)
+    card["relay_status"] = card["status"]
+    card["card_details_available"] = False
+    return card
+
+
+def agentcard_list_cards(
+    db: sqlite3.Connection,
+    *,
+    wallet_id: int | None = None,
+    reservation_id: int | None = None,
+) -> list[dict[str, Any]]:
+    where: list[str] = []
+    params: list[Any] = []
+    if wallet_id is not None:
+        where.append("wallet_id = ?")
+        params.append(int(wallet_id))
+    if reservation_id is not None:
+        where.append("reservation_id = ?")
+        params.append(int(reservation_id))
+    sql = "SELECT * FROM agentcard_cards"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY id DESC"
+    rows = db.execute(sql, params).fetchall()
+    return [agentcard_card_payload(row) for row in rows]

@@ -17,6 +17,7 @@
         </div>
 
         <section id="kingPanel" class="king-panel" aria-label="Progression"></section>
+        <section id="walletPanel" class="wallet-panel" aria-label="Agent spend wallet"></section>
 
         <div class="rail-actions">
           <button id="newGoalButton" class="primary-pill" type="button">New quest</button>
@@ -113,6 +114,31 @@
         </form>
       </dialog>
 
+      <dialog id="startSheet" class="sheet">
+        <form id="startForm" method="dialog" class="sheet-card">
+          <p class="sheet-kicker">Start task</p>
+          <label id="startTaskLabel">Run selected action.</label>
+          <p id="startTaskNote" class="sheet-note"></p>
+          <section class="spend-panel">
+            <label class="toggle-row" for="allowSpendInput">
+              <input id="allowSpendInput" type="checkbox" />
+              <span>Allow wallet spend</span>
+            </label>
+            <div id="spendControls" class="spend-controls">
+              <label for="walletSelect">Wallet</label>
+              <select id="walletSelect"></select>
+              <label for="maxSpendInput">Max spend</label>
+              <input id="maxSpendInput" inputmode="decimal" autocomplete="off" value="35.00" />
+              <button id="createWalletButton" class="secondary-button" type="button">Create test wallet</button>
+            </div>
+          </section>
+          <div class="sheet-actions">
+            <button value="cancel" type="button" data-close-start>Cancel</button>
+            <button id="startConfirmButton" value="send" class="primary-button" type="submit">Start</button>
+          </div>
+        </form>
+      </dialog>
+
       <dialog id="laneSheet" class="sheet">
         <form method="dialog" class="sheet-card">
           <p class="sheet-kicker">Lanes</p>
@@ -179,6 +205,6 @@
 
       <div id="toast" class="toast" role="status"></div>
     </main>
-    <script src="/tinder.js?v=20260519king1" type="module"></script>
+    <script src="/tinder.js?v=20260717agentcard1" type="module"></script>
   </body>
 </html>

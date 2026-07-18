@@ -130,6 +130,60 @@ body.rail-collapsed .app-shell {
   overflow: hidden;
 }
 
+.wallet-panel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(23, 25, 29, 0.10);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.wallet-head {
+  display: grid;
+  gap: 3px;
+}
+
+.wallet-head span {
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.13em;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.wallet-head strong {
+  font-size: 17px;
+  line-height: 1.05;
+}
+
+.wallet-balance {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.wallet-balance span {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+  padding: 8px;
+  border-radius: 14px;
+  background: rgba(23, 25, 29, 0.06);
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.wallet-balance b {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.wallet-create {
+  min-height: 38px;
+}
+
 .rank-orbit {
   position: absolute;
   right: -18px;
@@ -1216,7 +1270,8 @@ body.rail-collapsed .app-shell {
 }
 
 .sheet textarea,
-.sheet input {
+.sheet input,
+.sheet select {
   width: 100%;
   padding: 16px 18px;
   border: 1px solid var(--line-strong);
@@ -1224,6 +1279,52 @@ body.rail-collapsed .app-shell {
   background: rgba(255, 255, 255, 0.86);
   color: var(--ink);
   resize: none;
+}
+
+.spend-panel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: rgba(23, 25, 29, 0.035);
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 15px;
+}
+
+.toggle-row input {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.spend-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.spend-controls label {
+  font-size: 12px;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.spend-controls select,
+.spend-controls input,
+.spend-controls button {
+  grid-column: span 2;
+}
+
+.spend-controls.disabled {
+  opacity: 0.56;
 }
 
 .goal-examples {
@@ -1279,6 +1380,7 @@ body.rail-collapsed .goal-rail {
 
 body.rail-collapsed .rail-brand,
 body.rail-collapsed .king-panel,
+body.rail-collapsed .wallet-panel,
 body.rail-collapsed .rail-section,
 body.rail-collapsed #newGoalButton {
   display: none;

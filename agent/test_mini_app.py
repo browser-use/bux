@@ -6,6 +6,7 @@ import hmac
 import importlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -646,6 +647,260 @@ class MiniAppTest(unittest.TestCase):
 
         self.assertEqual(state["points"], 220)
         self.assertEqual(state["recent_events"][0]["points"], 220)
+
+    def test_agentcard_wallet_ledger_hold_cancel_and_settle(self) -> None:
+        with self.agency_db.conn() as db:
+            wallet = self.agency_db.agentcard_create_wallet(
+                db,
+                name="Ops test wallet",
+                owner_user_id="42",
+                created_by="42",
+            )
+            wallet = self.agency_db.agentcard_fund_wallet(
+                db,
+                wallet["id"],
+                amount_cents=10_000,
+                idempotency_key="grant-1",
+            )
+            wallet = self.agency_db.agentcard_fund_wallet(
+                db,
+                wallet["id"],
+                amount_cents=10_000,
+                idempotency_key="grant-1",
+            )
+            self.assertEqual(wallet["available_cents"], 10_000)
+
+            reservation = self.agency_db.agentcard_reserve_wallet(
+                db,
+                wallet["id"],
+                amount_cents=3_500,
+                run_id="run-1",
+                prompt="Buy one tool subscription",
+            )
+            duplicate = self.agency_db.agentcard_reserve_wallet(
+                db,
+                wallet["id"],
+                amount_cents=3_500,
+                run_id="run-1",
+            )
+            self.assertEqual(duplicate["id"], reservation["id"])
+            self.assertEqual(reservation["wallet"]["available_cents"], 6_500)
+            self.assertEqual(reservation["wallet"]["active_hold_cents"], 3_500)
+
+            card = self.agency_db.agentcard_request_card(
+                db,
+                reservation["id"],
+                requested_amount_cents=3_000,
+                merchant="cursor.com",
+            )
+            self.assertEqual(card["relay_status"], "provider_not_configured")
+            self.assertFalse(card["card_details_available"])
+            self.assertNotIn("provider_card_id", card)
+
+            settled = self.agency_db.agentcard_settle_reservation(
+                db,
+                reservation["id"],
+                captured_amount_cents=2_240,
+                provider_event_id="evt-1",
+            )
+            self.assertEqual(settled["status"], "settled")
+            self.assertEqual(settled["wallet"]["available_cents"], 7_760)
+            self.assertEqual(settled["wallet"]["active_hold_cents"], 0)
+
+            second = self.agency_db.agentcard_reserve_wallet(
+                db,
+                wallet["id"],
+                amount_cents=1_000,
+                run_id="run-2",
+            )
+            cancelled = self.agency_db.agentcard_cancel_reservation(db, second["id"])
+            self.assertEqual(cancelled["status"], "cancelled")
+            self.assertEqual(cancelled["wallet"]["available_cents"], 7_760)
+
+    def test_agentcard_wallet_http_flow(self) -> None:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), self.app.MiniAppHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        try:
+            created = self._request(
+                base + "/api/agentcard/wallets",
+                method="POST",
+                body={"name": "Browser Use test wallet"},
+            )
+            wallet_id = created["wallet"]["id"]
+            self.assertEqual(created["wallet"]["owner_user_id"], "42")
+
+            funded = self._request(
+                f"{base}/api/agentcard/wallets/{wallet_id}/fund",
+                method="POST",
+                body={"amount": "200.00", "idempotency_key": "local-grant"},
+            )
+            self.assertEqual(funded["wallet"]["available_cents"], 20_000)
+
+            reserved = self._request(
+                f"{base}/api/agentcard/wallets/{wallet_id}/reservations",
+                method="POST",
+                body={
+                    "amount": "35.00",
+                    "run_id": "local-run-1",
+                    "prompt": "Buy a SaaS trial, max $35",
+                },
+            )
+            reservation_id = reserved["reservation"]["id"]
+            self.assertEqual(reserved["reservation"]["wallet"]["available_cents"], 16_500)
+            self.assertEqual(reserved["reservation"]["remaining_hold_cents"], 3_500)
+
+            card = self._request(
+                f"{base}/api/agentcard/reservations/{reservation_id}/cards",
+                method="POST",
+                body={"merchant": "cursor.com", "amount": "30.00"},
+            )
+            self.assertFalse(card["provider_configured"])
+            self.assertFalse(card["card"]["card_details_available"])
+            self.assertEqual(card["card"]["relay_status"], "provider_not_configured")
+
+            cards = self._request(f"{base}/api/agentcard/wallets/{wallet_id}/cards")
+            self.assertEqual(len(cards["cards"]), 1)
+            self.assertNotIn("provider_card_id", cards["cards"][0])
+
+            cancelled = self._request(
+                f"{base}/api/agentcard/reservations/{reservation_id}/cancel",
+                method="POST",
+                body={},
+            )
+            self.assertEqual(cancelled["reservation"]["status"], "cancelled")
+            self.assertEqual(cancelled["reservation"]["wallet"]["available_cents"], 20_000)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_agentcard_wallet_controls_are_in_static_shell(self) -> None:
+        html = (AGENT_DIR / "mini_app_static" / "tinder.html").read_text()
+        js = (AGENT_DIR / "mini_app_static" / "tinder.js").read_text()
+        css = (AGENT_DIR / "mini_app_static" / "tinder.css").read_text()
+
+        self.assertIn('id="walletPanel"', html)
+        self.assertIn('id="startSheet"', html)
+        self.assertIn('id="allowSpendInput"', html)
+        self.assertIn("/api/agentcard/wallets", js)
+        self.assertIn("payload.agentcard", js)
+        self.assertIn("allow wallet spend", html.lower())
+        self.assertIn(".wallet-panel", css)
+        self.assertIn(".spend-controls", css)
+
+    def test_bux_card_cli_requests_redacted_provider_stub(self) -> None:
+        with self.agency_db.conn() as db:
+            wallet = self.agency_db.agentcard_create_wallet(
+                db,
+                name="CLI wallet",
+                owner_user_id="42",
+                created_by="42",
+            )
+            self.agency_db.agentcard_fund_wallet(db, wallet["id"], amount_cents=5_000)
+            reservation = self.agency_db.agentcard_reserve_wallet(
+                db,
+                wallet["id"],
+                amount_cents=2_000,
+                run_id="cli-run",
+            )
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(AGENT_DIR / "bux-card"),
+                "request",
+                "--reservation-id",
+                str(reservation["id"]),
+                "--amount",
+                "12.50",
+                "--merchant",
+                "cursor.com",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(result.stdout)
+
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["provider_configured"])
+        self.assertEqual(payload["card"]["relay_status"], "provider_not_configured")
+        self.assertFalse(payload["card"]["card_details_available"])
+        self.assertNotIn("provider_card_id", payload["card"])
+
+    def test_start_dispatch_creates_agentcard_reservation(self) -> None:
+        calls: list[tuple[str, dict]] = []
+        runs: list[tuple[tuple[int, int], str]] = []
+
+        class FakeBot:
+            def __init__(self, token: str, setup_token: str) -> None:
+                self.token = token
+                self.setup_token = setup_token
+
+            def call(self, method: str, **params: object) -> dict:
+                calls.append((method, dict(params)))
+                return {"ok": True, "result": {"message_id": 55}}
+
+            def run_task(
+                self,
+                key: tuple[int, int],
+                prompt: str,
+                reply_to: int | None = None,
+                sender: dict | None = None,
+            ) -> None:
+                del reply_to, sender
+                runs.append((key, prompt))
+
+        sys.modules["telegram_bot"] = types.SimpleNamespace(Bot=FakeBot)
+        with self.agency_db.conn() as db:
+            wallet = self.agency_db.agentcard_create_wallet(
+                db,
+                name="Spend wallet",
+                owner_user_id="42",
+                created_by="42",
+            )
+            self.agency_db.agentcard_fund_wallet(db, wallet["id"], amount_cents=20_000)
+            suggestion_id = self.agency_db.insert(
+                db,
+                title="Buy a SaaS trial",
+                description="Use the controlled wallet.",
+                chat_id=100,
+                thread_id=123,
+                prompt="Buy a SaaS trial if it is under budget.",
+            )
+        server = ThreadingHTTPServer(("127.0.0.1", 0), self.app.MiniAppHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        try:
+            result = self._request(
+                f"{base}/api/cards/{suggestion_id}/start",
+                method="POST",
+                body={
+                    "button": "Do it",
+                    "agentcard": {
+                        "enabled": True,
+                        "wallet_id": wallet["id"],
+                        "amount_cents": 3_500,
+                    },
+                },
+            )
+            deadline = time.time() + 2
+            while not runs and time.time() < deadline:
+                time.sleep(0.02)
+
+            self.assertTrue(result["ok"])
+            self.assertTrue(result["agentcard"]["enabled"])
+            reservation = result["agentcard"]["reservation"]
+            self.assertEqual(reservation["max_amount_cents"], 3_500)
+            self.assertEqual(reservation["wallet"]["available_cents"], 16_500)
+            self.assertIn("AgentCard wallet reservation", runs[0][1])
+            self.assertIn("/opt/bux/repo/agent/bux-card request --reservation-id", runs[0][1])
+            self.assertIn(str(reservation["id"]), runs[0][1])
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_start_dispatch_is_idempotent_after_acceptance(self) -> None:
         calls: list[tuple[str, dict]] = []

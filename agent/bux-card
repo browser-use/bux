@@ -1,0 +1,124 @@
+#!/opt/bux/venv/bin/python
+"""Local AgentCard wallet relay stub.
+
+This command is intentionally not a provider client. It reads and writes the
+local BUX wallet ledger, returns only redacted card records, and never needs
+AgentCard API keys. The real provider relay belongs in the trusted backend.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from pathlib import Path
+from typing import Any
+
+REPO_AGENT = Path(__file__).resolve().parent
+sys.path.insert(0, str(REPO_AGENT))
+
+import agency_db  # noqa: E402
+
+
+def _amount_to_cents(value: str | None, *, required: bool = True) -> int | None:
+    if value in (None, ""):
+        if required:
+            raise ValueError("--amount is required")
+        return None
+    raw = str(value).strip().replace("$", "").replace(",", "")
+    try:
+        dollars = Decimal(raw)
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError("--amount must be a decimal dollar value") from exc
+    if dollars <= 0:
+        raise ValueError("--amount must be greater than 0")
+    return int((dollars * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def _metadata_json(value: str | None) -> dict[str, Any] | None:
+    if not value:
+        return None
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError("--evidence-json must be valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("--evidence-json must be a JSON object")
+    return parsed
+
+
+def _print(payload: Any) -> int:
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Use the local BUX AgentCard wallet relay.")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    status = sub.add_parser("status", help="Show a reservation and its wallet balance.")
+    status.add_argument("--reservation-id", type=int, required=True)
+
+    request = sub.add_parser("request", help="Request a provider-backed card for checkout.")
+    request.add_argument("--reservation-id", type=int, required=True)
+    request.add_argument("--amount", help="Requested card amount in dollars. Defaults to remaining reservation hold.")
+    request.add_argument("--merchant", default="", help="Merchant or checkout domain.")
+    request.add_argument("--evidence-json", help="Optional JSON object with checkout/evidence metadata.")
+    request.add_argument("--idempotency-key", help="Optional idempotency key for retries.")
+
+    cancel = sub.add_parser("cancel", help="Cancel a reservation and release unused hold.")
+    cancel.add_argument("--reservation-id", type=int, required=True)
+    cancel.add_argument("--reason", default="bux-card cancel")
+
+    cards = sub.add_parser("cards", help="List redacted cards for a wallet or reservation.")
+    cards.add_argument("--wallet-id", type=int)
+    cards.add_argument("--reservation-id", type=int)
+
+    args = parser.parse_args()
+
+    try:
+        with agency_db.conn() as db:
+            if args.cmd == "status":
+                return _print({"reservation": agency_db.agentcard_get_reservation(db, args.reservation_id)})
+            if args.cmd == "request":
+                card = agency_db.agentcard_request_card(
+                    db,
+                    args.reservation_id,
+                    requested_amount_cents=_amount_to_cents(args.amount, required=False),
+                    merchant=args.merchant,
+                    evidence=_metadata_json(args.evidence_json),
+                    idempotency_key=args.idempotency_key,
+                )
+                return _print(
+                    {
+                        "ok": True,
+                        "card": card,
+                        "provider_configured": False,
+                        "message": "Local BUX relay is working, but AgentCard provider issuing is not configured on this branch.",
+                    }
+                )
+            if args.cmd == "cancel":
+                reservation = agency_db.agentcard_cancel_reservation(
+                    db,
+                    args.reservation_id,
+                    reason=args.reason,
+                )
+                return _print({"ok": True, "reservation": reservation})
+            if args.cmd == "cards":
+                return _print(
+                    {
+                        "cards": agency_db.agentcard_list_cards(
+                            db,
+                            wallet_id=args.wallet_id,
+                            reservation_id=args.reservation_id,
+                        )
+                    }
+                )
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True), file=sys.stderr)
+        return 1
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

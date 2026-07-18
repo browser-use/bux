@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 import urllib.parse
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -272,6 +273,31 @@ def _read_json(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     return json.loads(raw.decode())
 
 
+def _amount_cents_from_body(body: dict[str, Any], *, required: bool = True) -> int | None:
+    raw_cents = body.get("amount_cents")
+    if raw_cents not in (None, ""):
+        try:
+            cents = int(raw_cents)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("amount_cents must be an integer") from exc
+        if cents <= 0:
+            raise ValueError("amount_cents must be greater than 0")
+        return cents
+    raw_amount = body.get("amount")
+    if raw_amount in (None, ""):
+        if required:
+            raise ValueError("amount_cents or amount required")
+        return None
+    value = str(raw_amount).strip().replace("$", "").replace(",", "")
+    try:
+        dollars = Decimal(value)
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError("amount must be a decimal dollar value") from exc
+    if dollars <= 0:
+        raise ValueError("amount must be greater than 0")
+    return int((dollars * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
 def _auth_user(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     parsed = urllib.parse.urlparse(handler.path)
     query = urllib.parse.parse_qs(parsed.query)
@@ -280,6 +306,46 @@ def _auth_user(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         or query.get("initData", [""])[0]
     )
     return _validate_init_data(init_data)
+
+
+def _user_id(user: dict[str, Any]) -> str:
+    return str(user.get("id") or "")
+
+
+def _agentcard_project_key(body: dict[str, Any] | None = None) -> str:
+    value = str((body or {}).get("project_key") or "").strip()
+    return value or "default"
+
+
+def _idempotency_key(handler: BaseHTTPRequestHandler, body: dict[str, Any]) -> str | None:
+    value = str(body.get("idempotency_key") or handler.headers.get("Idempotency-Key") or "").strip()
+    return value or None
+
+
+def _require_agentcard_wallet_owner(
+    db: sqlite3.Connection,
+    wallet_id: int,
+    user: dict[str, Any],
+) -> dict[str, Any]:
+    wallet = agency_db.agentcard_get_wallet(db, wallet_id)
+    owner = str(wallet.get("owner_user_id") or "")
+    if owner and owner != _user_id(user):
+        raise PermissionError("wallet belongs to another user")
+    return wallet
+
+
+def _agentcard_wallets_for_user(user: dict[str, Any], project_key: str | None = None) -> list[dict[str, Any]]:
+    with agency_db.conn() as db:
+        return agency_db.agentcard_list_wallets(
+            db,
+            project_key=project_key,
+            owner_user_id=_user_id(user),
+        )
+
+
+def _agentcard_wallet_detail(wallet_id: int, user: dict[str, Any]) -> dict[str, Any]:
+    with agency_db.conn() as db:
+        return _require_agentcard_wallet_owner(db, wallet_id, user)
 
 
 def _first_goal(db: sqlite3.Connection) -> dict[str, Any] | None:
@@ -1583,7 +1649,39 @@ def _claim_pending_suggestion(suggestion_id: int) -> dict[str, Any] | None:
         return dict(row) if row else None
 
 
-def _start_agent_prompt(row: dict[str, Any], action_prompt: str, button_label: str) -> str:
+def _format_cents(amount_cents: int, currency: str = "USD") -> str:
+    amount = int(amount_cents or 0) / 100
+    return f"{amount:,.2f} {currency}"
+
+
+def _agentcard_prompt_block(reservation: dict[str, Any] | None) -> str:
+    if not reservation:
+        return ""
+    wallet = reservation.get("wallet") or {}
+    reservation_id = int(reservation.get("id") or 0)
+    wallet_id = int(reservation.get("wallet_id") or 0)
+    currency = str(wallet.get("currency") or "USD")
+    max_amount = _format_cents(int(reservation.get("max_amount_cents") or 0), currency)
+    remaining = _format_cents(int(reservation.get("remaining_hold_cents") or 0), currency)
+    return (
+        "\n\nAgentCard wallet reservation:\n"
+        f"- Reservation id: {reservation_id}\n"
+        f"- Wallet id: {wallet_id}\n"
+        f"- Max task spend: {max_amount}\n"
+        f"- Remaining hold: {remaining}\n"
+        "- Use `/opt/bux/repo/agent/bux-card request --reservation-id "
+        f"{reservation_id} --amount <dollars> --merchant <merchant>` only when you are at checkout and need a card.\n"
+        "- Do not ask the user for card details or AgentCard API keys. The backend/relay owns provider credentials.\n"
+        "- This local branch returns a redacted provider-not-configured response until the real AgentCard relay is wired."
+    )
+
+
+def _start_agent_prompt(
+    row: dict[str, Any],
+    action_prompt: str,
+    button_label: str,
+    agentcard_reservation: dict[str, Any] | None = None,
+) -> str:
     blocks = _card_blocks(row)
     block_text = ""
     if blocks:
@@ -1614,11 +1712,15 @@ def _start_agent_prompt(row: dict[str, Any], action_prompt: str, button_label: s
         f"Source: {source_line}"
         f"{block_text}\n\n"
         f"Action prompt:\n{action_prompt}"
+        f"{_agentcard_prompt_block(agentcard_reservation)}"
     )
 
 
 def _start_agent_work(
-    suggestion_id: int, user: dict[str, Any], button_label: str | None = None
+    suggestion_id: int,
+    user: dict[str, Any],
+    button_label: str | None = None,
+    agentcard: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     row = _find_suggestion(suggestion_id)
     if not row:
@@ -1654,8 +1756,33 @@ def _start_agent_work(
         with agency_db.conn() as db:
             agency_db.set_status(db, suggestion_id, "failed")
         return {"started": False, "error": "card has no action prompt"}
-    dispatch_prompt = _start_agent_prompt(row, prompt, button_label)
     try:
+        agentcard_reservation = None
+        if isinstance(agentcard, dict) and agentcard.get("enabled"):
+            wallet_id = int(agentcard.get("wallet_id") or 0)
+            amount_cents = int(agentcard.get("amount_cents") or 0)
+            if wallet_id <= 0:
+                raise ValueError("wallet_id required for AgentCard spend")
+            if amount_cents <= 0:
+                raise ValueError("amount_cents required for AgentCard spend")
+            with agency_db.conn() as db:
+                _require_agentcard_wallet_owner(db, wallet_id, user)
+                agentcard_reservation = agency_db.agentcard_reserve_wallet(
+                    db,
+                    wallet_id,
+                    amount_cents=amount_cents,
+                    run_id=f"miniapp-card:{suggestion_id}",
+                    prompt=prompt,
+                    expires_at=_now() + 3600,
+                    idempotency_key=f"miniapp-card:{suggestion_id}:agentcard-reservation",
+                    metadata={
+                        "created_from": "mini_app_start",
+                        "suggestion_id": suggestion_id,
+                        "telegram_user_id": _user_id(user),
+                        "button": button_label or "",
+                    },
+                )
+        dispatch_prompt = _start_agent_prompt(row, prompt, button_label, agentcard_reservation)
         import telegram_bot
 
         env = _tg_env()
@@ -1721,6 +1848,10 @@ def _start_agent_work(
             "chat_id": chat_id,
             "thread_id": work_thread,
             "topic_created": topic_created,
+            "agentcard": {
+                "enabled": bool(agentcard_reservation),
+                "reservation": agentcard_reservation,
+            },
         }
     except Exception as exc:
         print(f"bux-miniapp: start failed: {exc}", file=sys.stderr)
@@ -1863,6 +1994,42 @@ class MiniAppHandler(BaseHTTPRequestHandler):
             except PermissionError as exc:
                 _json_response(self, 401, {"error": str(exc)})
             return
+        if path == "/api/agentcard/wallets":
+            try:
+                user = _auth_user(self)
+                query = urllib.parse.parse_qs(parsed.query)
+                project_key = query.get("project_key", [None])[0]
+                _json_response(
+                    self,
+                    200,
+                    {"wallets": _agentcard_wallets_for_user(user, project_key)},
+                )
+            except PermissionError as exc:
+                _json_response(self, 401, {"error": str(exc)})
+            return
+        if len(parts) == 4 and parts[:3] == ["api", "agentcard", "wallets"]:
+            try:
+                user = _auth_user(self)
+                wallet_id = int(parts[3])
+                _json_response(self, 200, {"wallet": _agentcard_wallet_detail(wallet_id, user)})
+            except PermissionError as exc:
+                _json_response(self, 401, {"error": str(exc)})
+            except ValueError as exc:
+                _json_response(self, 404, {"error": str(exc)})
+            return
+        if len(parts) == 5 and parts[:3] == ["api", "agentcard", "wallets"] and parts[4] == "cards":
+            try:
+                user = _auth_user(self)
+                wallet_id = int(parts[3])
+                with agency_db.conn() as db:
+                    _require_agentcard_wallet_owner(db, wallet_id, user)
+                    cards = agency_db.agentcard_list_cards(db, wallet_id=wallet_id)
+                _json_response(self, 200, {"cards": cards})
+            except PermissionError as exc:
+                _json_response(self, 401, {"error": str(exc)})
+            except ValueError as exc:
+                _json_response(self, 404, {"error": str(exc)})
+            return
         if path in ("/", "/tinder"):
             path = "/tinder.html"
         elif CONCEPT_ROUTE_RE.match(path):
@@ -1936,6 +2103,148 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                 if provider:
                     _write_setting("provider", provider, user)
                 _json_response(self, 200, {"ok": True, "settings": _settings()})
+                return
+            if parsed.path == "/api/agentcard/wallets":
+                try:
+                    name = (body.get("name") or "").strip()
+                    currency = (body.get("currency") or "USD").strip().upper()
+                    with agency_db.conn() as db:
+                        wallet = agency_db.agentcard_create_wallet(
+                            db,
+                            name=name,
+                            project_key=_agentcard_project_key(body),
+                            owner_user_id=_user_id(user),
+                            currency=currency,
+                            risk_tier=str(body.get("risk_tier") or "local_test"),
+                            created_by=_user_id(user),
+                            metadata={"created_from": "mini_app"},
+                        )
+                    _json_response(self, 200, {"ok": True, "wallet": wallet})
+                except ValueError as exc:
+                    _json_response(self, 400, {"ok": False, "error": str(exc)})
+                return
+            if len(path) == 5 and path[:3] == ["api", "agentcard", "wallets"] and path[4] == "fund":
+                try:
+                    wallet_id = int(path[3])
+                    amount_cents = _amount_cents_from_body(body)
+                    assert amount_cents is not None
+                    with agency_db.conn() as db:
+                        _require_agentcard_wallet_owner(db, wallet_id, user)
+                        wallet = agency_db.agentcard_fund_wallet(
+                            db,
+                            wallet_id,
+                            amount_cents=amount_cents,
+                            source=str(body.get("source") or "miniapp_local_test_grant"),
+                            idempotency_key=_idempotency_key(self, body),
+                            metadata={
+                                "funding_mode": "local_test_only",
+                                "telegram_user_id": _user_id(user),
+                            },
+                        )
+                    _json_response(self, 200, {"ok": True, "wallet": wallet})
+                except PermissionError as exc:
+                    _json_response(self, 401, {"ok": False, "error": str(exc)})
+                except ValueError as exc:
+                    _json_response(self, 400, {"ok": False, "error": str(exc)})
+                return
+            if len(path) == 5 and path[:3] == ["api", "agentcard", "wallets"] and path[4] == "reservations":
+                try:
+                    wallet_id = int(path[3])
+                    amount_cents = _amount_cents_from_body(body)
+                    assert amount_cents is not None
+                    expires_at = body.get("expires_at")
+                    if expires_at not in (None, ""):
+                        expires_at = int(expires_at)
+                    else:
+                        expires_at = _now() + 3600
+                    with agency_db.conn() as db:
+                        _require_agentcard_wallet_owner(db, wallet_id, user)
+                        reservation = agency_db.agentcard_reserve_wallet(
+                            db,
+                            wallet_id,
+                            amount_cents=amount_cents,
+                            run_id=str(body.get("run_id") or ""),
+                            prompt=str(body.get("prompt") or ""),
+                            expires_at=expires_at,
+                            idempotency_key=_idempotency_key(self, body),
+                            metadata={"created_from": "mini_app"},
+                        )
+                    _json_response(self, 200, {"ok": True, "reservation": reservation})
+                except PermissionError as exc:
+                    _json_response(self, 401, {"ok": False, "error": str(exc)})
+                except ValueError as exc:
+                    status = 409 if "insufficient" in str(exc).lower() else 400
+                    _json_response(self, status, {"ok": False, "error": str(exc)})
+                return
+            if len(path) == 5 and path[:3] == ["api", "agentcard", "reservations"] and path[4] == "cancel":
+                try:
+                    reservation_id = int(path[3])
+                    with agency_db.conn() as db:
+                        reservation = agency_db.agentcard_get_reservation(db, reservation_id)
+                        _require_agentcard_wallet_owner(db, int(reservation["wallet_id"]), user)
+                        reservation = agency_db.agentcard_cancel_reservation(
+                            db,
+                            reservation_id,
+                            reason=str(body.get("reason") or "miniapp_cancel"),
+                        )
+                    _json_response(self, 200, {"ok": True, "reservation": reservation})
+                except PermissionError as exc:
+                    _json_response(self, 401, {"ok": False, "error": str(exc)})
+                except ValueError as exc:
+                    _json_response(self, 404, {"ok": False, "error": str(exc)})
+                return
+            if len(path) == 5 and path[:3] == ["api", "agentcard", "reservations"] and path[4] == "cards":
+                try:
+                    reservation_id = int(path[3])
+                    requested_amount_cents = _amount_cents_from_body(body, required=False)
+                    with agency_db.conn() as db:
+                        reservation = agency_db.agentcard_get_reservation(db, reservation_id)
+                        _require_agentcard_wallet_owner(db, int(reservation["wallet_id"]), user)
+                        card = agency_db.agentcard_request_card(
+                            db,
+                            reservation_id,
+                            requested_amount_cents=requested_amount_cents,
+                            merchant=str(body.get("merchant") or ""),
+                            evidence=body.get("evidence") if isinstance(body.get("evidence"), dict) else None,
+                            idempotency_key=_idempotency_key(self, body),
+                        )
+                    _json_response(
+                        self,
+                        200,
+                        {
+                            "ok": True,
+                            "card": card,
+                            "provider_configured": False,
+                            "message": "AgentCard provider relay is not configured in local BUX yet.",
+                        },
+                    )
+                except PermissionError as exc:
+                    _json_response(self, 401, {"ok": False, "error": str(exc)})
+                except ValueError as exc:
+                    _json_response(self, 409, {"ok": False, "error": str(exc)})
+                return
+            if len(path) == 5 and path[:3] == ["api", "agentcard", "reservations"] and path[4] == "settle":
+                try:
+                    reservation_id = int(path[3])
+                    captured_amount_cents = _amount_cents_from_body(
+                        {"amount_cents": body.get("captured_amount_cents", body.get("amount_cents"))}
+                    )
+                    assert captured_amount_cents is not None
+                    with agency_db.conn() as db:
+                        reservation = agency_db.agentcard_get_reservation(db, reservation_id)
+                        _require_agentcard_wallet_owner(db, int(reservation["wallet_id"]), user)
+                        reservation = agency_db.agentcard_settle_reservation(
+                            db,
+                            reservation_id,
+                            captured_amount_cents=captured_amount_cents,
+                            provider_event_id=str(body.get("provider_event_id") or "local_test"),
+                            metadata={"settled_from": "mini_app_local_test"},
+                        )
+                    _json_response(self, 200, {"ok": True, "reservation": reservation})
+                except PermissionError as exc:
+                    _json_response(self, 401, {"ok": False, "error": str(exc)})
+                except ValueError as exc:
+                    _json_response(self, 409, {"ok": False, "error": str(exc)})
                 return
             if len(path) == 4 and path[:2] == ["api", "goals"] and path[3] == "context":
                 goal_id = int(path[2])
@@ -2164,8 +2473,14 @@ class MiniAppHandler(BaseHTTPRequestHandler):
                     return
                 if action == "start":
                     button_label = (body.get("button") or "").strip()
+                    agentcard_options = body.get("agentcard") if isinstance(body.get("agentcard"), dict) else None
                     _append_event(suggestion_id, "start", user, button_label)
-                    result = _start_agent_work(suggestion_id, user, button_label)
+                    result = _start_agent_work(
+                        suggestion_id,
+                        user,
+                        button_label,
+                        agentcard=agentcard_options,
+                    )
                     status = 200 if result.get("started") else 409
                     synced = _delete_telegram_card(row) if result.get("started") else False
                     points = 0 if result.get("already_handled") else _card_points(row)

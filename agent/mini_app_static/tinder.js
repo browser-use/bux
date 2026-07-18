@@ -15,6 +15,7 @@ const initData = tg?.initData || (localStorage.buxMiniAppDev === "1" ? "dev" : "
 const goalKey = "buxTinderGoalId";
 const indexKey = "buxTinderIndex";
 const variantKey = "buxTinderVariants";
+const walletKey = "buxTinderWalletId";
 let savedVariants = {};
 try {
   savedVariants = JSON.parse(localStorage.getItem(variantKey) || "{}");
@@ -29,6 +30,7 @@ const state = {
   stats: {},
   game: null,
   activity: [],
+  wallets: [],
   me: { settings: {} },
   activeGoalId: localStorage.getItem(goalKey) || "all",
   railCollapsed: localStorage.getItem("buxTinderRailCollapsed") === "1",
@@ -37,6 +39,7 @@ const state = {
   skipped: Number(localStorage.getItem("buxTinderSkipped") || "0"),
   variants: savedVariants,
   commentOpenId: "",
+  startDraft: null,
   pending: new Set(),
 };
 
@@ -44,6 +47,7 @@ const els = {
   rail: document.querySelector("#goalRail"),
   tabs: document.querySelector("#goalTabs"),
   kingPanel: document.querySelector("#kingPanel"),
+  walletPanel: document.querySelector("#walletPanel"),
   mobileGoals: document.querySelector("#mobileGoals"),
   goalCount: document.querySelector("#goalCountLabel"),
   deck: document.querySelector("#deck"),
@@ -69,6 +73,16 @@ const els = {
   goalInput: document.querySelector("#goalInput"),
   workSheet: document.querySelector("#workSheet"),
   workForm: document.querySelector("#workForm"),
+  startSheet: document.querySelector("#startSheet"),
+  startForm: document.querySelector("#startForm"),
+  startTaskLabel: document.querySelector("#startTaskLabel"),
+  startTaskNote: document.querySelector("#startTaskNote"),
+  allowSpend: document.querySelector("#allowSpendInput"),
+  spendControls: document.querySelector("#spendControls"),
+  walletSelect: document.querySelector("#walletSelect"),
+  maxSpend: document.querySelector("#maxSpendInput"),
+  createWallet: document.querySelector("#createWalletButton"),
+  startConfirm: document.querySelector("#startConfirmButton"),
   laneSheet: document.querySelector("#laneSheet"),
   laneList: document.querySelector("#laneList"),
 };
@@ -215,6 +229,7 @@ function render() {
   els.provider.textContent = providerLabel();
   localStorage.setItem(indexKey, String(state.index));
   renderKingPanel(progress);
+  renderWalletPanel();
   renderGoals();
   renderActivity();
   renderDeck(cards);
@@ -271,6 +286,48 @@ function renderKingPanel(progress) {
       <span><strong>${progress.comments}</strong> comments</span>
     </div>
   `;
+}
+
+function defaultWallet() {
+  const preferred = localStorage.getItem(walletKey) || "";
+  return state.wallets.find((wallet) => String(wallet.id) === preferred) || state.wallets[0] || null;
+}
+
+function formatCents(cents, currency = "USD") {
+  const amount = Number(cents || 0) / 100;
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency,
+    maximumFractionDigits: 2,
+  }).format(amount);
+}
+
+function renderWalletPanel() {
+  if (!els.walletPanel) return;
+  const wallet = defaultWallet();
+  if (!wallet) {
+    els.walletPanel.innerHTML = `
+      <div class="wallet-head">
+        <span>Agent wallet</span>
+        <strong>No wallet</strong>
+      </div>
+      <button class="secondary-button wallet-create" type="button" data-create-wallet>Create test wallet</button>
+    `;
+  } else {
+    const currency = wallet.currency || "USD";
+    els.walletPanel.innerHTML = `
+      <div class="wallet-head">
+        <span>Agent wallet</span>
+        <strong>${escapeHtml(wallet.name || "Wallet")}</strong>
+      </div>
+      <div class="wallet-balance">
+        <span><b>${escapeHtml(formatCents(wallet.available_cents, currency))}</b> available</span>
+        <span><b>${escapeHtml(formatCents(wallet.active_hold_cents, currency))}</b> held</span>
+      </div>
+      <button class="secondary-button wallet-create" type="button" data-create-wallet>Top up test wallet</button>
+    `;
+  }
+  els.walletPanel.querySelector("[data-create-wallet]")?.addEventListener("click", createOrFundTestWallet);
 }
 
 function syncGlobalButtons(hasCard) {
@@ -677,7 +734,7 @@ function bindDeck() {
         state.variants[String(card.id)] = index;
         persistVariants();
       }
-      startCard(card.id, button.dataset.startButton || "", els.deck.querySelector(".deck-card.is-top"));
+      openStartSheet(card, button.dataset.startButton || "", els.deck.querySelector(".deck-card.is-top"));
     });
   });
   els.deck.querySelectorAll("[data-dismiss-current]").forEach((button) => {
@@ -976,6 +1033,95 @@ function countFor(id) {
   return state.cards.filter((card) => String(card.goal_id || "") === String(id)).length;
 }
 
+async function createOrFundTestWallet() {
+  try {
+    let wallet = defaultWallet();
+    if (!wallet) {
+      const created = await api("/api/agentcard/wallets", {
+        method: "POST",
+        body: JSON.stringify({ name: "Agent spend wallet" }),
+      });
+      wallet = created.wallet;
+    }
+    if (!wallet?.id) throw new Error("wallet creation failed");
+    localStorage.setItem(walletKey, String(wallet.id));
+    await api(`/api/agentcard/wallets/${wallet.id}/fund`, {
+      method: "POST",
+      body: JSON.stringify({
+        amount: "200.00",
+        idempotency_key: `miniapp-local-test-grant-${wallet.id}`,
+      }),
+    });
+    await refresh({ resetToTop: false });
+    syncSpendControls();
+    toast("Wallet ready.");
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+function walletOptionsHtml() {
+  if (!state.wallets.length) return `<option value="">No wallet</option>`;
+  const preferred = String(defaultWallet()?.id || "");
+  return state.wallets.map((wallet) => {
+    const currency = wallet.currency || "USD";
+    const label = `${wallet.name || "Wallet"} · ${formatCents(wallet.available_cents, currency)}`;
+    return `<option value="${escapeAttr(wallet.id)}" ${String(wallet.id) === preferred ? "selected" : ""}>${escapeHtml(label)}</option>`;
+  }).join("");
+}
+
+function parseSpendCents(value) {
+  const amount = Number(String(value || "").replace(/[$,]/g, "").trim());
+  if (!Number.isFinite(amount) || amount <= 0) throw new Error("Enter a max spend.");
+  return Math.round(amount * 100);
+}
+
+function syncSpendControls() {
+  const hasWallet = Boolean(defaultWallet());
+  const enabled = Boolean(els.allowSpend?.checked && hasWallet);
+  els.spendControls?.classList.toggle("disabled", !enabled);
+  if (els.walletSelect) {
+    els.walletSelect.innerHTML = walletOptionsHtml();
+    els.walletSelect.disabled = !enabled;
+  }
+  if (els.maxSpend) els.maxSpend.disabled = !enabled;
+  if (els.allowSpend) {
+    els.allowSpend.disabled = !hasWallet;
+    if (!hasWallet) els.allowSpend.checked = false;
+  }
+}
+
+function openStartSheet(card, button, item = null) {
+  if (!card?.id) return;
+  state.startDraft = { id: card.id, button: button || "", item };
+  const action = buttonText(button, card) || inferredActionLabel(card);
+  els.startTaskLabel.textContent = action || "Start selected action";
+  els.startTaskNote.textContent = cleanCardTitle(card.title) || "Agency will run this in the Telegram topic.";
+  if (els.allowSpend) els.allowSpend.checked = false;
+  syncSpendControls();
+  els.startSheet.showModal();
+}
+
+async function submitStart(event) {
+  event.preventDefault();
+  const draft = state.startDraft;
+  if (!draft?.id) return;
+  const payload = { button: draft.button || "" };
+  if (els.allowSpend?.checked) {
+    const walletId = Number(els.walletSelect?.value || "0");
+    const amountCents = parseSpendCents(els.maxSpend?.value || "");
+    if (!walletId) throw new Error("Pick a wallet.");
+    localStorage.setItem(walletKey, String(walletId));
+    payload.agentcard = {
+      enabled: true,
+      wallet_id: walletId,
+      amount_cents: amountCents,
+    };
+  }
+  els.startSheet.close();
+  await startCard(draft.id, draft.button || "", draft.item, payload.agentcard || null);
+}
+
 async function startCurrentCard(item = null) {
   const card = currentCard();
   if (!card) return;
@@ -985,7 +1131,7 @@ async function startCurrentCard(item = null) {
     openContext();
     return;
   }
-  await startCard(card.id, action?.raw || "", item || els.deck.querySelector(".deck-card.is-top"));
+  openStartSheet(card, action?.raw || "", item || els.deck.querySelector(".deck-card.is-top"));
 }
 
 async function dismissCurrentCard(item = null) {
@@ -994,12 +1140,13 @@ async function dismissCurrentCard(item = null) {
   await dismissCard(card.id, item || els.deck.querySelector(".deck-card.is-top"));
 }
 
-async function startCard(id, button, item) {
+async function startCard(id, button, item, agentcard = null) {
   if (state.pending.has(String(id))) return;
   state.pending.add(String(id));
   item?.classList.add("accept-right");
   try {
-    const result = await api(`/api/cards/${id}/start`, { method: "POST", body: JSON.stringify({ button }) });
+    const body = agentcard ? { button, agentcard } : { button };
+    const result = await api(`/api/cards/${id}/start`, { method: "POST", body: JSON.stringify(body) });
     if (result.game) state.game = result.game;
     haptic("success");
     state.started += 1;
@@ -1007,7 +1154,7 @@ async function startCard(id, button, item) {
     localStorage.setItem("buxTinderStarted", String(state.started));
     removeLocal(id);
     scheduleRefresh();
-    toast(result.reward?.points ? `Started. +${result.reward.points} XP` : "Started.");
+    toast(result.agentcard?.enabled ? "Started with wallet hold." : (result.reward?.points ? `Started. +${result.reward.points} XP` : "Started."));
   } catch (error) {
     item?.classList.remove("accept-right");
     haptic("error");
@@ -1229,9 +1376,21 @@ els.collapseRail.addEventListener("click", () => {
 });
 els.form.addEventListener("submit", sendContext);
 els.goalForm.addEventListener("submit", createGoal);
+els.startForm.addEventListener("submit", (event) => {
+  submitStart(event).catch((error) => {
+    haptic("error");
+    toast(error.message);
+  });
+});
+els.allowSpend.addEventListener("change", syncSpendControls);
+els.walletSelect.addEventListener("change", () => {
+  localStorage.setItem(walletKey, els.walletSelect.value || "");
+});
+els.createWallet.addEventListener("click", createOrFundTestWallet);
 document.querySelector("[data-close-context]").addEventListener("click", () => els.sheet.close());
 document.querySelector("[data-close-goal]").addEventListener("click", () => els.goalSheet.close());
 document.querySelector("[data-close-work]").addEventListener("click", () => els.workSheet.close());
+document.querySelector("[data-close-start]").addEventListener("click", () => els.startSheet.close());
 document.querySelector("[data-close-lanes]").addEventListener("click", () => els.laneSheet.close());
 els.workForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -1247,6 +1406,9 @@ els.goalSheet.addEventListener("click", (event) => {
 els.workSheet.addEventListener("click", (event) => {
   if (event.target === els.workSheet) els.workSheet.close();
 });
+els.startSheet.addEventListener("click", (event) => {
+  if (event.target === els.startSheet) els.startSheet.close();
+});
 els.laneSheet.addEventListener("click", (event) => {
   if (event.target === els.laneSheet) els.laneSheet.close();
 });
@@ -1259,7 +1421,7 @@ document.querySelectorAll("[data-goal-example]").forEach((button) => {
 attachSpeech();
 
 async function refresh(options = {}) {
-  const [goals, topics, cards, stats, game, activity, me] = await Promise.all([
+  const [goals, topics, cards, stats, game, activity, me, wallets] = await Promise.all([
     api("/api/goals"),
     api("/api/topics"),
     api("/api/cards"),
@@ -1267,6 +1429,7 @@ async function refresh(options = {}) {
     api("/api/game-state"),
     api("/api/activity"),
     api("/api/me"),
+    api("/api/agentcard/wallets"),
   ]);
   state.goals = goals.goals || [];
   state.topics = topics.topics || [];
@@ -1275,6 +1438,7 @@ async function refresh(options = {}) {
   state.game = game.game || null;
   state.activity = activity.activity || [];
   state.me = me || { settings: {} };
+  state.wallets = wallets.wallets || [];
   if (options.resetToTop) state.index = 0;
   render();
 }
