@@ -1,0 +1,16 @@
+# Lint config for agent/. CI runs `ruff check agent/` (see .github/workflows/ci.yml).
+#
+# The rule set is pinned explicitly rather than inherited from ruff's defaults:
+# an unpinned `pip install ruff` in CI means a new ruff release can widen the
+# default selection and turn every PR red without a line of our code changing.
+# This set is what CI actually enforced up to ruff 0.12 — pyflakes plus the
+# pycodestyle errors that catch real breakage (imports, statements, syntax).
+#
+# Adding rules here is welcome, but do it deliberately in its own PR so the
+# resulting fixes get reviewed on their own merits.
+#
+# Worth pinning the ruff version in ci.yml too, so behaviour changes within
+# these rules can't surprise us either. That needs a token with `workflow`
+# scope, so it's left as a follow-up.
+[lint]
+select = ["E4", "E7", "E9", "F"]
