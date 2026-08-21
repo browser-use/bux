@@ -353,7 +353,7 @@ class ShellSession:
 		`window_id` is the tmux session name. The cloud picks it (default
 		`bux-w1`); we sanitize defensively. First attach to a window
 		creates it via `tmux new-session -A -d` and seeds the launch
-		command (claude / bash). Subsequent attaches just open another
+		command (claude / codex / bash). Subsequent attaches just open another
 		client onto the same tmux session.
 
 		`launch` and `dsp_enabled` are only honored when we're CREATING
@@ -445,6 +445,7 @@ class ShellSession:
 		session. Splitting create-vs-attach this way avoids "session
 		not found" races and lets us seed `launch` only on first create.
 		"""
+		import shlex
 		import subprocess
 
 		def _run(args: list[str]) -> int:
@@ -476,6 +477,10 @@ class ShellSession:
 			# `; exec bash -l` so when claude quits the user lands in a
 			# bash prompt instead of the tmux session ending.
 			cmd_str = f'{claude_cmd}; exec bash -l'
+		elif launch == 'codex':
+			# Same tmux lifecycle as Claude: Codex owns the first command,
+			# and quitting drops the user to a normal login shell.
+			cmd_str = f'{shlex.quote(CODEX_BIN)}; exec bash -l'
 		else:
 			cmd_str = 'exec bash -l'
 
@@ -918,6 +923,11 @@ class Agent:
 			if new != self._dsp_enabled:
 				LOG.info('dsp_enabled %s → %s', self._dsp_enabled, new)
 				self._dsp_enabled = new
+		elif cmd == 'update_default_agent':
+			# Cloud owns the persisted default. The launch choice is carried
+			# on each shell_attach, so the box-agent only ACKs this command to
+			# avoid warning noise on older/no-op setting pushes.
+			await self._send({'type': 'ack', 'cmd': cmd, 'ok': True})
 		elif cmd == 'shell_input':
 			import base64 as _b64
 
