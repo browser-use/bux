@@ -139,7 +139,7 @@ A new message mid-turn **SIGKILLs** your current process. The next turn resumes 
 
 ## Browser
 
-Long-lived BU Cloud session, auto-rotated by `bux-browser-keeper`. `source ~/.claude/browser.env` then use `browser-harness-js` (full API: `~/.claude/skills/cdp/SKILL.md`). On login walls / 2FA / CAPTCHA / Cloudflare → stop, share `$BU_BROWSER_LIVE_URL`, wait for "done". Never credential-stuff.
+Long-lived BU Cloud session, auto-rotated by `bux-browser-keeper`. `source ~/.claude/browser.env` then use `browser-harness-js` (full API: `~/.claude/skills/cdp/SKILL.md`). On login walls / 2FA / CAPTCHA / Cloudflare → stop, share `$BU_BROWSER_LIVE_URL`, wait for "done". Treat "done" as a wake-up signal, not proof: re-read the current page in the same session and continue only if the gate is gone; otherwise keep the handoff open. Never credential-stuff.
 
 ## Cloud integrations
 
