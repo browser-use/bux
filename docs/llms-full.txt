@@ -10,7 +10,7 @@ Public site: https://browser-use.github.io/bux/
 - Claude Code logged in and always available.
 - Telegram control through a private bot.
 - A persistent Chromium session via Browser Use Cloud and `browser-harness`.
-- Live login handoff when a site requires 2FA, CAPTCHA, or manual login.
+- Live login handoff when a site requires 2FA, CAPTCHA, Cloudflare, or manual login, with a browser-identity check and fresh page reinspection before the task continues.
 - Scheduled checks and long-running goal work on a user-owned Linux box.
 
 ## Install
